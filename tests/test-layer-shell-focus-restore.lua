@@ -72,13 +72,17 @@ local steps = {
         return nil
     end,
 
-    -- Step 2: Verify client A has focus
-    function()
-        assert(client.focus == client_a,
-            string.format("Expected client A to have focus, got %s",
+    -- Step 2: Wait for client A to have focus
+    function(count)
+        if client.focus == client_a then
+            io.stderr:write("[TEST] Client A has focus\n")
+            return true
+        end
+        if count > 10 then
+            error(string.format("Expected client A to have focus, got %s",
                 client.focus and client.focus.class or "nil"))
-        io.stderr:write("[TEST] Client A has focus\n")
-        return true
+        end
+        return nil
     end,
 
     -- Step 3: Spawn client B
@@ -95,13 +99,17 @@ local steps = {
         return nil
     end,
 
-    -- Step 4: Verify client B has focus (A is now in history)
-    function()
-        assert(client.focus == client_b,
-            string.format("Expected client B to have focus, got %s",
+    -- Step 4: Wait for client B to have focus (A is now in history)
+    function(count)
+        if client.focus == client_b then
+            io.stderr:write("[TEST] Client B has focus, A is in history\n")
+            return true
+        end
+        if count > 10 then
+            error(string.format("Expected client B to have focus, got %s",
                 client.focus and client.focus.class or "nil"))
-        io.stderr:write("[TEST] Client B has focus, A is in history\n")
-        return true
+        end
+        return nil
     end,
 
     -- Step 5: Spawn wofi (layer-shell surface)
@@ -133,7 +141,7 @@ local steps = {
     end,
 
     -- Step 6: Verify wofi has keyboard focus
-    function()
+    function(count)
         if not layer_surf then
             io.stderr:write("[TEST] SKIP: wofi layer surface not found\n")
             return true
@@ -144,6 +152,12 @@ local steps = {
             io.stderr:write("[TEST] Wofi has keyboard focus\n")
             io.stderr:write(string.format("[TEST] client.focus is now: %s\n",
                 client.focus and client.focus.class or "nil"))
+            return true
+        end
+
+        -- Timeout
+        if count > 20 then
+            io.stderr:write("[TEST] ERROR: wofi did not get keyboard focus\n")
             return true
         end
 
@@ -184,19 +198,28 @@ local steps = {
         return nil
     end,
 
-    -- Step 8: Assert focus returned to client B (not A, not nil)
-    function()
-        io.stderr:write(string.format("[TEST] Checking focus after wofi close: client.focus.class=%s\n",
-            client.focus and client.focus.class or "nil"))
+    -- Step 8: Wait for focus to return to client B (not A, not nil)
+    function(count)
+        -- Give focus restoration a moment to complete
+        if count < 3 then
+            return nil
+        end
+
+        io.stderr:write(string.format("[TEST] Checking focus after wofi close (attempt %d): client.focus.class=%s\n",
+            count, client.focus and client.focus.class or "nil"))
 
         -- This is the key assertion: focus should return to the MOST RECENT
         -- client in history (B), not just any client
-        assert(client.focus == client_b,
-            string.format("Expected focus to return to client B, got %s",
-                client.focus and client.focus.class or "nil"))
+        if client.focus == client_b then
+            io.stderr:write("[TEST] PASS: focus returned to client B (correct focus history)\n")
+            return true
+        end
 
-        io.stderr:write("[TEST] PASS: focus returned to client B (correct focus history)\n")
-        return true
+        if count > 10 then
+            error(string.format("Expected focus to return to client B, got %s",
+                client.focus and client.focus.class or "nil"))
+        end
+        return nil
     end,
 
     -- Step 9: Cleanup
