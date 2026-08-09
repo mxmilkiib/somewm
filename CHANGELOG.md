@@ -10,11 +10,16 @@ All notable changes to somewm will be documented in this file.
 - A fullscreen client keeps its opaque backing when it loses focus. Before, only the focused fullscreen client had one, so a translucent fullscreen window that lost focus showed what was behind it.
 - A wibar whose type is desktop, splash or notification stacks in that type's band instead of the bar's. awful.wibar's default type is dock, so a config has to set it to see a change.
 
+### Added
+
+- `awesome._test_remove_output` test helper - destroys a headless output by name, driving the real unplug path
+
 ### Fixed
 
 - `beautiful.gtk.get_theme_variables()` returns the colors of the active GTK theme, so the stock gtk theme matches it. Before, it returned Adwaita colors for every theme.
 - A client keeps its tags across a hot reload. Before, a client with no tag rule moved to the selected tag.
 - A hot reload keeps the screen contents in place instead of redrawing them from blank and replaying every window's enter animation.
+- Output unplug no longer crashes when clients are relocated off the removed screen
 
 ## [2.1.1] - 2026-10-29
 
@@ -43,6 +48,9 @@ line separators draw their border. Other rc.lua configs run unchanged.
   `get_height_for_width` stays removed: a wrapped height exists only after
   Clay solves the frame. Give the popup a `maximum_width` and it wraps and
   sizes itself.
+=======
+- Output unplug no longer crashes when clients are relocated off the removed screen
+>>>>>>> f591089 (fix(monitor): detach scene output before Lua removal work in cleanupmon)
 
 ### Changed
 

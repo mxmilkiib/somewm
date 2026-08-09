@@ -1562,6 +1562,19 @@ luaA_awesome_clay_scroll_set(lua_State *L)
     return 0;
 }
 
+/** awesome._test_remove_output: Destroy a headless test output by name.
+ * Drives the real output-destroy → cleanupmon() code path.
+ * \param name Output name as returned by _test_add_output
+ * \return true if the output was found and destroyed
+ */
+static int
+luaA_awesome_test_remove_output(lua_State *L)
+{
+	const char *name = luaL_checkstring(L, 1);
+	lua_pushboolean(L, some_test_remove_output(name));
+	return 1;
+}
+
 /** Reload shadow settings from beautiful theme.
  * Call this after changing beautiful.shadow_* values to apply them.
  * Refreshes effective styles; the renderer updates shared tiles as needed.
@@ -2403,6 +2416,7 @@ const luaL_Reg awesome_methods[] = {
     { "_test_clay_failure", luaA_awesome_test_clay_failure },
 #endif
 	{ "_test_add_output", luaA_awesome_test_add_output },
+	{ "_test_remove_output", luaA_awesome_test_remove_output },
 	{ "_test_redeclare", luaA_awesome_test_redeclare },
 	{ "_clay_dirty", luaA_awesome_clay_dirty },
 	{ "_clay_tree", luaA_awesome_clay_tree },
