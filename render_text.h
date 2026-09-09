@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "clay.h"
+#include "render.h"
 
 /* The font table and the shared text setup, ported from kiln (ui.h:115-163,
  * ui.c). The table is file-static in render_text.c rather than a field of an
@@ -20,11 +21,16 @@
  * No length argument, because Pango wants the NUL a Lua string already carries,
  * not a count.
  *
+ * A description may carry an absolute size ("Sans 13.3px"): that is the face's
+ * own size in logical pixels, used when a declaration's fontSize is 0, and
+ * scaled to the output's device size per call like fontSize is. A converted
+ * textbox (lua/wibox/clay.lua) says its size that way, because Clay's fontSize
+ * is a whole number and a font size at a screen's dpi is not.
+ *
  * Negative is a refusal:
  *
- *   RENDER_FONT_ERR_SIZE  the description carries a size, which would be
- *                         silently overridden because size is its own channel,
- *                         set at the output's device scale per call.
+ *   RENDER_FONT_ERR_SIZE  the description carries a point size, which depends
+ *                         on a dpi this table does not know.
  *   RENDER_FONT_ERR_FULL  the table is at its cap.
  *
  * A family no font on the system provides is not a refusal; Pango substitutes,
@@ -33,14 +39,17 @@
 #define RENDER_FONT_ERR_FULL (-2)
 int32_t render_font_intern(const char *name);
 
-/* Flags a text declaration carries through Clay's per-element userData, which is
+/* Flags a text declaration carries through its config's userData, which is
  * documented as passed through untouched to the render command (clay.h:375-376,
  * 688-689) and is not part of the measure cache key (clay.h:1508-1531, which
- * hashes only the text, fontId, fontSize and letterSpacing). A flag word in a
- * pointer slot because that slot is the only channel from a text declaration
- * to the renderer that Clay leaves to its host: everything else on a text
- * config has a meaning Clay assigns. */
-#define RENDER_TEXT_ELLIPSIZE 1u
+ * hashes only the text, fontId, fontSize and letterSpacing). Flags in a pointer
+ * slot because that slot is the only channel from a text declaration to the
+ * renderer that Clay leaves to its host: everything else on a text config has
+ * a meaning Clay assigns. They sit in the word's bits 48-55 (render.h), the
+ * byte a RECTANGLE opens a clip scope with; a TEXT command opens none. The
+ * rest of the word is the element's, so the run resolves to its declarer and
+ * clips to its scope like any other command. */
+#define RENDER_TEXT_ELLIPSIZE (1ull << RENDER_UD_OPENS_SHIFT)
 
 /* Shared font and text setup so measurement and rasterization agree, on every
  * axis that decides a glyph run's extent. font_id resolves through the font

@@ -21,6 +21,7 @@
 #include "globalconf.h"
 #include "monitor.h"
 #include "render.h"
+#include "render_text.h"
 #include "objects/drawable.h"
 #include "objects/drawin.h"
 #include "objects/screen.h"
@@ -78,17 +79,30 @@ read_number(lua_State *L, int idx, const char *name, double min, double max,
 	return ok;
 }
 
-/* One axis of sizing: a number for a fixed size, absent to grow, which is
- * what a container's only child does. */
+/* One axis of sizing, as Clay names it: "fit" or absent for
+ * CLAY_SIZING_FIT, Clay's default (README, clay.h:290), "grow" for
+ * CLAY_SIZING_GROW, a number for CLAY_SIZING_FIXED. */
 static bool
-read_sizing(lua_State *L, int idx, const char *name, bool *fixed, float *size)
+read_sizing(lua_State *L, int idx, const char *name, uint8_t *sizing,
+	float *size)
 {
-	bool ok;
+	const char *s;
+	bool ok = true;
 
 	lua_getfield(L, idx, name);
-	*fixed = lua_type(L, -1) == LUA_TNUMBER;
-	*size = *fixed ? (float)lua_tonumber(L, -1) : 0.0f;
-	ok = lua_isnil(L, -1) || (*fixed && *size >= 0);
+	if (lua_type(L, -1) == LUA_TNUMBER) {
+		*sizing = WIDGET_SIZING_FIXED;
+		*size = (float)lua_tonumber(L, -1);
+		ok = *size >= 0;
+	} else if (lua_isnil(L, -1)) {
+		*sizing = WIDGET_SIZING_FIT;
+	} else if ((s = lua_tostring(L, -1)) && strcmp(s, "fit") == 0) {
+		*sizing = WIDGET_SIZING_FIT;
+	} else if (s && strcmp(s, "grow") == 0) {
+		*sizing = WIDGET_SIZING_GROW;
+	} else {
+		ok = false;
+	}
 	lua_pop(L, 1);
 	return ok;
 }
@@ -135,6 +149,68 @@ intern_class(const char *name)
 	return names[len++] = a_strdup(name);
 }
 
+/* One of a small set of words, as the index of the Clay enumerator it names,
+ * false for any other value. */
+static bool
+read_word(lua_State *L, int idx, const char *name, const char *const *words,
+	size_t count, uint8_t *out)
+{
+	const char *s;
+	bool ok = false;
+
+	lua_getfield(L, idx, name);
+	s = lua_tostring(L, -1);
+	for (size_t i = 0; s && i < count; i++) {
+		if (strcmp(s, words[i]) == 0) {
+			*out = (uint8_t)i;
+			ok = true;
+		}
+	}
+	lua_pop(L, 1);
+	return ok;
+}
+
+/* The scratch text buffer a tree is read into, alongside the scratch nodes:
+ * a redraw reads into both and usually finds the stored tree unchanged. */
+static char text_buf[WIDGET_TEXT_MAX];
+static size_t text_len;
+
+/* A text node: the run, appended to the scratch text, and its config, in
+ * Clay's own words (Clay_TextElementConfigWrapMode, Clay_TextAlignment). */
+static bool
+read_text(lua_State *L, int idx, struct widget_node *n)
+{
+	static const char *const wraps[] = { "words", "newlines", "none" };
+	static const char *const aligns[] = { "left", "center", "right" };
+	size_t len;
+	const char *text;
+	float font = 0;
+	bool ok;
+
+	lua_getfield(L, idx, "text");
+	text = lua_tolstring(L, -1, &len);
+	if (!text || len > WIDGET_TEXT_MAX - text_len) {
+		lua_pop(L, 1);
+		return false;
+	}
+	memcpy(text_buf + text_len, text, len);
+	n->text = true;
+	n->text_off = (uint32_t)text_len;
+	n->text_len = (uint32_t)len;
+	text_len += len;
+	lua_pop(L, 1);
+
+	ok = read_number(L, idx, "font", 0, UINT16_MAX, &font)
+		&& read_quad(L, idx, "color", n->fg)
+		&& read_word(L, idx, "wrap", wraps, 3, &n->wrap)
+		&& read_word(L, idx, "halign", aligns, 3, &n->text_align);
+	n->font = (uint16_t)font;
+	lua_getfield(L, idx, "ellipsize");
+	n->ellipsize = lua_toboolean(L, -1);
+	lua_pop(L, 1);
+	return ok;
+}
+
 static bool
 read_node(lua_State *L, int idx, struct widget_node *n)
 {
@@ -144,6 +220,15 @@ read_node(lua_State *L, int idx, struct widget_node *n)
 
 	if (!lua_istable(L, idx))
 		return false;
+	lua_getfield(L, idx, "class");
+	if (lua_isstring(L, -1))
+		n->cls = intern_class(lua_tostring(L, -1));
+	lua_pop(L, 1);
+	lua_getfield(L, idx, "text");
+	ok = lua_isnil(L, -1);
+	lua_pop(L, 1);
+	if (!ok)
+		return read_text(L, idx, n);
 	if (!read_quad(L, idx, "pad", pad) || !read_quad(L, idx, "bw", bw)
 			|| !read_quad(L, idx, "bg", n->bg)
 			|| !read_quad(L, idx, "border", n->border))
@@ -158,12 +243,14 @@ read_node(lua_State *L, int idx, struct widget_node *n)
 
 	if (!read_number(L, idx, "radius", 0, 1e6, &n->radius)
 			|| !read_number(L, idx, "gap", 0, UINT16_MAX, &gap)
+			|| !read_number(L, idx, "wmin", 0, 1e6, &n->min[0])
+			|| !read_number(L, idx, "hmin", 0, 1e6, &n->min[1])
 			|| !read_number(L, idx, "wmax", 0, 1e6, &n->max[0])
 			|| !read_number(L, idx, "hmax", 0, 1e6, &n->max[1]))
 		return false;
 	n->gap = (uint16_t)gap;
-	if (!read_sizing(L, idx, "w", &n->fixed[0], &n->size[0])
-			|| !read_sizing(L, idx, "h", &n->fixed[1], &n->size[1]))
+	if (!read_sizing(L, idx, "w", &n->sizing[0], &n->size[0])
+			|| !read_sizing(L, idx, "h", &n->sizing[1], &n->size[1]))
 		return false;
 
 	lua_getfield(L, idx, "align");
@@ -183,23 +270,32 @@ read_node(lua_State *L, int idx, struct widget_node *n)
 	lua_getfield(L, idx, "raster");
 	n->raster = lua_toboolean(L, -1);
 	lua_pop(L, 1);
+	lua_getfield(L, idx, "image");
+	if (lua_islightuserdata(L, -1)) {
+		n->image = lua_touserdata(L, -1);
+		n->raster = true;
+	} else if (!lua_isnil(L, -1)) {
+		ok = false;
+	}
+	lua_pop(L, 1);
+	if (n->image && !read_number(L, idx, "aspect", 0, 1e6, &n->aspect))
+		ok = false;
 	lua_getfield(L, idx, "spacer");
 	n->widget = !lua_toboolean(L, -1);
-	lua_pop(L, 1);
-
-	lua_getfield(L, idx, "class");
-	if (lua_isstring(L, -1))
-		n->cls = intern_class(lua_tostring(L, -1));
 	lua_pop(L, 1);
 
 	return ok;
 }
 
 /* The subtree rooted at the table at idx, in preorder, into nodes. A leaf
- * has no children; anything else lists them under `children`. */
+ * has no children; anything else lists them under `children`. clip_by is
+ * the scope the subtree sits in, and clips counts the scopes opened so far
+ * (widget.h clip_opens): the root opens one, and so does a rounded node
+ * with children. Past WIDGET_CLIPS_MAX, clips is left one over and the tree
+ * is refused. */
 static bool
 read_tree(lua_State *L, int idx, struct widget_node *nodes, size_t *len,
-	size_t *leaves)
+	size_t *leaves, unsigned clip_by, unsigned *clips)
 {
 	struct widget_node *n;
 	size_t count;
@@ -216,68 +312,75 @@ read_tree(lua_State *L, int idx, struct widget_node *nodes, size_t *len,
 		return false;
 	if (n->raster)
 		(*leaves)++;
+	n->clip_by = (uint8_t)clip_by;
 
 	lua_getfield(L, idx, "children");
-	ok = lua_isnil(L, -1) || (lua_istable(L, -1) && !n->raster);
+	ok = lua_isnil(L, -1) || (lua_istable(L, -1) && !n->raster && !n->text);
 	count = ok ? luaA_rawlen(L, -1) : 0;
 	n->children = (uint16_t)count;
+	if (ok && (*len == 1 || (n->radius > 0 && count > 0))) {
+		if (*clips == WIDGET_CLIPS_MAX)
+			ok = false;
+		n->clip_opens = (uint8_t)++*clips;
+		clip_by = n->clip_opens;
+	}
 	for (size_t i = 0; ok && i < count; i++) {
 		lua_rawgeti(L, -1, (int)i + 1);
-		ok = read_tree(L, lua_gettop(L), nodes, len, leaves);
+		ok = read_tree(L, lua_gettop(L), nodes, len, leaves, clip_by, clips);
 		lua_pop(L, 1);
 	}
 	lua_pop(L, 1);
 	return ok;
 }
 
-/* Size each leaf's surface for its box, in device pixels rounded at both
- * edges the way the renderer sizes its buffers. The two cannot always agree
- * to the pixel: the renderer rounds against the box's output-local origin
- * and the solver may place the box a fraction from where the layout engine
- * did, so the entry is marked exact and the renderer places it one to one
- * rather than resampling it into whatever it solved. A surface whose device
- * size did not change is kept. */
-static bool
-leaves_set(lua_State *L, drawin_t *d, int idx, size_t count, float scale)
+/* The leaf array at the tree's leaf count, surfaces kept where the index
+ * survives: a leaf keeps its surface by its index in the tree, and
+ * widget_leaves_size resizes the ones whose box changed. */
+static void
+leaves_count(drawin_t *d, size_t count)
 {
-	if (!lua_istable(L, idx) || luaA_rawlen(L, idx) != count)
-		return false;
+	if (count == d->widget_leaves_len)
+		return;
+	for (size_t i = count; i < d->widget_leaves_len; i++)
+		drawin_entry_set(&d->widget_leaves[i], NULL);
+	p_realloc(&d->widget_leaves, count);
+	if (count > d->widget_leaves_len)
+		memset(&d->widget_leaves[d->widget_leaves_len], 0,
+			(count - d->widget_leaves_len) * sizeof(*d->widget_leaves));
+	d->widget_leaves_len = count;
+}
 
-	if (count != d->widget_leaves_len) {
-		for (size_t i = count; i < d->widget_leaves_len; i++)
-			drawin_entry_set(&d->widget_leaves[i], NULL);
-		p_realloc(&d->widget_leaves, count);
-		if (count > d->widget_leaves_len)
-			memset(&d->widget_leaves[d->widget_leaves_len], 0,
-				(count - d->widget_leaves_len)
-					* sizeof(*d->widget_leaves));
-		d->widget_leaves_len = count;
-	}
+void
+widget_leaves_size(drawin_t *d, int (*dev)[2])
+{
+	size_t leaf = 0, sized = 0;
 
-	for (size_t i = 0; i < count; i++) {
-		struct image_entry *leaf = &d->widget_leaves[i];
-		float box[4] = { 0 };
-		bool ok;
+	for (size_t i = 0; i < d->widget_nodes_len; i++) {
+		const struct widget_node *n = &d->widget_nodes[i];
+		struct image_entry *entry;
 		int w, h;
 
-		lua_rawgeti(L, idx, (int)i + 1);
-		ok = lua_istable(L, -1)
-			&& read_number(L, -1, "x", -1e6, 1e6, &box[0])
-			&& read_number(L, -1, "y", -1e6, 1e6, &box[1])
-			&& read_number(L, -1, "width", 0, 1e6, &box[2])
-			&& read_number(L, -1, "height", 0, 1e6, &box[3]);
-		lua_pop(L, 1);
-		if (!ok)
-			return false;
-		leaf->exact = true;
-		w = MAX(1, render_device_len((int)box[0], (int)box[2], scale));
-		h = MAX(1, render_device_len((int)box[1], (int)box[3], scale));
-		if (leaf->native && leaf->width == w && leaf->height == h)
+		if (!n->raster)
 			continue;
-		drawin_entry_set(leaf, cairo_image_surface_create(
+		entry = &d->widget_leaves[leaf++];
+		/* The widget's own surface: referenced, and a new reference only
+		 * when it is another surface, so its generation moves with it. */
+		if (n->image) {
+			cairo_surface_t *surface = (cairo_surface_t *)n->image;
+
+			if (entry->native != surface)
+				drawin_entry_set(entry, cairo_surface_reference(surface));
+			continue;
+		}
+		w = MAX(1, dev[sized][0]);
+		h = MAX(1, dev[sized][1]);
+		sized++;
+		if (entry->native && entry->width == w && entry->height == h)
+			continue;
+		drawin_entry_set(entry, cairo_image_surface_create(
 			CAIRO_FORMAT_ARGB32, w, h));
+		entry->fresh = true;
 	}
-	return true;
 }
 
 void
@@ -289,14 +392,19 @@ widget_nodes_clear(drawin_t *d)
 	d->widget_leaves_len = 0;
 	p_delete(&d->widget_nodes);
 	d->widget_nodes_len = 0;
+	p_delete(&d->widget_text);
+	d->widget_text_len = 0;
 	d->widget_nodes_declared = false;
 }
 
 unsigned
 widget_nodes_refused(drawin_t *d)
 {
-	return (d->shape_bounding ? WIDGET_REFUSED_SHAPE_BOUNDING : 0)
-		| (d->shape_clip ? WIDGET_REFUSED_SHAPE_CLIP : 0)
+	bool masks_convert = d->shape_radius >= 0;
+
+	return (d->shape_bounding && !masks_convert
+			? WIDGET_REFUSED_SHAPE_BOUNDING : 0)
+		| (d->shape_clip && !masks_convert ? WIDGET_REFUSED_SHAPE_CLIP : 0)
 		| (d->shape_input ? WIDGET_REFUSED_SHAPE_INPUT : 0)
 		| (d->opacity >= 0 && d->opacity < 1
 			? WIDGET_REFUSED_OPACITY : 0)
@@ -366,39 +474,46 @@ over_budget(drawin_t *d, size_t len)
 }
 
 bool
-widget_nodes_set(lua_State *L, drawin_t *d, int idx, int leaves_idx,
-	float scale)
+widget_nodes_set(lua_State *L, drawin_t *d, int idx)
 {
 	/* One scratch tree for every drawin: a redraw reads into it and
 	 * usually finds the stored tree unchanged. */
 	static struct widget_node nodes[WIDGET_NODES_MAX];
 	size_t len = 0, leaves = 0;
+	unsigned clips = 0;
 
+	text_len = 0;
 	d->widget_nodes_refused = widget_nodes_refused(d) != 0;
 	if (d->widget_nodes_refused)
 		return nodes_drop(d, WIDGET_NODES_REFUSED);
 	if (!lua_istable(L, idx))
 		return nodes_drop(d, WIDGET_NODES_NONE);
 	/* read_tree refuses a tree of its own cap's size before reading a node
-	 * of it, so a full scratch tree is the one failure that is a size and
-	 * not a malformed table. */
-	if (!read_tree(L, idx, nodes, &len, &leaves))
+	 * of it, so a full scratch tree and a tree past the clip scopes are
+	 * the two failures that are a size and not a malformed table. */
+	if (!read_tree(L, idx, nodes, &len, &leaves, 0, &clips))
 		return nodes_drop(d, len == WIDGET_NODES_MAX
+			|| clips > WIDGET_CLIPS_MAX
 			? WIDGET_NODES_OVER_BUDGET : WIDGET_NODES_MALFORMED);
 	if (over_budget(d, len))
 		return nodes_drop(d, WIDGET_NODES_OVER_BUDGET);
-	if (!leaves_set(L, d, leaves_idx, leaves, scale))
-		return nodes_drop(d, WIDGET_NODES_MALFORMED);
+	leaves_count(d, leaves);
 
 	d->widget_nodes_state = WIDGET_NODES_CONVERTED;
 	if (d->widget_nodes_len == len
-			&& memcmp(d->widget_nodes, nodes, len * sizeof(*nodes)) == 0)
+			&& memcmp(d->widget_nodes, nodes, len * sizeof(*nodes)) == 0
+			&& d->widget_text_len == text_len
+			&& (text_len == 0
+				|| memcmp(d->widget_text, text_buf, text_len) == 0))
 		return true;
 
 	p_delete(&d->widget_nodes);
 	d->widget_nodes = p_new(struct widget_node, len);
 	memcpy(d->widget_nodes, nodes, len * sizeof(*nodes));
 	d->widget_nodes_len = len;
+	p_delete(&d->widget_text);
+	d->widget_text = text_len ? p_dup(text_buf, text_len) : NULL;
+	d->widget_text_len = text_len;
 	d->widget_nodes_declared = false;
 	/* A container's color or margin can change with no pixel in any leaf
 	 * changing, so the tree has to wake the frame path on its own;
@@ -408,10 +523,12 @@ widget_nodes_set(lua_State *L, drawin_t *d, int idx, int leaves_idx,
 }
 
 cairo_surface_t *
-widget_leaf_surface(drawin_t *d, size_t i)
+widget_leaf_surface(drawin_t *d, size_t i, bool *fresh)
 {
 	if (i >= d->widget_leaves_len)
 		return NULL;
+	*fresh = d->widget_leaves[i].fresh;
+	d->widget_leaves[i].fresh = false;
 	return cairo_surface_reference(d->widget_leaves[i].native);
 }
 

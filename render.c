@@ -30,6 +30,9 @@
  * bound (degenerate, and far past any real chrome). CLIP_INF stands in for an
  * unclipped axis: outputs are at most a few thousand px, so it never clamps. */
 #define CLIP_STACK_MAX 64
+/* Clip scopes opened in one frame (render.h): a declarer's converted tree
+ * opens one per rounded container and one at its root. */
+#define CLIP_SCOPES_MAX 1024
 #define CLIP_INF 1.0e6f
 
 /* A wlr_buffer backed by a cairo image surface, for rasterized text. */
@@ -90,6 +93,26 @@ static struct cairo_buffer *cairo_buffer_create(int width, int height) {
 	return cb;
 }
 
+/* The nearest rounded clip an element sits under: a clip scope opened by a
+ * rounded RECTANGLE (a rounded wibox's root, a rounded background).
+ * wlr_scene clips to boxes, so a node whose realized box reaches one of the
+ * arc's corner squares is rastered with the arc as its cairo clip instead.
+ * radius 0 is no rounded clip at all. */
+struct clip_round {
+	Clay_BoundingBox box;
+	float radius;
+};
+
+/* A clip scope a RECTANGLE opened this frame (render.h): its realized box,
+ * composed with whatever clipped it, and the nearest arc, its own or the
+ * one it sits under. */
+struct clip_scope {
+	uint64_t owner;
+	unsigned number;
+	Clay_BoundingBox box;
+	struct clip_round round;
+};
+
 /* One retained record per (command id, command type). */
 struct rnode {
 	uint64_t key;
@@ -99,10 +122,11 @@ struct rnode {
 	 * tree==scene verifier. */
 	Clay_BoundingBox box;
 	Clay_BoundingBox rbox;
-	/* The active SCISSOR clip scope this node was realized against (the
-	 * infinite box when unclipped or exempt), retained so the verifier can
-	 * assert rbox stays inside it: rbox = box_intersect(box, clip) by
-	 * construction, so a green check proves no path skipped the clip. */
+	/* The clip this node was realized against, its scope and the active
+	 * SCISSOR together (the infinite box when unclipped or exempt),
+	 * retained so the verifier can assert rbox stays inside it: rbox =
+	 * box_intersect(box, clip) by construction, so a green check proves no
+	 * path skipped the clip. */
 	Clay_BoundingBox clip;
 	Clay_RenderData data;
 	/* The command's z order, retained only so the tree dump can print the
@@ -135,6 +159,9 @@ struct rnode {
 	 * untouched run. A fifth raster key, and the only one not derivable from the
 	 * command: it comes from the clip, which can move while the command does not. */
 	int text_ellipsis;
+	/* The rounded clip this node's raster was cut to at a corner (radius 0
+	 * for none): a raster key like text_ellipsis, from its clip scope. */
+	struct clip_round mask;
 	/* Bytes of the cairo raster this node holds in the scene (0 for rects,
 	 * trees, and borrowed clients), kept so the per-state total is O(1). */
 	size_t raster_bytes;
@@ -170,6 +197,10 @@ struct render_state {
 	 * rather than O(N^2). Insert-only, rebuilt from nodes each pass. */
 	struct rnode_slot *map;
 	size_t map_cap;
+	/* The clip scopes of the frame being reconciled, in the order their
+	 * rectangles opened them. */
+	struct clip_scope *scopes;
+	size_t scopes_len, scopes_cap;
 	/* Profiling readback: resident cairo raster bytes across all live
 	 * nodes, and buffers allocated by the current reconcile pass. */
 	size_t raster_bytes;
@@ -381,6 +412,30 @@ static bool box_contains(Clay_BoundingBox outer, Clay_BoundingBox inner) {
  * rectangle, text, image): wlr_scene draws only square fills, so rounded or
  * measured content becomes a cairo buffer that is cropped to its clip. */
 
+/* The nearest rounded clip an element sits under: see struct clip_round. */
+/* Whether a realized box touches any of the four corner squares of a rounded
+ * clip, which is where a box clip and the arc disagree. */
+static bool clip_round_hits(const struct clip_round *m, Clay_BoundingBox b) {
+	float r = m->radius;
+	if (r <= 0) {
+		return false;
+	}
+	Clay_BoundingBox corners[4] = {
+		{ m->box.x, m->box.y, r, r },
+		{ m->box.x + m->box.width - r, m->box.y, r, r },
+		{ m->box.x, m->box.y + m->box.height - r, r, r },
+		{ m->box.x + m->box.width - r, m->box.y + m->box.height - r, r, r },
+	};
+	for (int i = 0; i < 4; i++) {
+		Clay_BoundingBox c = corners[i];
+		if (b.x < c.x + c.width && c.x < b.x + b.width &&
+				b.y < c.y + c.height && c.y < b.y + b.height) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static bool corner_radius_zero(Clay_CornerRadius r) {
 	return r.topLeft == 0 && r.topRight == 0 &&
 		r.bottomLeft == 0 && r.bottomRight == 0;
@@ -532,8 +587,46 @@ static void rnode_set_raster(struct render_state *rs, struct rnode *n,
  * clip like text and images. The node kind follows the corner radius, so a
  * radius toggling across frames swaps the kind (handled in the dispatcher). */
 
+/* Clip cr, which draws the device pixels of the buffer for box, to the rounded
+ * clip m. The buffer's pixel 0 is device round((int)box.x * scale), as
+ * buffer_apply_clip derives it, so the arc lands on the same device pixels
+ * the scene crops the box to. */
+static void apply_clip_round(cairo_t *cr, Clay_BoundingBox box,
+		const struct clip_round *m, float scale) {
+	if (m == NULL || m->radius <= 0) {
+		return;
+	}
+	int ox = (int)box.x, oy = (int)box.y;
+	int mx = (int)m->box.x, my = (int)m->box.y;
+	double x = device_len(ox, mx - ox, scale);
+	double y = device_len(oy, my - oy, scale);
+	double w = device_len(mx, (int)m->box.width, scale);
+	double h = device_len(my, (int)m->box.height, scale);
+	Clay_CornerRadius r = { m->radius, m->radius, m->radius, m->radius };
+	rounded_rect_path(cr, x, y, w, h, scale_corner_radius(r, scale));
+	cairo_clip(cr);
+}
+
+/* Whether a node's retained mask differs from the one that applies now. */
+static bool clip_round_changed(const struct clip_round *have,
+		const struct clip_round *want) {
+	struct clip_round none = { 0 };
+	if (want == NULL) {
+		want = &none;
+	}
+	return memcmp(have, want, sizeof(*have)) != 0;
+}
+
+static void clip_round_keep(struct clip_round *have, const struct clip_round *want) {
+	struct clip_round none = { 0 };
+	*have = want != NULL ? *want : none;
+}
+
+static bool rounded_rect_point_accepts_input(struct wlr_scene_buffer *sb,
+		double *sx, double *sy);
+
 static struct cairo_buffer *rasterize_rounded_rect(Clay_RenderCommand *cmd,
-		float scale) {
+		float scale, const struct clip_round *mask) {
 	Clay_RectangleRenderData *rd = &cmd->renderData.rectangle;
 	int w = device_len((int)cmd->boundingBox.x, (int)cmd->boundingBox.width, scale);
 	int h = device_len((int)cmd->boundingBox.y, (int)cmd->boundingBox.height, scale);
@@ -547,6 +640,7 @@ static struct cairo_buffer *rasterize_rounded_rect(Clay_RenderCommand *cmd,
 		return NULL;
 	}
 	cairo_t *cr = cairo_create(cb->surface);
+	apply_clip_round(cr, cmd->boundingBox, mask, scale);
 	rounded_rect_path(cr, 0, 0, w, h, scale_corner_radius(rd->cornerRadius, scale));
 	/* Straight alpha as in rasterize_text; cairo premultiplies into ARGB32. */
 	cairo_set_source_rgba(cr,
@@ -590,14 +684,36 @@ static int reconcile_square_rect(struct render_state *rs, struct rnode *n,
 	return muts;
 }
 
+/* A clip mark's node: a rect of no color, so wlr_scene never draws it and
+ * still hands it back from a hit test (render.h RENDER_CLIP_MARK). */
+static int reconcile_clip_mark(struct render_state *rs, struct rnode *n,
+		Clay_BoundingBox rbox) {
+	static const float none[4] = { 0 };
+
+	if (n->node == NULL) {
+		struct wlr_scene_rect *rect = wlr_scene_rect_create(rs->tree,
+			(int)rbox.width, (int)rbox.height, none);
+		n->node = &rect->node;
+		return 1;
+	}
+	if (!box_size_equal(n->rbox, rbox)) {
+		wlr_scene_rect_set_size(wlr_scene_rect_from_node(n->node),
+			(int)rbox.width, (int)rbox.height);
+		return 1;
+	}
+	return 0;
+}
+
 static int reconcile_rounded_rect(struct render_state *rs, struct rnode *n,
-		Clay_RenderCommand *cmd, Clay_BoundingBox rbox) {
+		Clay_RenderCommand *cmd, Clay_BoundingBox rbox,
+		const struct clip_round *mask) {
 	Clay_RectangleRenderData *rd = &cmd->renderData.rectangle;
 	int muts = 0;
 
 	bool is_new = n->node == NULL;
 	if (is_new) {
 		struct wlr_scene_buffer *sb = wlr_scene_buffer_create(rs->tree, NULL);
+		sb->point_accepts_input = rounded_rect_point_accepts_input;
 		n->node = &sb->node;
 		/* As with reconcile_square_rect, a radius toggle creates this
 		 * mid-frame, past the common placement pass. */
@@ -610,10 +726,12 @@ static int reconcile_rounded_rect(struct render_state *rs, struct rnode *n,
 	bool raster_changed = is_new ||
 		!box_size_equal(n->box, cmd->boundingBox) ||
 		n->raster_scale != rs->scale ||
-		memcmp(&n->data.rectangle, rd, sizeof(*rd)) != 0;
+		memcmp(&n->data.rectangle, rd, sizeof(*rd)) != 0 ||
+		clip_round_changed(&n->mask, mask);
 	if (raster_changed) {
-		rnode_set_raster(rs, n, sb, rasterize_rounded_rect(cmd, rs->scale));
+		rnode_set_raster(rs, n, sb, rasterize_rounded_rect(cmd, rs->scale, mask));
 		n->raster_scale = rs->scale;
+		clip_round_keep(&n->mask, mask);
 		muts++;
 	}
 
@@ -625,8 +743,12 @@ static int reconcile_rounded_rect(struct render_state *rs, struct rnode *n,
  * zero and nonzero swaps the kind: destroy the old node and let the chosen path
  * recreate it. */
 static int reconcile_rectangle(struct render_state *rs, struct rnode *n,
-		Clay_RenderCommand *cmd, Clay_BoundingBox rbox) {
-	bool rounded = !corner_radius_zero(cmd->renderData.rectangle.cornerRadius);
+		Clay_RenderCommand *cmd, Clay_BoundingBox rbox,
+		const struct clip_round *mask) {
+	/* A square rect under a rounded clip's corner is a raster too: a scene
+	 * rect cannot follow the arc. */
+	bool rounded = !corner_radius_zero(cmd->renderData.rectangle.cornerRadius) ||
+		mask != NULL;
 	if (n->node != NULL) {
 		enum wlr_scene_node_type want = rounded ?
 			WLR_SCENE_NODE_BUFFER : WLR_SCENE_NODE_RECT;
@@ -638,7 +760,7 @@ static int reconcile_rectangle(struct render_state *rs, struct rnode *n,
 			rs->node_recreated = true;
 		}
 	}
-	return rounded ? reconcile_rounded_rect(rs, n, cmd, rbox)
+	return rounded ? reconcile_rounded_rect(rs, n, cmd, rbox, mask)
 		: reconcile_square_rect(rs, n, cmd, rbox);
 }
 
@@ -975,7 +1097,7 @@ static int text_ellipsis_width(Clay_RenderCommand *cmd, Clay_BoundingBox rbox,
 }
 
 static struct cairo_buffer *rasterize_text(Clay_RenderCommand *cmd, float scale,
-		int max_width) {
+		int max_width, const struct clip_round *mask) {
 	Clay_TextRenderData *td = &cmd->renderData.text;
 	int width = device_len((int)cmd->boundingBox.x, (int)cmd->boundingBox.width, scale);
 	int height = device_len((int)cmd->boundingBox.y, (int)cmd->boundingBox.height, scale);
@@ -988,6 +1110,7 @@ static struct cairo_buffer *rasterize_text(Clay_RenderCommand *cmd, float scale,
 		return NULL;
 	}
 	cairo_t *cr = cairo_create(cb->surface);
+	apply_clip_round(cr, cmd->boundingBox, mask, scale);
 	/* Cairo takes straight alpha here, so no premultiply. */
 	cairo_set_source_rgba(cr,
 		clay_srgb(td->textColor.r), clay_srgb(td->textColor.g),
@@ -1014,7 +1137,8 @@ static bool text_data_equal(Clay_TextRenderData *a, Clay_TextRenderData *b) {
 }
 
 static int reconcile_text(struct render_state *rs, struct rnode *n,
-		Clay_RenderCommand *cmd, Clay_BoundingBox rbox) {
+		Clay_RenderCommand *cmd, Clay_BoundingBox rbox,
+		const struct clip_round *mask) {
 	Clay_TextRenderData *td = &cmd->renderData.text;
 	int muts = 0;
 
@@ -1046,12 +1170,14 @@ static int reconcile_text(struct render_state *rs, struct rnode *n,
 		!box_size_equal(n->box, cmd->boundingBox) ||
 		n->raster_scale != rs->scale ||
 		n->text_ellipsis != ell ||
-		!text_data_equal(&n->data.text, td);
+		!text_data_equal(&n->data.text, td) ||
+		clip_round_changed(&n->mask, mask);
 	struct wlr_scene_buffer *sb = wlr_scene_buffer_from_node(n->node);
 	if (raster_changed) {
-		rnode_set_raster(rs, n, sb, rasterize_text(cmd, rs->scale, ell));
+		rnode_set_raster(rs, n, sb, rasterize_text(cmd, rs->scale, ell, mask));
 		n->raster_scale = rs->scale;
 		n->text_ellipsis = ell;
+		clip_round_keep(&n->mask, mask);
 		muts++;
 	}
 
@@ -1083,7 +1209,7 @@ static int reconcile_text(struct render_state *rs, struct rnode *n,
  * at all. A zero-alpha ink never arrives: the solver stores no colour for it. */
 
 static struct cairo_buffer *rasterize_image(Clay_RenderCommand *cmd,
-		struct image_entry *entry, float scale) {
+		struct image_entry *entry, float scale, const struct clip_round *mask) {
 	int w = device_len((int)cmd->boundingBox.x, (int)cmd->boundingBox.width, scale);
 	int h = device_len((int)cmd->boundingBox.y, (int)cmd->boundingBox.height, scale);
 	if (w < 1 || h < 1 || entry->width < 1 || entry->height < 1) {
@@ -1094,6 +1220,7 @@ static struct cairo_buffer *rasterize_image(Clay_RenderCommand *cmd,
 		return NULL;
 	}
 	cairo_t *cr = cairo_create(cb->surface);
+	apply_clip_round(cr, cmd->boundingBox, mask, scale);
 
 	/* w and h are already device pixels, so scaling the native surface to fill
 	 * them (below) also carries the output scale: the image is sampled once, at
@@ -1104,12 +1231,7 @@ static struct cairo_buffer *rasterize_image(Clay_RenderCommand *cmd,
 		rounded_rect_path(cr, 0, 0, w, h, radius);
 		cairo_clip(cr);
 	}
-	/* An exact entry is placed one to one: a box the solver rounded a pixel
-	 * away from the size the surface was made for crops a column or leaves
-	 * one transparent, where scaling would resample the whole leaf. */
-	if (!entry->exact) {
-		cairo_scale(cr, (double)w / entry->width, (double)h / entry->height);
-	}
+	cairo_scale(cr, (double)w / entry->width, (double)h / entry->height);
 	Clay_Color ink = cmd->renderData.image.backgroundColor;
 	if (ink.a > 0) {
 		cairo_set_source_rgba(cr, clay_srgb(ink.r), clay_srgb(ink.g),
@@ -1130,6 +1252,44 @@ static struct cairo_buffer *rasterize_image(Clay_RenderCommand *cmd,
  * declarer's hook with the retained userData word and the node-local point.
  * This is what lets a shaped drawin's pass-through pixels fall through
  * wlr_scene_node_at to whatever draws below. */
+static struct rnode *rnode_for_scene_node(struct render_state *rs,
+		struct wlr_scene_node *node);
+
+/* Whether a node-local point is inside the arcs a node draws within: its
+ * own corner radius for a rounded rect, and the rounded clip a raster was
+ * cut to at a corner. The pixels outside are transparent, and a shaped
+ * wibox's mask took no input there either. sx, sy are relative to the scene
+ * node, which sits at rbox. */
+static bool rnode_point_in_arcs(struct rnode *n, double sx, double sy) {
+	double px = sx + (n->rbox.x - n->box.x);
+	double py = sy + (n->rbox.y - n->box.y);
+	if (n->mask.radius > 0) {
+		Clay_CornerRadius r = { n->mask.radius, n->mask.radius,
+			n->mask.radius, n->mask.radius };
+		if (!point_in_rounded_rect(n->box.x + px, n->box.y + py,
+				n->mask.box.x, n->mask.box.y,
+				n->mask.box.width, n->mask.box.height, r)) {
+			return false;
+		}
+	}
+	if ((uint32_t)(n->key >> 32) == CLAY_RENDER_COMMAND_TYPE_RECTANGLE) {
+		return point_in_rounded_rect(px, py, 0, 0, n->box.width,
+			n->box.height, n->data.rectangle.cornerRadius);
+	}
+	return true;
+}
+
+static bool rounded_rect_point_accepts_input(struct wlr_scene_buffer *sb,
+		double *sx, double *sy) {
+	for (struct render_state *rs = render_states; rs != NULL; rs = rs->next) {
+		struct rnode *n = rnode_for_scene_node(rs, &sb->node);
+		if (n != NULL) {
+			return rnode_point_in_arcs(n, *sx, *sy);
+		}
+	}
+	return false;
+}
+
 static bool image_point_accepts_input(struct wlr_scene_buffer *sb,
 		double *sx, double *sy) {
 	for (struct render_state *rs = render_states; rs != NULL; rs = rs->next) {
@@ -1137,6 +1297,9 @@ static bool image_point_accepts_input(struct wlr_scene_buffer *sb,
 			struct rnode *n = &rs->nodes[i];
 			if (n->node != &sb->node) {
 				continue;
+			}
+			if (!rnode_point_in_arcs(n, *sx, *sy)) {
+				return false;
 			}
 			if (rs->hooks == NULL || rs->hooks->accepts_input == NULL) {
 				return true;
@@ -1157,7 +1320,8 @@ static bool image_data_equal(Clay_ImageRenderData *a, Clay_ImageRenderData *b) {
 }
 
 static int reconcile_image(struct render_state *rs, struct rnode *n,
-		Clay_RenderCommand *cmd, Clay_BoundingBox rbox) {
+		Clay_RenderCommand *cmd, Clay_BoundingBox rbox,
+		const struct clip_round *mask) {
 	struct image_entry *entry =
 		(struct image_entry *)cmd->renderData.image.imageData;
 	int muts = 0;
@@ -1176,13 +1340,15 @@ static int reconcile_image(struct render_state *rs, struct rnode *n,
 		!box_size_equal(n->box, cmd->boundingBox) ||
 		n->raster_scale != rs->scale ||
 		!image_data_equal(&n->data.image, &cmd->renderData.image) ||
-		(usable && entry->gen != n->img_gen);
+		(usable && entry->gen != n->img_gen) ||
+		clip_round_changed(&n->mask, mask);
 
 	if (raster_changed) {
 		rnode_set_raster(rs, n, sb,
-			usable ? rasterize_image(cmd, entry, rs->scale) : NULL);
+			usable ? rasterize_image(cmd, entry, rs->scale, mask) : NULL);
 		n->img_gen = usable ? entry->gen : 0;
 		n->raster_scale = rs->scale;
+		clip_round_keep(&n->mask, mask);
 		muts++;
 	}
 
@@ -1420,12 +1586,54 @@ uint32_t render_hit_id(struct render_state *rs, struct wlr_scene_node *node) {
 
 /* --- the reconcile pass --- */
 
+/* The scope a command's word names (render.h), or NULL for none, for one no
+ * rectangle opened this frame, or for the bounds. Scanned from the newest:
+ * a tree's commands follow the rectangle that opened their scope. */
+static const struct clip_scope *scope_named(struct render_state *rs,
+		void *word, unsigned number) {
+	uint64_t owner = (uintptr_t)word & RENDER_UD_OWNER_MASK;
+	for (size_t i = rs->scopes_len; i > 0; i--) {
+		const struct clip_scope *sc = &rs->scopes[i - 1];
+		if (sc->number == number && sc->owner == owner) {
+			return sc;
+		}
+	}
+	return NULL;
+}
+
+/* Open the scope a command's word says it opens (render.h), if any: its
+ * realized box, and its arc when rounded, else the arc it sits under. */
+static void scope_open(struct render_state *rs, void *word, Clay_BoundingBox rbox,
+		const struct clip_scope *under, float radius) {
+	unsigned opens = render_userdata_byte(word, RENDER_UD_OPENS_SHIFT);
+	if (opens == 0 || rs->scopes_len == CLIP_SCOPES_MAX) {
+		return;
+	}
+	if (rs->scopes_len == rs->scopes_cap) {
+		rs->scopes_cap = rs->scopes_cap ? rs->scopes_cap * 2 : 32;
+		p_realloc(&rs->scopes, rs->scopes_cap);
+	}
+	struct clip_scope *sc = &rs->scopes[rs->scopes_len++];
+	sc->owner = (uintptr_t)word & RENDER_UD_OWNER_MASK;
+	sc->number = opens;
+	sc->box = rbox;
+	if (radius > 0) {
+		sc->round.box = rbox;
+		sc->round.radius = radius;
+	} else if (under != NULL) {
+		sc->round = under->round;
+	} else {
+		sc->round = (struct clip_round) { 0 };
+	}
+}
+
 int render_reconcile(struct render_state *rs, Clay_RenderCommandArray commands,
-		const struct render_client_hooks *hooks) {
+		const struct render_client_hooks *hooks, Clay_BoundingBox bounds) {
 	rs->gen++;
 	rs->buffers_created = 0;
 	rs->node_recreated = false;
 	rs->hooks = hooks;
+	rs->scopes_len = 0;
 	int muts = 0;
 
 	/* Map reflects the pre-pass nodes; new nodes appended below get unique
@@ -1441,12 +1649,14 @@ int render_reconcile(struct render_state *rs, Clay_RenderCommandArray commands,
 		p_realloc(&rs->build, rs->order_cap);
 	}
 
-	/* The active SCISSOR clip scopes, innermost last, rebuilt as the walk
-	 * crosses START/END. wlr_scene has no subtree clip, so each drawn node is
-	 * clipped on its own against the top of this stack. Depth is bounded by
+	/* The active SCISSOR clip scopes Clay emitted for its own clip elements,
+	 * innermost last, rebuilt as the walk crosses START/END. wlr_scene has
+	 * no subtree clip, so each drawn node is clipped on its own against the
+	 * top of this stack and the scope its word names. Depth is bounded by
 	 * tree nesting; the cap is a backstop, not a real limit. */
 	Clay_BoundingBox clip_stack[CLIP_STACK_MAX];
 	int clip_depth = 0;
+	const struct clip_scope bounds_scope = { .box = bounds };
 
 	for (int32_t i = 0; i < commands.length; i++) {
 		Clay_RenderCommand *cmd = Clay_RenderCommandArray_Get(&commands, i);
@@ -1463,37 +1673,65 @@ int render_reconcile(struct render_state *rs, Clay_RenderCommandArray commands,
 		n->z = cmd->zIndex;
 		n->user_data = cmd->userData;
 
-		/* The clip that applies to this command reflects every START/END
-		 * already crossed; this command's own START (below) affects only its
-		 * children. Place-leaves are exempt (client popups overhang),
-		 * so a CUSTOM subtree is never clipped. */
-		const Clay_BoundingBox *clip_top = clip_depth > 0 ?
-			&clip_stack[(clip_depth < CLIP_STACK_MAX ? clip_depth : CLIP_STACK_MAX) - 1]
-			: NULL;
+		/* The clip that applies to this command: the scope its word names
+		 * and every SCISSOR START/END already crossed; a scope this
+		 * command opens (below) affects only what names it. Place-leaves
+		 * are exempt (client popups overhang), so a CUSTOM subtree is
+		 * never clipped. */
+		unsigned by = render_userdata_byte(cmd->userData, RENDER_UD_CLIP_SHIFT);
+		const struct clip_scope *scope = by == RENDER_CLIP_BOUNDS ? &bounds_scope
+			: by != 0 ? scope_named(rs, cmd->userData, by) : NULL;
+		Clay_BoundingBox clip = box_inf();
+		bool clipped = false;
+		if (clip_depth > 0) {
+			clip = clip_stack[(clip_depth < CLIP_STACK_MAX ? clip_depth : CLIP_STACK_MAX) - 1];
+			clipped = true;
+		}
+		if (scope != NULL) {
+			clip = box_intersect(clip, scope->box);
+			clipped = true;
+		}
+		const Clay_BoundingBox *clip_top = clipped ? &clip : NULL;
 		/* A border (square or rounded) keeps its per-side clip against clip_top,
 		 * so it stays unclippable and its tree sits at the unclipped origin: the
 		 * edges clip in absolute space and each corner tile disables when fully
 		 * clipped. Only the rastered leaves crop via rbox. */
+		bool clip_mark = cmd->commandType == CLAY_RENDER_COMMAND_TYPE_CUSTOM &&
+			cmd->renderData.custom.customData == RENDER_CLIP_MARK;
 		bool clippable = cmd->commandType == CLAY_RENDER_COMMAND_TYPE_RECTANGLE ||
 			cmd->commandType == CLAY_RENDER_COMMAND_TYPE_TEXT ||
-			cmd->commandType == CLAY_RENDER_COMMAND_TYPE_IMAGE;
+			cmd->commandType == CLAY_RENDER_COMMAND_TYPE_IMAGE || clip_mark;
 		Clay_BoundingBox rbox = (clip_top != NULL && clippable) ?
 			box_intersect(cmd->boundingBox, *clip_top) : cmd->boundingBox;
+		/* The arc of the nearest rounded clip, for a raster that reaches a
+		 * corner of it. */
+		const struct clip_round *mask = scope != NULL && clippable &&
+			clip_round_hits(&scope->round, rbox) ? &scope->round : NULL;
 
 		switch (cmd->commandType) {
 		case CLAY_RENDER_COMMAND_TYPE_RECTANGLE:
-			muts += reconcile_rectangle(rs, n, cmd, rbox);
+			muts += reconcile_rectangle(rs, n, cmd, rbox, mask);
+			scope_open(rs, cmd->userData, rbox, scope,
+				cmd->renderData.rectangle.cornerRadius.topLeft);
 			break;
 		case CLAY_RENDER_COMMAND_TYPE_BORDER:
 			muts += reconcile_border(rs, n, cmd, rbox, clip_top);
 			break;
 		case CLAY_RENDER_COMMAND_TYPE_TEXT:
-			muts += reconcile_text(rs, n, cmd, rbox);
+			muts += reconcile_text(rs, n, cmd, rbox, mask);
 			break;
 		case CLAY_RENDER_COMMAND_TYPE_IMAGE:
-			muts += reconcile_image(rs, n, cmd, rbox);
+			muts += reconcile_image(rs, n, cmd, rbox, mask);
 			break;
 		case CLAY_RENDER_COMMAND_TYPE_CUSTOM:
+			/* A clip mark: a transparent rect that takes input (render.h),
+			 * and the scope it opens. */
+			if (clip_mark) {
+				muts += reconcile_clip_mark(rs, n, rbox);
+				scope_open(rs, cmd->userData, rbox, scope,
+					cmd->renderData.custom.cornerRadius.topLeft);
+				break;
+			}
 			muts += reconcile_surface(rs, n, cmd, hooks);
 			break;
 		case CLAY_RENDER_COMMAND_TYPE_SCISSOR_START: {
@@ -1513,22 +1751,23 @@ int render_reconcile(struct render_state *rs, Clay_RenderCommandArray commands,
 			 * element list is such a float, and its rows once drew over the
 			 * pane below it). Scissoring the box unconditionally is the only
 			 * reading that matches the solver. */
-			Clay_BoundingBox clip = cmd->boundingBox;
+			Clay_BoundingBox sc = cmd->boundingBox;
 			bool both = !cmd->renderData.clip.horizontal &&
 				!cmd->renderData.clip.vertical;
 			if (!cmd->renderData.clip.horizontal && !both) {
-				clip.x = -CLIP_INF;
-				clip.width = 2.0f * CLIP_INF;
+				sc.x = -CLIP_INF;
+				sc.width = 2.0f * CLIP_INF;
 			}
 			if (!cmd->renderData.clip.vertical && !both) {
-				clip.y = -CLIP_INF;
-				clip.height = 2.0f * CLIP_INF;
+				sc.y = -CLIP_INF;
+				sc.height = 2.0f * CLIP_INF;
 			}
-			if (clip_top != NULL) {
-				clip = box_intersect(*clip_top, clip);
+			if (clip_depth > 0) {
+				sc = box_intersect(clip_stack[(clip_depth < CLIP_STACK_MAX
+					? clip_depth : CLIP_STACK_MAX) - 1], sc);
 			}
 			if (clip_depth < CLIP_STACK_MAX) {
-				clip_stack[clip_depth] = clip;
+				clip_stack[clip_depth] = sc;
 			}
 			clip_depth++;
 			break;
@@ -1580,7 +1819,7 @@ int render_reconcile(struct render_state *rs, Clay_RenderCommandArray commands,
 
 		n->box = cmd->boundingBox;
 		n->rbox = rbox;
-		/* The scope rbox was realized against, mirroring the rbox computation
+		/* The clip rbox was realized against, mirroring the rbox computation
 		 * above: the active clip for a clippable node, else unbounded. */
 		n->clip = (clip_top != NULL && clippable) ? *clip_top : box_inf();
 		n->data = cmd->renderData;
@@ -1700,6 +1939,7 @@ void render_destroy(struct render_state *rs,
 	free(rs->order);
 	free(rs->build);
 	free(rs->map);
+	free(rs->scopes);
 	free(rs);
 }
 
@@ -1722,6 +1962,8 @@ void render_walk(struct render_state *rs,
 			.rbox = n->rbox,
 			.raster_bytes = n->raster_bytes,
 			.has_node = n->node != NULL,
+			.clip_mark = (uint32_t)(n->key >> 32) == CLAY_RENDER_COMMAND_TYPE_CUSTOM
+				&& n->data.custom.customData == RENDER_CLIP_MARK,
 			.mismatch = rnode_scene_mismatch(n),
 			.user_data = n->user_data,
 		});

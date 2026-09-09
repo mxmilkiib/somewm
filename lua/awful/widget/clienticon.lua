@@ -90,6 +90,24 @@ client.connect_signal("property::icon", function(c)
     end
 end)
 
+-- The icon as a Clay image element at the widget's `:fit`, which keeps
+-- the icon's aspect within the bound, as `clienticon:draw` scales it; no
+-- icon is an empty element, as `:fit` answers 0.
+local clay = require("wibox.clay")
+
+clay.describe_class(clienticon, function(w, _, st)
+    local s, sw, sh = icon_surface(w._private.client)
+
+    if not s then
+        return {}
+    end
+
+    local image = { image = s._native, class = "image", aspect = sw / sh }
+
+    clay.size_leaf(image, w, st.context, st.width, st.height)
+    return { specs = { image } }
+end)
+
 return setmetatable(clienticon, {
     __call = function(_, ...)
         return new(...)

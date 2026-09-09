@@ -487,6 +487,19 @@ local function create_popup(_, args)
 
     ii:set_widget(child_widget)
 
+    -- Under Clay the popup's tree sizes the drawin: the wrapper hands its
+    -- widget the whole box and asks for a root that wraps it within the
+    -- popup's limits, and takes the solved size as `main_widget:layout`
+    -- applies the engine's fit.
+    require("wibox.clay").describe_widget(ii, function()
+        local p = w._private
+
+        return { specs = { { widget = ii._private.widget, w = "grow", h = "grow" } },
+            wmin = p.minimum_width, wmax = p.maximum_width,
+            hmin = p.minimum_height, hmax = p.maximum_height,
+            fit = function(width, height) apply_size(w, width, height, true) end }
+    end, "awful.popup")
+
     -- Create the signal handlers
     function w._private.show_fct(wdg, _, _, button, _, geo)
         if button == w._private.button_for_widget[wdg] then

@@ -87,6 +87,7 @@ function constraint:set_strategy(val)
     end
 
     self._private.strategy = func[val]
+    self._private.strategy_name = val
     self:emit_signal("widget::layout_changed")
     self:emit_signal("property::strategy", val)
 end

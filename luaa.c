@@ -1,5 +1,6 @@
 #include "luaa.h"
 #include "declare.h"
+#include "render_text.h"
 #include "widget.h"
 #include "draw.h"  /* Must be before globalconf.h to avoid type conflicts */
 #include "globalconf.h"
@@ -1537,12 +1538,10 @@ luaA_awesome_test_declare_order(lua_State *L)
 	return 1;
 }
 
-/** The boxes Clay solves for a drawin's converted widget chain, outermost
+/** The boxes Clay solves for a drawin's converted widget tree, outermost
  * first, drawin-local.
- * What the last frame solved, so a test can compare Clay's boxes against
- * the ones wibox's own :fit/:layout protocol places (see
- * tests/test-clay-widget-containers.lua). Empty for a drawin whose widget
- * tree did not convert.
+ * What the last frame solved (see tests/test-clay-widget-layouts.lua).
+ * Empty for a drawin whose widget tree did not convert.
  * \param drawin The drawin to solve.
  * \return Array of { x, y, width, height } tables.
  */
@@ -1564,6 +1563,25 @@ luaA_awesome_test_widget_boxes(lua_State *L)
 		}
 		lua_rawseti(L, -2, i + 1);
 	}
+	return 1;
+}
+
+/** Intern a Pango font description for a converted textbox, and answer the
+ * id its text element declares as fontId (render_text.h). Nil for a
+ * description the font table refuses, which keeps that textbox drawing
+ * itself.
+ * \param desc The description, with an absolute size or none.
+ * \return The font id, or nil.
+ */
+static int
+luaA_awesome_clay_font(lua_State *L)
+{
+	int32_t id = render_font_intern(luaL_checkstring(L, 1));
+
+	if (id < 0)
+		lua_pushnil(L);
+	else
+		lua_pushinteger(L, id);
 	return 1;
 }
 
@@ -2447,6 +2465,7 @@ const luaL_Reg awesome_methods[] = {
 	{ "_test_add_output", luaA_awesome_test_add_output },
 	{ "_test_redeclare", luaA_awesome_test_redeclare },
 	{ "_clay_tree", luaA_awesome_clay_tree },
+	{ "_clay_font", luaA_awesome_clay_font },
 	{ "_test_declare_order", luaA_awesome_test_declare_order },
 	{ "_test_widget_boxes", luaA_awesome_test_widget_boxes },
 	/* Lock API methods */

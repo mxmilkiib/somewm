@@ -535,6 +535,7 @@ drawin_allocator(lua_State *L)
 	drawin->shape_bounding = NULL;
 	drawin->shape_clip = NULL;
 	drawin->shape_input = NULL;
+	drawin->shape_radius = -1;
 	drawin->shape_border = NULL;
 
 	/* Initialize signal and button arrays */
@@ -1602,6 +1603,124 @@ luaA_drawin_set_shadow(lua_State *L, drawin_t *drawin)
 	return 0;
 }
 
+/* The corner radius, in logical pixels, of the rounded rectangle an ARGB32
+ * mask is, or -1 for a mask that is anything else. The candidate radius is
+ * read off the top row (the first fully covered pixel is where the arc
+ * meets the flat edge) and the mask is compared against
+ * gears.shape.rounded_rect drawn the way wibox:_apply_shape draws it, the
+ * same path at the same scale with the same antialiasing, so a match is
+ * near exact and a candidate a fraction off is not. */
+static bool
+mask_matches_rounded_rect(cairo_surface_t *mask, int w, int h, float scale,
+	double radius)
+{
+	int width = cairo_image_surface_get_width(mask);
+	int height = cairo_image_surface_get_height(mask);
+	cairo_surface_t *ref = cairo_image_surface_create(CAIRO_FORMAT_ARGB32,
+		width, height);
+	cairo_t *cr = cairo_create(ref);
+	const double pi = 3.14159265358979323846;
+	double r = radius;
+	bool match = true;
+
+	if (w / 2.0 < r)
+		r = w / 2.0;
+	if (h / 2.0 < r)
+		r = h / 2.0;
+	cairo_set_antialias(cr, CAIRO_ANTIALIAS_BEST);
+	cairo_scale(cr, scale, scale);
+	cairo_move_to(cr, 0, r);
+	cairo_arc(cr, r, r, r, pi, 3 * (pi / 2));
+	cairo_arc(cr, w - r, r, r, 3 * (pi / 2), pi * 2);
+	cairo_arc(cr, w - r, h - r, r, pi * 2, pi / 2);
+	cairo_arc(cr, r, h - r, r, pi / 2, pi);
+	cairo_close_path(cr);
+	cairo_set_source_rgba(cr, 1, 1, 1, 1);
+	cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+	cairo_fill(cr);
+	cairo_destroy(cr);
+	cairo_surface_flush(ref);
+
+	cairo_surface_flush(mask);
+	const unsigned char *a = cairo_image_surface_get_data(mask);
+	const unsigned char *b = cairo_image_surface_get_data(ref);
+	int sa = cairo_image_surface_get_stride(mask);
+	int sb = cairo_image_surface_get_stride(ref);
+
+	for (int y = 0; match && y < height; y++) {
+		const uint32_t *ra = (const uint32_t *)(a + y * sa);
+		const uint32_t *rb = (const uint32_t *)(b + y * sb);
+
+		for (int x = 0; x < width; x++) {
+			int da = (int)(ra[x] >> 24) - (int)(rb[x] >> 24);
+
+			if (da > 12 || da < -12) {
+				match = false;
+				break;
+			}
+		}
+	}
+	cairo_surface_destroy(ref);
+	return match;
+}
+
+static float
+mask_rounded_radius(cairo_surface_t *mask, int w, int h, float scale)
+{
+	int width, first = -1;
+	const uint32_t *row;
+
+	if (!mask || cairo_surface_status(mask) != CAIRO_STATUS_SUCCESS
+			|| cairo_image_surface_get_format(mask) != CAIRO_FORMAT_ARGB32
+			|| cairo_image_surface_get_height(mask) < 1)
+		return -1;
+	width = cairo_image_surface_get_width(mask);
+	cairo_surface_flush(mask);
+	row = (const uint32_t *)cairo_image_surface_get_data(mask);
+	for (int x = 0; x < width; x++) {
+		if ((row[x] >> 24) == 0xff) {
+			first = x;
+			break;
+		}
+	}
+	if (first < 0)
+		return -1;
+	/* The arc meets the top edge at the radius, so the first covered
+	 * pixel is at or just past it; the fractions between are tried. */
+	for (double dev = first; dev >= first - 1.0 && dev >= 0; dev -= 0.25) {
+		double radius = dev / scale;
+
+		if (mask_matches_rounded_rect(mask, w, h, scale, radius))
+			return (float)radius;
+	}
+	return -1;
+}
+
+/* Recompute shape_radius (drawin.h) from the masks: both have to be the
+ * same rounded rectangle at the drawin's own size, which is what
+ * wibox:_apply_shape draws for a shape with no border. A bordered shape
+ * draws its ring into the drawable's pixels, so it stays whole. */
+static void
+drawin_shape_update(drawin_t *d)
+{
+	float scale = drawin_get_effective_scale(d);
+	float rb, rc;
+
+	d->shape_radius = -1;
+	if (d->border_width > 0 || (!d->shape_bounding && !d->shape_clip))
+		return;
+	rb = d->shape_bounding
+		? mask_rounded_radius(d->shape_bounding, d->width, d->height, scale)
+		: -2;
+	rc = d->shape_clip
+		? mask_rounded_radius(d->shape_clip, d->width, d->height, scale)
+		: rb;
+	if (rb == -2)
+		rb = rc;
+	if (rb >= 0 && fabsf(rb - rc) < 0.01f)
+		d->shape_radius = rb;
+}
+
 /** drawin.shape_bounding - Get visual bounding shape (AwesomeWM signature) */
 static int
 luaA_drawin_get_shape_bounding(lua_State *L, drawin_t *drawin)
@@ -1681,6 +1800,7 @@ luaA_drawin_set_shape_bounding(lua_State *L, drawin_t *drawin)
 		cairo_surface_destroy(drawin->shape_bounding);
 
 	drawin->shape_bounding = copy;
+	drawin_shape_update(drawin);
 	widget_nodes_gate(L, drawin, -3);
 
 	/* Trigger redraw to apply shape (Wayland equivalent of xwindow_set_shape) */
@@ -1732,6 +1852,7 @@ luaA_drawin_set_shape_clip(lua_State *L, drawin_t *drawin)
 		cairo_surface_destroy(drawin->shape_clip);
 
 	drawin->shape_clip = copy;
+	drawin_shape_update(drawin);
 	widget_nodes_gate(L, drawin, -3);
 
 	/* Trigger redraw to apply shape (Wayland equivalent of xwindow_set_shape) */

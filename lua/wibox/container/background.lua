@@ -616,7 +616,15 @@ end
 -- @see wibox.layout.stack
 
 function background:set_bgimage(image, ...)
-    self._private.bgimage = type(image) == "function" and image or surface.load(image)
+    -- Unset stays unset: gears.surface.load(nil) answers an empty default
+    -- surface, which paints nothing and would still make the container a
+    -- painter to the Clay compile step (wibox.clay). The list widgets set
+    -- nil on every item.
+    if image == nil then
+        self._private.bgimage = nil
+    else
+        self._private.bgimage = type(image) == "function" and image or surface.load(image)
+    end
     self._private.bgimage_args = {...}
     self:emit_signal("widget::redraw_needed")
     self:emit_signal("property::bgimage", image)

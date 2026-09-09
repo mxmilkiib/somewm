@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "render.h"
+
 struct wlr_output;
 struct Monitor;
 struct render_client_hooks;
@@ -75,6 +77,19 @@ void declare_handle_drop(void *object);
  * how many. */
 int declare_widget_boxes(drawin_t *d, int (*boxes)[4]);
 
+/* The widget nodes of d's converted tree under a drawin-local point, as
+ * Clay's pointer query answers it against the output's last solve
+ * (Clay_SetPointerState, Clay_GetPointerOverIds): preorder indices of the
+ * nodes that stand for a widget, outermost first, up to cap. 0 until the
+ * tree has been declared. */
+int declare_widget_hits(drawin_t *d, double x, double y, int *out, int cap);
+
+/* Solve d's stored widget tree on its own, now, and read back the box of
+ * every widget node in preorder (as declare_widget_boxes) plus each raster
+ * leaf's device size in leaf order. Returns the box count, 0 for a drawin
+ * with no tree or no output. */
+int declare_widget_solve(drawin_t *d, int (*boxes)[4], int (*dev)[2]);
+
 /* Test hook (awesome._test_declare_order): the desktop band's draw order for
  * m, bottom to top, one entry per declared object. A fresh solve of the
  * current state with no reconcile, so it reads what the next frame would
@@ -84,11 +99,12 @@ int declare_output_order(struct declare_output *dout, struct Monitor *m,
 	void **objects, int cap);
 
 /* The declare handle inside a retained userData word (render.h): the low 40
- * bits are kind and registry id, the opacity byte rides above them. */
+ * bits are kind and registry id, the renderer's three bytes ride above
+ * them. */
 static inline uint64_t
 declare_userdata_handle(void *userdata)
 {
-	return (uint64_t)(uintptr_t)userdata & 0xFFFFFFFFFFULL;
+	return (uint64_t)(uintptr_t)userdata & RENDER_UD_OWNER_MASK;
 }
 
 /* The solved tree of every output (or of `only`), in draw order: one header

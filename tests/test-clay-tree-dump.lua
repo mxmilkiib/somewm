@@ -95,10 +95,11 @@ local steps = {
         assert_line("the wibar drawin", "drawin screen " .. s.index,
             string.format("%dx%d+%d+%d", bar.drawin.width, bar.drawin.height,
                 bar.drawin.x, bar.drawin.y))
-        -- The textbox does not convert, so it rides as a raster leaf under
-        -- the converted tree and the dump names both facts.
-        assert_line("the textbox raster leaf", "IMAGE",
-            "widget wibox.widget.textbox raster", "raster=")
+        -- The textbox converts to a text element: the tree names it and
+        -- its run, and the renderer draws the run as a TEXT command.
+        assert_line("the textbox element", "wibox.widget.textbox w=")
+        assert_line("the text run", 'text "bar" font=')
+        assert_line("the text command", "TEXT")
         assert_agrees()
 
         -- The registered command, through the dispatcher somewm-client

@@ -10,6 +10,15 @@
 
 typedef struct drawin_t drawin_t;
 
+/* One axis of a node's sizing, Clay's own types by name (Clay__SizingType,
+ * clay.h): fit wraps the content, grow fills the parent, fixed is told. Fit
+ * is Clay's default and this tree's: a node that says nothing fits. */
+enum widget_sizing {
+	WIDGET_SIZING_FIT = 0,
+	WIDGET_SIZING_GROW,
+	WIDGET_SIZING_FIXED,
+};
+
 /* One converted widget node, as lua/wibox/clay.lua describes it.
  *
  * The tree is stored in preorder: a node's subtree is the `children` nodes
@@ -33,17 +42,51 @@ struct widget_node {
 	float bg[4];
 	float border[4];
 	float radius;
-	bool fixed[2];       /* sized to size[] on this axis, else grows */
-	float size[2];
-	float max[2];        /* the grow ceiling per axis, 0 for none */
+	uint8_t sizing[2];   /* enum widget_sizing per axis */
+	float size[2];       /* the fixed size, for WIDGET_SIZING_FIXED */
+	float min[2];        /* Clay_SizingMinMax for fit and grow: the floor,
+	                      * and the ceiling, 0 for none, which is Clay's own
+	                      * convention (clay.h:1936) */
+	float max[2];
 	uint8_t align[2];    /* child alignment per axis, Clay_LayoutAlignmentX/Y */
 	uint16_t gap;        /* between children, along the direction */
 	bool vertical;       /* children top to bottom, else left to right */
 	bool floating;       /* attached to the parent's top left, off the flow */
 	bool raster;         /* an image leaf */
-	bool widget;         /* stands for a widget the layout engine also placed */
+	/* A raster leaf whose pixels are the widget's own cairo surface (an
+	 * imagebox's image), referenced rather than painted by Lua, with the
+	 * aspect ratio Clay keeps (Clay_AspectRatioElementConfig). */
+	const void *image;
+	float aspect;
+	bool widget;         /* stands for a widget, so has a box Lua reads back */
 	uint16_t children;
+	/* The clip scope this node opens, numbered within the drawin from 1,
+	 * and the one it is clipped by, 0 for none (render.h says how the
+	 * renderer reads the two). The root opens one, so nothing draws
+	 * outside the drawin, and so does a rounded container, so its
+	 * children are cut to its arc as the container's own clip cut them.
+	 * Numbered here rather than by Lua, from the tree's shape alone. */
+	uint8_t clip_opens, clip_by;
+
+	/* A text element (CLAY_TEXT), the child a converted textbox holds: the
+	 * run in the drawin's widget_text buffer, and its Clay_TextElementConfig.
+	 * fontSize is 0, the interned face carries its own size (render_text.h).
+	 * A text node has no children and stands for no widget. */
+	bool text;
+	uint32_t text_off, text_len;
+	uint16_t font;       /* render_font_intern's id */
+	uint8_t wrap;        /* Clay_TextElementConfigWrapMode */
+	uint8_t text_align;  /* Clay_TextAlignment */
+	bool ellipsize;      /* RENDER_TEXT_ELLIPSIZE on the config's userData */
+	float fg[4];
 };
+
+/* The text every text node of one drawin holds, together. Clay's render
+ * commands slice it, so it lives until the next tree replaces it. */
+#define WIDGET_TEXT_MAX 65536
+
+/* Clip scopes a tree may open: a byte of the word numbers them (render.h). */
+#define WIDGET_CLIPS_MAX 255
 
 /* A tree with more nodes than this is refused rather than truncated. A busy
  * bar (taglist plus tasklist) is a few hundred nodes; Clay's default context
@@ -63,7 +106,9 @@ struct widget_node {
 /* Why d has to paint itself whole, as a mask of reasons, or 0 for a drawin
  * that can convert: shape_bounding and shape_clip are applied to the
  * drawable's own pixels (objects/drawin.c), which a converted node is no
- * longer part of; shape_input's pass-through would be swallowed by a
+ * longer part of, unless the two masks are one rounded rectangle
+ * (drawin.h shape_radius), which the root element says as its corner
+ * radius; shape_input's pass-through would be swallowed by a
  * converted node's scene rect, which takes input everywhere it draws; a
  * translucent drawin blends once as one layer, where a tree of nodes each
  * carrying the opacity would blend every overlap twice; and the legacy tray
@@ -100,19 +145,26 @@ enum widget_nodes_state {
 void widget_nodes_gate(lua_State *L, drawin_t *d, int udx);
 
 /* Read a tree from the table at absolute stack index idx (what
- * lua/wibox/clay.lua returns) and the leaf boxes at leaves_idx, and store
- * them on d, replacing whatever was there. Returns false and stores nothing
- * when the tree is malformed or the drawin is refused, which is Lua's signal
- * to paint the whole drawable itself. Leaf surfaces hold device pixels with
- * no device scale set, like every other image entry; a kept surface keeps
- * its pixels, so Lua repaints only what its dirty region says. */
-bool widget_nodes_set(lua_State *L, drawin_t *d, int idx, int leaves_idx,
-	float scale);
+ * lua/wibox/clay.lua returns) and store it on d, replacing whatever was
+ * there. Returns false and stores nothing when the tree is malformed or the
+ * drawin is refused, which is Lua's signal to paint the whole drawable
+ * itself. */
+bool widget_nodes_set(lua_State *L, drawin_t *d, int idx);
 void widget_nodes_clear(drawin_t *d);
 
+/* Size each painted leaf's surface to the device size the solve gave it
+ * (declare_widget_solve, in the order of the leaves that are not images),
+ * and point each image leaf's entry at the widget's surface. Leaf surfaces
+ * hold device pixels with no device scale set, like every other image
+ * entry; a kept surface keeps its pixels, so Lua repaints only what its
+ * dirty region says. */
+void widget_leaves_size(drawin_t *d, int (*dev)[2]);
+
 /* A new reference to leaf i's surface, for Lua to draw into and own the
- * reference of (the drawable.surface convention); NULL past the last leaf. */
-cairo_surface_t *widget_leaf_surface(drawin_t *d, size_t i);
+ * reference of (the drawable.surface convention); NULL past the last leaf.
+ * fresh says whether the surface is new since it was last handed out, so
+ * holds no pixels yet. */
+cairo_surface_t *widget_leaf_surface(drawin_t *d, size_t i, bool *fresh);
 
 /* Bump the generation of every leaf whose index is a key in the table at
  * idx, so the renderer re-rasters exactly the leaves Lua redrew. */

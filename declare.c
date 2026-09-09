@@ -28,6 +28,7 @@
 #include "clay.h"
 #include "declare.h"
 #include "render.h"
+#include "render_text.h"
 #include "somewm.h"
 #include "somewm_types.h"
 #include "globalconf.h"
@@ -199,6 +200,12 @@ place_fixed(Clay_ElementDeclaration *decl, int16_t z, int x, int y,
 	decl->floating.offset = (Clay_Vector2) { x, y };
 	decl->floating.attachTo = CLAY_ATTACH_TO_ROOT;
 	decl->floating.zIndex = z;
+	/* Clay's pointer query walks the roots topmost first and stops at
+	 * the first floating one it hits unless it passes the pointer
+	 * through (clay.h:3913, Clay_SetPointerState); every root here does,
+	 * so a query under a drawin reaches the drawin's own tree whatever
+	 * lies above it. What takes input is the scene's to decide. */
+	decl->floating.pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH;
 }
 
 static Clay_ElementDeclaration
@@ -223,7 +230,18 @@ static void *
 leaf_userdata(uint64_t handle, float opacity)
 {
 	return (void *)(uintptr_t)(handle
-		| ((uint64_t)(1 + (unsigned)(opacity * 254.0f + 0.5f)) << 40));
+		| ((uint64_t)(1 + (unsigned)(opacity * 254.0f + 0.5f))
+			<< RENDER_UD_OPACITY_SHIFT));
+}
+
+/* The word with its two clip bytes (render.h): the scope a rectangle opens
+ * and the scope the command is clipped by. */
+static void *
+userdata_clip(void *word, unsigned opens, unsigned clipped_by)
+{
+	return (void *)((uintptr_t)word
+		| (uint64_t)opens << RENDER_UD_OPENS_SHIFT
+		| (uint64_t)clipped_by << RENDER_UD_CLIP_SHIFT);
 }
 
 /* The band that drew a node is the one whose render_state retains it, which
@@ -301,30 +319,17 @@ declare_client(Client *c, Monitor *m, int16_t z)
 		b.border.color = clay_color(rgba);
 		b.border.width = (Clay_BorderWidth) {
 			bw, bw, bw, bw, 0 };
+		/* The monitor scissor: the border's word names the output's
+		 * bounds as its clip (render.h RENDER_CLIP_BOUNDS), so a
+		 * partially offscreen border clips at the output edge instead
+		 * of bleeding onto the neighbor. The surface leaf is not
+		 * clipped: CUSTOM never is, and the surface's own clamp lives
+		 * in client_configure_to_box(). */
 		b.userData = leaf_userdata(handle, 1.0f);
-		if (clamp) {
-			/* The monitor scissor: a floating clip wrapper at the
-			 * output box; the border rides inside as an
-			 * attach-to-parent child inheriting the wrapper's clip
-			 * (clay.h:2077-2079, 2123), so a partially offscreen
-			 * border clips at the output edge instead of bleeding
-			 * onto the neighbor. The surface leaf stays outside:
-			 * CUSTOM is never clipped, and the surface's own clamp
-			 * lives in client_configure_to_box(). */
-			Clay_ElementDeclaration w = leaf_at(
-				CLAY_STRING("client.clip"), id, z,
-				0, 0, m->m.width, m->m.height);
-			w.clip = (Clay_ClipElementConfig) {
-				.horizontal = true, .vertical = true };
-			b.floating.attachTo = CLAY_ATTACH_TO_PARENT;
-			b.floating.clipTo = CLAY_CLIP_TO_ATTACHED_PARENT;
-			Clay__OpenElement();
-			Clay__ConfigureOpenElementPtr(&w);
-			declare_leaf(&b);
-			Clay__CloseElement();
-		} else {
-			declare_leaf(&b);
-		}
+		if (clamp)
+			b.userData = userdata_clip(b.userData, 0,
+				RENDER_CLIP_BOUNDS);
+		declare_leaf(&b);
 	}
 
 	Clay_ElementDeclaration s = leaf_at(
@@ -504,12 +509,15 @@ declare_layer_surfaces(Monitor *m)
 /* --- the converted widget tree (widget.h) ---
  *
  * One element per node, nested as lua/wibox/clay.lua compiled them. The
- * root is the drawin's own box, fixed and floating like any other leaf here,
- * and it clips on both axes so a layout that overflows draws nothing outside
- * the drawin: Clay emits the clip as a SCISSOR pair around the subtree
- * (clay.h:2121-2123, 2806-2807, 3029-3033) and render.c crops every leaf to it
- * (buffer_apply_clip). A clip parent also leaves overflowing children at
- * their size instead of compressing them (clay.h:2305-2311).
+ * root is the drawin's own box, fixed and floating like any other leaf here.
+ * Clipping is the renderer's, not Clay's: a Clay clip element is a scroll
+ * container, a context holds ten (clay.h:2194), and one clipping axis stops
+ * Clay compressing the children along it (clay.h:2305-2311). Instead every
+ * node's word names the scope it is clipped by and, for the root and a
+ * rounded container, the scope it opens (widget.c numbers them, render.h
+ * says how the renderer reads them), so a layout that overflows draws
+ * nothing outside the drawin and a rounded background cuts its children to
+ * its arc, as the container's own clip did.
  *
  * Ids follow the path from the root: the root hashes the drawin's registry
  * id, and a child hashes its index seeded with its parent's id, the shape of
@@ -529,17 +537,46 @@ widget_root_id(uint32_t id)
 	return Clay__HashString(CLAY_STRING("drawin.widget"), id, 0);
 }
 
-static Clay_ElementId
-widget_child_id(Clay_ElementId parent, uint16_t index)
+/* Clay's own hash of a child index under a parent id (Clay__HashNumber,
+ * clay.h, which the header keeps to itself), verbatim: a text element gets
+ * exactly this id from Clay__OpenTextElement, and reading its box back
+ * means computing the same one. */
+static uint32_t
+clay_hash_number(uint32_t offset, uint32_t seed)
 {
+	uint32_t hash = seed;
+
+	hash += (offset + 48);
+	hash += (hash << 10);
+	hash ^= (hash >> 6);
+	hash += (hash << 3);
+	hash ^= (hash >> 11);
+	hash += (hash << 15);
+	return hash + 1;
+}
+
+/* Child k's id. A text element's id is Clay's own, hashed from its index
+ * among the parent's children (Clay__OpenTextElement), which is k. */
+static Clay_ElementId
+widget_child_id(drawin_t *d, size_t child, Clay_ElementId parent,
+	uint16_t index)
+{
+	if (d->widget_nodes[child].text)
+		return (Clay_ElementId) { .id = clay_hash_number(index, parent.id) };
 	return Clay__HashString(CLAY_STRING("drawin.widget"), index, parent.id);
 }
 
 static Clay_SizingAxis
 widget_sizing(const struct widget_node *n, int axis)
 {
-	return n->fixed[axis] ? CLAY_SIZING_FIXED(n->size[axis])
-		: CLAY_SIZING_GROW(0, n->max[axis]);
+	switch (n->sizing[axis]) {
+	case WIDGET_SIZING_FIXED:
+		return CLAY_SIZING_FIXED(n->size[axis]);
+	case WIDGET_SIZING_GROW:
+		return CLAY_SIZING_GROW(n->min[axis], n->max[axis]);
+	default:
+		return CLAY_SIZING_FIT(n->min[axis], n->max[axis]);
+	}
 }
 
 static Clay_ElementDeclaration
@@ -562,6 +599,12 @@ widget_node_decl(const struct widget_node *n, Clay_ElementId id, int16_t z,
 
 	if (n->bg[3] > 0)
 		e.backgroundColor = clay_color(n->bg);
+	else if (n->clip_opens)
+		/* A transparent root, or a rounded container with no fill, still
+		 * clips what it holds: Clay draws a RECTANGLE only for a fill, so
+		 * the scope rides a CUSTOM command the renderer realizes as an
+		 * input-only rect (render.h). */
+		e.custom.customData = RENDER_CLIP_MARK;
 	if (n->border[3] > 0) {
 		e.border.color = clay_color(n->border);
 		e.border.width = (Clay_BorderWidth) {
@@ -570,11 +613,13 @@ widget_node_decl(const struct widget_node *n, Clay_ElementId id, int16_t z,
 	if (n->floating) {
 		/* A stack child: off the flow, at the parent's top left, in the
 		 * drawin's band (a floating element is its own tree root, sorted
-		 * by zIndex and then declaration order, clay.h:2603-2615),
-		 * clipped to the drawin like its siblings (clay.h:2074-2079). */
+		 * by zIndex and then declaration order, clay.h:2603-2615). */
 		e.floating.attachTo = CLAY_ATTACH_TO_PARENT;
-		e.floating.clipTo = CLAY_CLIP_TO_ATTACHED_PARENT;
 		e.floating.zIndex = z;
+		/* A stack child lies over its siblings and passes the pointer
+		 * through to them, as every widget under the point is under it
+		 * (place_fixed says the same of the roots). */
+		e.floating.pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH;
 	}
 	return e;
 }
@@ -584,22 +629,63 @@ declare_widget_subtree(drawin_t *d, size_t i, Clay_ElementId id, int16_t z,
 	int x, int y, void *userdata, size_t *leaf)
 {
 	const struct widget_node *n = &d->widget_nodes[i];
-	Clay_ElementDeclaration e = widget_node_decl(n, id, z, userdata);
+	void *word = userdata_clip(userdata, n->clip_opens, n->clip_by);
+	Clay_ElementDeclaration e;
 	size_t next = i + 1;
 
+	/* A text element, as CLAY_TEXT declares one: the run and its config,
+	 * no children, the drawin's word riding the config's userData to the
+	 * renderer with the ellipsize flag in it (render_text.h), so the run
+	 * clips like its siblings and a pointer over the glyphs is the
+	 * drawin's. */
+	if (n->text) {
+		Clay_TextElementConfig cfg = {
+			.userData = (void *)((uintptr_t)word
+				| (n->ellipsize ? RENDER_TEXT_ELLIPSIZE : 0)),
+			.textColor = clay_color(n->fg),
+			.fontId = n->font,
+			.wrapMode = n->wrap,
+			.textAlignment = n->text_align,
+		};
+		Clay__OpenTextElement((Clay_String) {
+			.length = (int32_t)n->text_len,
+			.chars = d->widget_text + n->text_off,
+		}, Clay__StoreTextElementConfig(cfg));
+		return next;
+	}
+
+	e = widget_node_decl(n, id, z, word);
 	if (i == 0) {
-		place_fixed(&e, z, x, y, d->width, d->height);
-		e.clip = (Clay_ClipElementConfig) {
-			.horizontal = true, .vertical = true };
+		/* The drawin's own box, floating at its output-local origin, at
+		 * the drawin's live size when the tree tells one. A tree that
+		 * sizes its drawin (an awful.popup) says fit within its limits
+		 * instead, and Lua gives the drawin the box the solve answers. */
+		e.floating.offset = (Clay_Vector2) { x, y };
+		e.floating.attachTo = CLAY_ATTACH_TO_ROOT;
+		e.floating.zIndex = z;
+		e.layout.sizing = (Clay_Sizing) {
+			n->sizing[0] == WIDGET_SIZING_FIXED
+				? CLAY_SIZING_FIXED(d->width) : widget_sizing(n, 0),
+			n->sizing[1] == WIDGET_SIZING_FIXED
+				? CLAY_SIZING_FIXED(d->height) : widget_sizing(n, 1),
+		};
+		/* A shaped drawin's masks, as the root's corners (drawin.h
+		 * shape_radius), which the root's clip scope carries to every
+		 * node under it. */
+		if (d->shape_radius > 0)
+			e.cornerRadius = (Clay_CornerRadius) { d->shape_radius,
+				d->shape_radius, d->shape_radius, d->shape_radius };
 	}
 	if (n->raster && *leaf < d->widget_leaves_len)
 		e.image.imageData = &d->widget_leaves[(*leaf)++];
+	if (n->image)
+		e.aspectRatio = (Clay_AspectRatioElementConfig) { n->aspect };
 
 	Clay__OpenElement();
 	Clay__ConfigureOpenElementPtr(&e);
 	for (uint16_t k = 0; k < n->children; k++)
-		next = declare_widget_subtree(d, next, widget_child_id(id, k),
-			z, x, y, userdata, leaf);
+		next = declare_widget_subtree(d, next,
+			widget_child_id(d, next, id, k), z, x, y, userdata, leaf);
 	Clay__CloseElement();
 	return next;
 }
@@ -739,11 +825,14 @@ declare_scene(Monitor *m)
 
 /* The boxes of one subtree, in the preorder the tree table uses, rounded
  * against the root's own box so a box crossing into Lua is the whole
- * drawin-local pixel the layout engine would have placed. Edges round, not
- * the size, so two boxes that share an edge in Clay share it here. */
+ * drawin-local pixel. Edges round, not the size, so two boxes that share an
+ * edge in Clay share it here. With dev, each raster leaf's box in device
+ * pixels as well, by the arithmetic rasterize_image (render.c) runs on the
+ * same box, so the surface Lua draws into is the size the renderer shows it
+ * at and is never resampled. */
 static size_t
 widget_boxes_walk(drawin_t *d, size_t i, Clay_ElementId id, int (*boxes)[4],
-	int *n, Clay_BoundingBox root)
+	int *n, Clay_BoundingBox root, int (*dev)[2], int *nleaf, float scale)
 {
 	const struct widget_node *node = &d->widget_nodes[i];
 	Clay_ElementData data = Clay_GetElementData(id);
@@ -760,10 +849,88 @@ widget_boxes_walk(drawin_t *d, size_t i, Clay_ElementId id, int (*boxes)[4],
 		boxes[*n][3] = (int)floorf(b.y + b.height - root.y + 0.5f) - y0;
 		(*n)++;
 	}
+	/* A painted leaf's device size; an image leaf brings its own pixels. */
+	if (dev && data.found && node->raster && !node->image) {
+		Clay_BoundingBox b = data.boundingBox;
+
+		dev[*nleaf][0] = render_device_len((int)b.x, (int)b.width, scale);
+		dev[*nleaf][1] = render_device_len((int)b.y, (int)b.height, scale);
+		(*nleaf)++;
+	}
 	for (uint16_t k = 0; k < node->children; k++)
-		next = widget_boxes_walk(d, next, widget_child_id(id, k), boxes,
-			n, root);
+		next = widget_boxes_walk(d, next, widget_child_id(d, next, id, k),
+			boxes, n, root, dev, nleaf, scale);
 	return next;
+}
+
+/* Whether Clay's last pointer query named id. */
+static bool
+pointer_over(Clay_ElementIdArray ids, Clay_ElementId id)
+{
+	for (int32_t k = 0; k < ids.length; k++)
+		if (ids.internalArray[k].id == id.id)
+			return true;
+	return false;
+}
+
+/* The preorder indices of the widget nodes Clay's pointer query named, in
+ * preorder: parents before children, a stack's children bottom to top,
+ * which is the order find_widgets has always answered in. */
+static size_t
+widget_hits_walk(drawin_t *d, size_t i, Clay_ElementId id,
+	Clay_ElementIdArray ids, int *out, int *n, int cap)
+{
+	const struct widget_node *node = &d->widget_nodes[i];
+	size_t next = i + 1;
+
+	if (node->widget && *n < cap && pointer_over(ids, id))
+		out[(*n)++] = (int)i;
+	for (uint16_t k = 0; k < node->children; k++)
+		next = widget_hits_walk(d, next, widget_child_id(d, next, id, k),
+			ids, out, n, cap);
+	return next;
+}
+
+int
+declare_widget_hits(drawin_t *d, double x, double y, int *out, int cap)
+{
+	Monitor *m = d->screen ? d->screen->monitor : NULL;
+	struct declare_output *dout = m ? m->declare : NULL;
+	struct declare_band *band;
+	Clay_Context *previous;
+	Clay_ElementId root_id;
+	Clay_ElementIdArray ids;
+	int n = 0;
+
+	if (!dout || !d->widget_nodes_declared)
+		return 0;
+	band = session_is_locked() && some_is_lock_drawin(d)
+		? &dout->lock : &dout->desktop;
+	if (!band->clay)
+		return 0;
+	/* The query runs against the boxes of the output's last solve, in
+	 * output coordinates, and answers every element under the point
+	 * across the whole context: this tree's nodes are picked out of it. */
+	previous = Clay_GetCurrentContext();
+	Clay_SetCurrentContext(band->clay);
+	Clay_SetPointerState((Clay_Vector2) {
+		(float)(d->x - m->m.x + x), (float)(d->y - m->m.y + y) }, false);
+	ids = Clay_GetPointerOverIds();
+	root_id = widget_root_id((uint32_t)handle_for(d, DECLARE_KIND_DRAWIN));
+#ifdef SOMEWM_RENDER_VERIFY
+	/* The scene named this drawin at the point (input.c), so Clay's tree
+	 * must hold the point inside the drawin's root: the two disagreeing
+	 * is the divergence the tree==scene verifier exists to catch. */
+	if (!pointer_over(ids, root_id)) {
+		wlr_log(WLR_ERROR, "scene==clay: the scene hit drawin %dx%d+%d+%d "
+			"at %g,%g but Clay's query does not reach its root",
+			d->width, d->height, d->x, d->y, x, y);
+		abort();
+	}
+#endif
+	widget_hits_walk(d, 0, root_id, ids, out, &n, cap);
+	Clay_SetCurrentContext(previous);
+	return n;
 }
 
 int
@@ -790,7 +957,59 @@ declare_widget_boxes(drawin_t *d, int (*boxes)[4])
 	root_id = widget_root_id((uint32_t)handle_for(d, DECLARE_KIND_DRAWIN));
 	root = Clay_GetElementData(root_id);
 	if (root.found)
-		widget_boxes_walk(d, 0, root_id, boxes, &n, root.boundingBox);
+		widget_boxes_walk(d, 0, root_id, boxes, &n, root.boundingBox,
+			NULL, NULL, 1);
+	Clay_SetCurrentContext(previous);
+	return n;
+}
+
+static void handle_clay_error(Clay_ErrorData error);
+
+/* Solve d's tree now, before any frame, and read every box back: what
+ * drawable:_clay_nodes returns to Lua, which sizes the leaf surfaces and
+ * draws and hit-tests against them. The solve runs in a context of its own
+ * holding only this tree: a partial layout in the output's context would
+ * evict every other element's box from Clay's hashmap (clay.h, generation
+ * eviction in Clay__AddHashMapItem), and the frame's own declare, solve and
+ * reconcile follow anyway. The tree is placed where the frame will place it,
+ * at the drawin's output-local origin, so the device rounding matches the
+ * renderer's to the pixel. */
+int
+declare_widget_solve(drawin_t *d, int (*boxes)[4], int (*dev)[2])
+{
+	static Clay_Context *ctx;
+	Monitor *m = d->screen ? d->screen->monitor : NULL;
+	Clay_Context *previous;
+	Clay_ElementId root_id;
+	Clay_ElementData root;
+	int n = 0, nleaf = 0;
+	size_t leaf = 0;
+
+	if (!m || d->widget_nodes_len == 0)
+		return 0;
+	if (!ctx) {
+		uint32_t arena_size = Clay_MinMemorySize();
+
+		ctx = Clay_Initialize(Clay_CreateArenaWithCapacityAndMemory(
+			arena_size, malloc(arena_size)),
+			(Clay_Dimensions) { 0, 0 },
+			(Clay_ErrorHandler) {
+				.errorHandlerFunction = handle_clay_error });
+		Clay_SetCullingEnabled(false);
+		Clay_SetMeasureTextFunction(render_measure_text, NULL);
+	}
+	previous = Clay_GetCurrentContext();
+	Clay_SetCurrentContext(ctx);
+	render_text_set_measure_scale(m->wlr_output->scale);
+	Clay_BeginLayout();
+	root_id = widget_root_id((uint32_t)handle_for(d, DECLARE_KIND_DRAWIN));
+	declare_widget_subtree(d, 0, root_id, 0, d->x - m->m.x, d->y - m->m.y,
+		NULL, &leaf);
+	Clay_EndLayout();
+	root = Clay_GetElementData(root_id);
+	if (root.found)
+		widget_boxes_walk(d, 0, root_id, boxes, &n, root.boundingBox,
+			dev, &nleaf, m->wlr_output->scale);
 	Clay_SetCurrentContext(previous);
 	return n;
 }
@@ -802,6 +1021,7 @@ declare_output_order(struct declare_output *dout, Monitor *m, void **objects,
 	int n = 0;
 
 	Clay_SetCurrentContext(dout->desktop.clay);
+	render_text_set_measure_scale(dout->wlr_output->scale);
 	Clay_BeginLayout();
 	declare_scene(m);
 	Clay_RenderCommandArray commands = Clay_EndLayout();
@@ -811,8 +1031,8 @@ declare_output_order(struct declare_output *dout, Monitor *m, void **objects,
 		void *object = declare_handle_get(
 			declare_userdata_handle(cmd->userData), NULL);
 
-		/* A leaf with no handle (the clip wrapper, the fullscreen
-		 * backing) is not an object. A client declares a border leaf
+		/* A leaf with no handle (the fullscreen backing) is not an
+		 * object. A client declares a border leaf
 		 * and a surface leaf, a drawin up to three image leaves; the
 		 * object enters the order once, at its lowest leaf. */
 		if (!object || (n > 0 && objects[n - 1] == object))
@@ -867,6 +1087,7 @@ declare_band_init(struct declare_band *band, struct wlr_output *wlr_output,
 	 * is still relative to the output that declared them. wlr_scene does
 	 * the per-output culling. */
 	Clay_SetCullingEnabled(false);
+	Clay_SetMeasureTextFunction(render_measure_text, NULL);
 	band->tree = wlr_scene_tree_create(parent);
 	band->render = render_create(band->tree);
 }
@@ -1037,6 +1258,7 @@ declare_output_frame(struct declare_output *dout, Monitor *m, bool lock_active)
 
 	band->declare_us = now_us();
 	Clay_SetCurrentContext(band->clay);
+	render_text_set_measure_scale(dout->wlr_output->scale);
 	Clay_BeginLayout();
 	if (lock_active)
 		declare_lock_scene(m);
@@ -1048,7 +1270,7 @@ declare_output_frame(struct declare_output *dout, Monitor *m, bool lock_active)
 
 	band->commands = commands.length;
 	band->mutations = render_reconcile(band->render, commands,
-		&client_hooks);
+		&client_hooks, (Clay_BoundingBox) { 0, 0, m->m.width, m->m.height });
 	band->reconcile_us = now_us() - solved;
 	band->solve_us = solved - declared;
 	band->declare_us = declared - band->declare_us;
@@ -1090,7 +1312,7 @@ widget_node_for_id(drawin_t *d, size_t *i, Clay_ElementId id, uint32_t want)
 
 	for (uint16_t k = 0; k < n->children; k++) {
 		const struct widget_node *c = widget_node_for_id(d, i,
-			widget_child_id(id, k), want);
+			widget_child_id(d, *i, id, k), want);
 
 		if (c && !hit)
 			hit = c;
@@ -1098,9 +1320,9 @@ widget_node_for_id(drawin_t *d, size_t *i, Clay_ElementId id, uint32_t want)
 	return hit;
 }
 
-/* What the node is. A leaf that carries no handle (a client's clip wrapper,
- * a drawin's shadow and border, the fullscreen backing, every SCISSOR
- * marker) stands for no object and says so. */
+/* What the node is. A leaf that carries no handle (a drawin's shadow and
+ * border, the fullscreen backing, every SCISSOR marker) stands for no object
+ * and says so. */
 static void
 dump_what(buffer_t *buf, uint32_t id, void *userdata)
 {
@@ -1170,9 +1392,11 @@ dump_node(void *user, const struct render_node_view *v)
 	dump_what(buf, v->id, v->user_data);
 	if (v->raster_bytes)
 		buffer_addf(buf, " raster=%zu", v->raster_bytes);
-	/* A SCISSOR marker realizes no node by design; anything else that did
-	 * not is a surface whose client died mid-frame. */
-	if (!v->has_node && v->type != CLAY_RENDER_COMMAND_TYPE_SCISSOR_START
+	/* A SCISSOR marker and a clip mark realize no node by design; anything
+	 * else that did not is a surface whose client died mid-frame. */
+	if (v->clip_mark)
+		buffer_adds(buf, " clip");
+	else if (!v->has_node && v->type != CLAY_RENDER_COMMAND_TYPE_SCISSOR_START
 			&& v->type != CLAY_RENDER_COMMAND_TYPE_SCISSOR_END)
 		buffer_adds(buf, " no-node");
 	if (v->rbox.width != v->box.width || v->rbox.height != v->box.height
@@ -1183,16 +1407,22 @@ dump_node(void *user, const struct render_node_view *v)
 	buffer_adds(buf, "\n");
 }
 
-/* One axis of a node's sizing, as the tree says it, not as it solved. */
+/* One axis of a node's sizing, as the tree declares it, not as it solved:
+ * a number is CLAY_SIZING_FIXED, fit and grow are Clay's other two types,
+ * with the floor and ceiling when the node set them. The root is fixed at the drawin's
+ * geometry by place_fixed whatever the node says. */
 static void
 dump_sizing(buffer_t *buf, const struct widget_node *n, int axis)
 {
-	if (n->fixed[axis])
+	if (n->sizing[axis] == WIDGET_SIZING_FIXED) {
 		buffer_addf(buf, "%g", n->size[axis]);
-	else if (n->max[axis] > 0)
-		buffer_addf(buf, "grow<=%g", n->max[axis]);
-	else
-		buffer_adds(buf, "grow");
+		return;
+	}
+	buffer_adds(buf, n->sizing[axis] == WIDGET_SIZING_GROW ? "grow" : "fit");
+	if (n->min[axis] > 0)
+		buffer_addf(buf, ">=%g", n->min[axis]);
+	if (n->max[axis] > 0)
+		buffer_addf(buf, "<=%g", n->max[axis]);
 }
 
 /* One line per node of a converted tree, in preorder, indented by depth:
@@ -1213,14 +1443,28 @@ dump_widget_node(buffer_t *buf, drawin_t *d, size_t i, Clay_ElementId id,
 
 	buffer_addf(buf, "    %08x %*s%s", id.id, depth * 2, "",
 		n->cls ? n->cls : "-");
-	if (n->raster)
+	if (n->image)
+		buffer_addf(buf, " image %dx%d", cairo_image_surface_get_width(
+			(cairo_surface_t *)n->image),
+			cairo_image_surface_get_height((cairo_surface_t *)n->image));
+	else if (n->raster)
 		buffer_adds(buf, " raster");
-	if (!n->widget)
+	if (!n->widget && !n->text && !n->image)
 		buffer_adds(buf, " spacer");
-	buffer_adds(buf, " w=");
-	dump_sizing(buf, n, 0);
-	buffer_adds(buf, " h=");
-	dump_sizing(buf, n, 1);
+	if (n->clip_opens)
+		buffer_adds(buf, " clip");
+	if (n->text) {
+		buffer_addf(buf, " \"%.*s\" font=%u", (int)n->text_len,
+			d->widget_text + n->text_off, n->font);
+	} else if (i == 0 && n->sizing[0] == WIDGET_SIZING_FIXED
+			&& n->sizing[1] == WIDGET_SIZING_FIXED) {
+		buffer_addf(buf, " w=%d h=%d", d->width, d->height);
+	} else {
+		buffer_adds(buf, " w=");
+		dump_sizing(buf, n, 0);
+		buffer_adds(buf, " h=");
+		dump_sizing(buf, n, 1);
+	}
 	if (data.found)
 		buffer_addf(buf, " box %d,%d %dx%d",
 			(int)data.boundingBox.x, (int)data.boundingBox.y,
@@ -1231,8 +1475,8 @@ dump_widget_node(buffer_t *buf, drawin_t *d, size_t i, Clay_ElementId id,
 	buffer_adds(buf, "\n");
 
 	for (uint16_t k = 0; k < n->children; k++)
-		next = dump_widget_node(buf, d, next, widget_child_id(id, k),
-			depth + 1);
+		next = dump_widget_node(buf, d, next,
+			widget_child_id(d, next, id, k), depth + 1);
 	return next;
 }
 
@@ -1288,8 +1532,11 @@ dump_drawin(buffer_t *buf, drawin_t *d)
 		dump_whole(buf, d);
 		return;
 	}
-	buffer_addf(buf, "converted: %zu nodes, %zu raster\n",
+	buffer_addf(buf, "converted: %zu nodes, %zu raster",
 		d->widget_nodes_len, d->widget_leaves_len);
+	if (d->shape_radius > 0)
+		buffer_addf(buf, ", radius %g", d->shape_radius);
+	buffer_adds(buf, "\n");
 	/* Clay's hashmap answers with the last box an id ever had, so a tree
 	 * the declare pass has not reached yet would read back the boxes of
 	 * the one it replaced (declare_widget_boxes says the same). */

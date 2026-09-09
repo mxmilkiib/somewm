@@ -123,6 +123,17 @@ static Clay_RenderCommandArray commands_of(Clay_RenderCommand *cmds, int32_t n) 
 		.capacity = n, .length = n, .internalArray = cmds };
 }
 
+/* The userData word (render.h): the declarer's owner bits, the clip scope a
+ * RECTANGLE opens, and the scope the command is clipped by. */
+static void *word(uint64_t owner, unsigned opens, unsigned clipped_by) {
+	return (void *)(uintptr_t)(owner
+		| (uint64_t)opens << RENDER_UD_OPENS_SHIFT
+		| (uint64_t)clipped_by << RENDER_UD_CLIP_SHIFT);
+}
+
+/* Frame bounds for the cases that name none. */
+static const Clay_BoundingBox no_bounds = { 0, 0, 4096, 4096 };
+
 /* --- scene inspection ---
  *
  * render_create puts its retained nodes in a tree of its own under the parent
@@ -286,10 +297,10 @@ static void test_identical_frame_reconciles_to_zero(void) {
 	};
 	Clay_RenderCommandArray arr = commands_of(cmds, 3);
 
-	CHECK(render_reconcile(f.rs, arr, &no_hooks) > 0);
+	CHECK(render_reconcile(f.rs, arr, &no_hooks, no_bounds) > 0);
 	CHECK_EQ(render_node_count(f.rs), 3);
-	CHECK_EQ(render_reconcile(f.rs, arr, &no_hooks), 0);
-	CHECK_EQ(render_reconcile(f.rs, arr, &no_hooks), 0);
+	CHECK_EQ(render_reconcile(f.rs, arr, &no_hooks, no_bounds), 0);
+	CHECK_EQ(render_reconcile(f.rs, arr, &no_hooks, no_bounds), 0);
 	/* Nothing re-rastered on the identical frames. */
 	CHECK_EQ(render_buffers_created(f.rs), 0);
 
@@ -306,23 +317,23 @@ static void test_add_remove_move(void) {
 	};
 	struct wlr_scene_tree *rt;
 
-	render_reconcile(f.rs, commands_of(cmds, 2), &no_hooks);
+	render_reconcile(f.rs, commands_of(cmds, 2), &no_hooks, no_bounds);
 	rt = render_tree(f.parent);
 	CHECK_EQ(child_count(rt), 2);
 	CHECK_EQ(render_node_count(f.rs), 2);
 
 	/* Add: the third command creates a node. */
-	render_reconcile(f.rs, commands_of(cmds, 3), &no_hooks);
+	render_reconcile(f.rs, commands_of(cmds, 3), &no_hooks, no_bounds);
 	CHECK_EQ(child_count(rt), 3);
 	CHECK_EQ(render_node_count(f.rs), 3);
 
 	/* Move: one position change, one mutation, no restack. */
 	cmds[1].boundingBox.y = 35;
-	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 3), &no_hooks), 1);
+	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 3), &no_hooks, no_bounds), 1);
 	CHECK_EQ(child_at(rt, 1)->y, 35);
 
 	/* Remove: the vanished id is swept. */
-	CHECK(render_reconcile(f.rs, commands_of(cmds, 2), &no_hooks) > 0);
+	CHECK(render_reconcile(f.rs, commands_of(cmds, 2), &no_hooks, no_bounds) > 0);
 	CHECK_EQ(child_count(rt), 2);
 	CHECK_EQ(render_node_count(f.rs), 2);
 
@@ -341,7 +352,7 @@ static void test_kind_swap_destroys_and_restacks(void) {
 	};
 	struct wlr_scene_tree *rt;
 
-	render_reconcile(f.rs, commands_of(cmds, 2), &no_hooks);
+	render_reconcile(f.rs, commands_of(cmds, 2), &no_hooks, no_bounds);
 	rt = render_tree(f.parent);
 	CHECK_EQ(child_at(rt, 0)->type, WLR_SCENE_NODE_RECT);
 	CHECK_EQ(child_at(rt, 0)->x, 0);
@@ -349,19 +360,19 @@ static void test_kind_swap_destroys_and_restacks(void) {
 	/* Square to rounded: a scene rect cannot draw an arc, so the node kind
 	 * changes and the old node is destroyed. */
 	cmds[0] = cmd_rect(1, 0, 0, 50, 50, 8);
-	CHECK(render_reconcile(f.rs, commands_of(cmds, 2), &no_hooks) > 0);
+	CHECK(render_reconcile(f.rs, commands_of(cmds, 2), &no_hooks, no_bounds) > 0);
 	CHECK_EQ(child_count(rt), 2);
 	CHECK_EQ(child_at(rt, 0)->type, WLR_SCENE_NODE_BUFFER);
 	CHECK_EQ(child_at(rt, 0)->x, 0);
 	CHECK_EQ(child_at(rt, 1)->x, 100);
 
 	/* And back, with the frame after each swap settling to zero. */
-	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 2), &no_hooks), 0);
+	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 2), &no_hooks, no_bounds), 0);
 	cmds[0] = cmd_rect(1, 0, 0, 50, 50, 0);
-	CHECK(render_reconcile(f.rs, commands_of(cmds, 2), &no_hooks) > 0);
+	CHECK(render_reconcile(f.rs, commands_of(cmds, 2), &no_hooks, no_bounds) > 0);
 	CHECK_EQ(child_at(rt, 0)->type, WLR_SCENE_NODE_RECT);
 	CHECK_EQ(child_at(rt, 0)->x, 0);
-	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 2), &no_hooks), 0);
+	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 2), &no_hooks, no_bounds), 0);
 
 	fixture_finish(&f, &no_hooks);
 }
@@ -376,22 +387,22 @@ static void test_restack_only_when_order_changed(void) {
 	};
 	struct wlr_scene_tree *rt;
 
-	render_reconcile(f.rs, commands_of(cmds, 3), &no_hooks);
+	render_reconcile(f.rs, commands_of(cmds, 3), &no_hooks, no_bounds);
 	rt = render_tree(f.parent);
 	CHECK_EQ(child_at(rt, 0)->x, 0);
 	CHECK_EQ(child_at(rt, 2)->x, 40);
-	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 3), &no_hooks), 0);
+	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 3), &no_hooks, no_bounds), 0);
 
 	/* Same commands, new draw order: the scene follows, and the restack is
 	 * the only mutation (one raise per node). */
 	Clay_RenderCommand swapped[] = { cmds[2], cmds[0], cmds[1] };
-	CHECK_EQ(render_reconcile(f.rs, commands_of(swapped, 3), &no_hooks), 3);
+	CHECK_EQ(render_reconcile(f.rs, commands_of(swapped, 3), &no_hooks, no_bounds), 3);
 	CHECK_EQ(child_at(rt, 0)->x, 40);
 	CHECK_EQ(child_at(rt, 1)->x, 0);
 	CHECK_EQ(child_at(rt, 2)->x, 20);
 
 	/* Settled again in the new order. */
-	CHECK_EQ(render_reconcile(f.rs, commands_of(swapped, 3), &no_hooks), 0);
+	CHECK_EQ(render_reconcile(f.rs, commands_of(swapped, 3), &no_hooks, no_bounds), 0);
 
 	fixture_finish(&f, &no_hooks);
 }
@@ -413,7 +424,7 @@ static void test_clip_stack(void) {
 	};
 	struct wlr_scene_tree *rt;
 
-	render_reconcile(f.rs, commands_of(cmds, 8), &no_hooks);
+	render_reconcile(f.rs, commands_of(cmds, 8), &no_hooks, no_bounds);
 	rt = render_tree(f.parent);
 	/* SCISSOR commands realize no node. */
 	CHECK_EQ(child_count(rt), 4);
@@ -435,7 +446,7 @@ static void test_clip_stack(void) {
 	CHECK_EQ(child_at(rt, 3)->x, 200);
 	CHECK_EQ(r->width, 10);
 
-	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 8), &no_hooks), 0);
+	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 8), &no_hooks, no_bounds), 0);
 
 	fixture_finish(&f, &no_hooks);
 }
@@ -463,13 +474,129 @@ static void test_clip_axes(void) {
 			cmd_rect(1, 25, 25, 50, 50, 0),
 			cmd_clip_end(10),
 		};
-		render_reconcile(f.rs, commands_of(cmds, 3), &no_hooks);
+		render_reconcile(f.rs, commands_of(cmds, 3), &no_hooks, no_bounds);
 		struct wlr_scene_rect *r =
 			wlr_scene_rect_from_node(child_at(render_tree(f.parent), 0));
 		CHECK_EQ(r->width, cases[i].want_w);
 		CHECK_EQ(r->height, cases[i].want_h);
 		fixture_finish(&f, &no_hooks);
 	}
+}
+
+static void test_scopes_from_the_word(void) {
+	struct fixture f;
+	fixture_init(&f);
+	/* Owner 7 opens scope 1 with its box; a leaf clipped by it straddles;
+	 * owner 8 names scope 1 and is not clipped, the number is 7's; a rounded
+	 * rectangle under 1 opens scope 2 and turns a square leaf at its corner
+	 * into a raster, and a leaf over the whole output into a raster cut to
+	 * scope 2's box; a leaf naming a scope nobody opened is unclipped. */
+	Clay_RenderCommand cmds[] = {
+		cmd_rect(10, 0, 0, 50, 50, 0),
+		cmd_rect(1, 25, 25, 50, 50, 0),
+		cmd_rect(2, 25, 25, 50, 50, 0),
+		cmd_rect(11, 10, 10, 30, 30, 8),
+		cmd_rect(3, 10, 10, 10, 10, 0),
+		cmd_rect(4, 0, 0, 100, 100, 0),
+		cmd_rect(5, 200, 0, 10, 10, 0),
+		cmd_custom(12, (uint64_t)(uintptr_t)RENDER_CLIP_MARK, 60, 60, 30, 30),
+		cmd_rect(6, 55, 55, 50, 50, 0),
+	};
+	cmds[0].userData = word(7, 1, 0);
+	cmds[1].userData = word(7, 0, 1);
+	cmds[2].userData = word(8, 0, 1);
+	cmds[3].userData = word(7, 2, 1);
+	cmds[4].userData = word(7, 0, 2);
+	cmds[5].userData = word(7, 0, 2);
+	cmds[6].userData = word(7, 0, 9);
+	/* A clip mark: a rounded scope with no fill, realized as a transparent
+	 * rect that takes input, cutting the leaf under it to its box and arc. */
+	cmds[7].userData = word(7, 3, 0);
+	cmds[7].renderData.custom.cornerRadius = (Clay_CornerRadius) { 6, 6, 6, 6 };
+	cmds[8].userData = word(7, 0, 3);
+	struct wlr_scene_tree *rt;
+
+	render_reconcile(f.rs, commands_of(cmds, 9), &no_hooks, no_bounds);
+	rt = render_tree(f.parent);
+	CHECK_EQ(child_count(rt), 9);
+
+	struct wlr_scene_rect *r = wlr_scene_rect_from_node(child_at(rt, 1));
+	CHECK_EQ(child_at(rt, 1)->x, 25);
+	CHECK_EQ(r->width, 25);
+	CHECK_EQ(r->height, 25);
+
+	r = wlr_scene_rect_from_node(child_at(rt, 2));
+	CHECK_EQ(r->width, 50);
+
+	CHECK_EQ(child_at(rt, 4)->type, WLR_SCENE_NODE_BUFFER);
+	CHECK_EQ(child_at(rt, 4)->x, 10);
+
+	CHECK_EQ(child_at(rt, 5)->type, WLR_SCENE_NODE_BUFFER);
+	struct wlr_scene_buffer *sb = wlr_scene_buffer_from_node(child_at(rt, 5));
+	CHECK_EQ(child_at(rt, 5)->x, 10);
+	CHECK_EQ(child_at(rt, 5)->y, 10);
+	CHECK_EQ(sb->dst_width, 30);
+	CHECK_EQ(sb->dst_height, 30);
+
+	r = wlr_scene_rect_from_node(child_at(rt, 6));
+	CHECK_EQ(child_at(rt, 6)->x, 200);
+	CHECK_EQ(r->width, 10);
+
+	CHECK_EQ(child_at(rt, 7)->type, WLR_SCENE_NODE_RECT);
+	r = wlr_scene_rect_from_node(child_at(rt, 7));
+	CHECK_EQ(child_at(rt, 7)->x, 60);
+	CHECK_EQ(r->width, 30);
+	CHECK(r->color[3] == 0.0f);
+
+	CHECK_EQ(child_at(rt, 8)->type, WLR_SCENE_NODE_BUFFER);
+	sb = wlr_scene_buffer_from_node(child_at(rt, 8));
+	CHECK_EQ(child_at(rt, 8)->x, 60);
+	CHECK_EQ(sb->dst_width, 30);
+
+	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 9), &no_hooks, no_bounds), 0);
+
+	/* Text clips to a scope too: the run is wider than scope 1, so it crops
+	 * and truncates there, and widening the scope re-rasters it. */
+	Clay_RenderCommand text[] = {
+		cmd_rect(10, 0, 0, 40, 16, 0),
+		cmd_text(1, 0, 0, 80, 16, "a long enough run", true),
+	};
+	text[0].userData = word(7, 1, 0);
+	text[1].userData = (void *)((uintptr_t)word(7, 0, 1) | RENDER_TEXT_ELLIPSIZE);
+	CHECK(render_reconcile(f.rs, commands_of(text, 2), &no_hooks, no_bounds) > 0);
+	sb = wlr_scene_buffer_from_node(child_at(rt, 1));
+	CHECK_EQ(sb->dst_width, 40);
+	text[0].boundingBox.width = 60;
+	CHECK(render_reconcile(f.rs, commands_of(text, 2), &no_hooks, no_bounds) > 0);
+	CHECK_EQ(sb->dst_width, 60);
+
+	fixture_finish(&f, &no_hooks);
+}
+
+static void test_border_clips_to_the_bounds(void) {
+	struct fixture f;
+	fixture_init(&f);
+	/* A border straddling the right edge of a 100x100 frame, clipped to it:
+	 * the top edge stops at the frame and the right edge is gone. Without
+	 * the word's flag the same border draws whole. */
+	Clay_BoundingBox bounds = { 0, 0, 100, 100 };
+	Clay_RenderCommand c = cmd_border(1, 90, 0, 40, 40, 2, 0);
+	c.userData = word(7, 0, RENDER_CLIP_BOUNDS);
+
+	render_reconcile(f.rs, commands_of(&c, 1), &no_hooks, bounds);
+	struct wlr_scene_tree *bt =
+		wlr_scene_tree_from_node(child_at(render_tree(f.parent), 0));
+	struct wlr_scene_rect *top = wlr_scene_rect_from_node(child_at(bt, 0));
+	struct wlr_scene_rect *right = wlr_scene_rect_from_node(child_at(bt, 1));
+	CHECK_EQ(top->width, 10);
+	CHECK_EQ(right->width, 0);
+
+	c.userData = word(7, 0, 0);
+	CHECK(render_reconcile(f.rs, commands_of(&c, 1), &no_hooks, bounds) > 0);
+	CHECK_EQ(top->width, 40);
+	CHECK_EQ(right->width, 2);
+
+	fixture_finish(&f, &no_hooks);
 }
 
 static void test_client_surface_hooks(void) {
@@ -483,7 +610,7 @@ static void test_client_surface_hooks(void) {
 		cmd_custom(2, 1, 400, 0, 400, 300),
 	};
 
-	render_reconcile(f.rs, commands_of(cmds, 2), &hooks);
+	render_reconcile(f.rs, commands_of(cmds, 2), &hooks, no_bounds);
 	struct wlr_scene_tree *rt = render_tree(f.parent);
 	/* Borrowed, not owned: the client's own tree is reparented in. */
 	CHECK_EQ(child_count(rt), 2);
@@ -498,24 +625,24 @@ static void test_client_surface_hooks(void) {
 	 * position existed. */
 	CHECK_EQ(fc.repositions, 2);
 
-	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 2), &hooks), 0);
+	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 2), &hooks, no_bounds), 0);
 	CHECK_EQ(fc.repositions, 2);
 
 	/* A move re-derives anything keyed to the tree's scene position. */
 	cmds[1].boundingBox.x = 500;
-	render_reconcile(f.rs, commands_of(cmds, 2), &hooks);
+	render_reconcile(f.rs, commands_of(cmds, 2), &hooks, no_bounds);
 	CHECK_EQ(fc.repositions, 3);
 	CHECK_EQ(fc.trees[1]->node.x, 500);
 
 	/* A resize configures, without a reposition. */
 	cmds[1].boundingBox.width = 300;
-	render_reconcile(f.rs, commands_of(cmds, 2), &hooks);
+	render_reconcile(f.rs, commands_of(cmds, 2), &hooks, no_bounds);
 	CHECK_EQ(fc.configures, 3);
 	CHECK_EQ(fc.configured_w, 300);
 	CHECK_EQ(fc.repositions, 3);
 
 	/* Undeclared: the sweep hands the tree back, disabled, at home. */
-	render_reconcile(f.rs, commands_of(cmds, 1), &hooks);
+	render_reconcile(f.rs, commands_of(cmds, 1), &hooks, no_bounds);
 	CHECK_EQ(fc.releases, 1);
 	CHECK_EQ(child_count(rt), 1);
 	CHECK(!fc.trees[1]->node.enabled);
@@ -523,7 +650,7 @@ static void test_client_surface_hooks(void) {
 
 	/* A client that died between declare and reconcile realizes no node. */
 	fc.gone[1] = true;
-	render_reconcile(f.rs, commands_of(cmds, 2), &hooks);
+	render_reconcile(f.rs, commands_of(cmds, 2), &hooks, no_bounds);
 	CHECK_EQ(child_count(rt), 1);
 
 	fixture_finish(&f, &hooks);
@@ -539,22 +666,22 @@ static void test_popup_owner_folds_to_top(void) {
 		cmd_custom(1, 0, 0, 0, 400, 300),
 		cmd_custom(2, 1, 400, 0, 400, 300),
 	};
-	render_reconcile(f.rs, commands_of(cmds, 2), &hooks);
+	render_reconcile(f.rs, commands_of(cmds, 2), &hooks, no_bounds);
 	struct wlr_scene_tree *rt = render_tree(f.parent);
 	CHECK_EQ(child_at(rt, 0), &fc.trees[0]->node);
 
 	/* The lower client opens a popup that may overhang its neighbor, so it is
 	 * folded to the top of the draw order. */
 	fc.popup[0] = true;
-	CHECK(render_reconcile(f.rs, commands_of(cmds, 2), &hooks) > 0);
+	CHECK(render_reconcile(f.rs, commands_of(cmds, 2), &hooks, no_bounds) > 0);
 	CHECK_EQ(child_at(rt, 0), &fc.trees[1]->node);
 	CHECK_EQ(child_at(rt, 1), &fc.trees[0]->node);
 
 	/* A steadily-open popup yields the identical order every frame. */
-	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 2), &hooks), 0);
+	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 2), &hooks, no_bounds), 0);
 
 	fc.popup[0] = false;
-	CHECK(render_reconcile(f.rs, commands_of(cmds, 2), &hooks) > 0);
+	CHECK(render_reconcile(f.rs, commands_of(cmds, 2), &hooks, no_bounds) > 0);
 	CHECK_EQ(child_at(rt, 0), &fc.trees[0]->node);
 
 	fixture_finish(&f, &hooks);
@@ -573,7 +700,7 @@ static void test_custom_is_never_clipped(void) {
 		cmd_custom(1, 0, 25, 25, 400, 300),
 		cmd_clip_end(10),
 	};
-	render_reconcile(f.rs, commands_of(cmds, 3), &hooks);
+	render_reconcile(f.rs, commands_of(cmds, 3), &hooks, no_bounds);
 	CHECK_EQ(fc.trees[0]->node.x, 25);
 	CHECK(fc.trees[0]->node.enabled);
 	CHECK_EQ(fc.configured_w, 400);
@@ -589,7 +716,7 @@ static void test_float_boxes_truncate(void) {
 	 * boundary. Anything that wants pixel parity with somewm's integer
 	 * geometry has to round before it declares, not after. */
 	Clay_RenderCommand cmds[] = { cmd_rect(1, 10.6f, 20.4f, 30.7f, 40.2f, 0) };
-	render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks);
+	render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks, no_bounds);
 	struct wlr_scene_tree *rt = render_tree(f.parent);
 	struct wlr_scene_rect *r = wlr_scene_rect_from_node(child_at(rt, 0));
 	CHECK_EQ(child_at(rt, 0)->x, 10);
@@ -599,7 +726,7 @@ static void test_float_boxes_truncate(void) {
 
 	/* A sub-pixel drift that truncates to the same integers is not a change. */
 	cmds[0].boundingBox.x = 10.9f;
-	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks), 0);
+	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks, no_bounds), 0);
 
 	fixture_finish(&f, &no_hooks);
 }
@@ -609,26 +736,26 @@ static void test_text_rasters_once_per_change(void) {
 	fixture_init(&f);
 	Clay_RenderCommand cmds[] = { cmd_text(1, 0, 0, 80, 16, "hello", false) };
 
-	CHECK(render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks) > 0);
+	CHECK(render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks, no_bounds) > 0);
 	struct wlr_scene_tree *rt = render_tree(f.parent);
 	CHECK_EQ(child_count(rt), 1);
 	CHECK_EQ(child_at(rt, 0)->type, WLR_SCENE_NODE_BUFFER);
-	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks), 0);
+	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks, no_bounds), 0);
 
 	/* New content re-rasters, and nothing else moves. */
 	cmds[0] = cmd_text(1, 0, 0, 80, 16, "goodbye", false);
-	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks), 1);
-	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks), 0);
+	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks, no_bounds), 1);
+	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks, no_bounds), 0);
 
 	/* A style change with the same string re-rasters too. */
 	cmds[0].renderData.text.textColor = (Clay_Color) { 0, 0, 0, 255 };
-	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks), 1);
+	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks, no_bounds), 1);
 
 	/* An empty run: a real case (a label with nothing in it), and the one that
 	 * puts NULL through the content compare, which UBSan rejects. */
 	cmds[0] = cmd_text(2, 0, 0, 80, 16, "", false);
-	render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks);
-	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks), 0);
+	render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks, no_bounds);
+	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks, no_bounds), 0);
 
 	fixture_finish(&f, &no_hooks);
 }
@@ -643,16 +770,16 @@ static void test_text_crops_to_its_clip(void) {
 		cmd_text(1, 0, 0, 80, 16, "a long enough run", true),
 		cmd_clip_end(10),
 	};
-	render_reconcile(f.rs, commands_of(cmds, 3), &no_hooks);
+	render_reconcile(f.rs, commands_of(cmds, 3), &no_hooks, no_bounds);
 	struct wlr_scene_tree *rt = render_tree(f.parent);
 	struct wlr_scene_buffer *sb = wlr_scene_buffer_from_node(child_at(rt, 0));
 	CHECK_EQ(child_at(rt, 0)->x, 0);
 	CHECK_EQ(sb->dst_width, 40);
-	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 3), &no_hooks), 0);
+	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 3), &no_hooks, no_bounds), 0);
 
 	/* Narrowing the clip re-rasters at the tighter bound. */
 	cmds[0].boundingBox.width = 20;
-	CHECK(render_reconcile(f.rs, commands_of(cmds, 3), &no_hooks) > 0);
+	CHECK(render_reconcile(f.rs, commands_of(cmds, 3), &no_hooks, no_bounds) > 0);
 	CHECK_EQ(sb->dst_width, 20);
 
 	fixture_finish(&f, &no_hooks);
@@ -677,16 +804,16 @@ static void test_image_rerasters_on_generation_bump(void) {
 	fake_image_entry(&entry, 4, 4);
 	Clay_RenderCommand cmds[] = { cmd_image(1, 0, 0, 32, 32, &entry) };
 
-	render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks);
+	render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks, no_bounds);
 	CHECK_EQ(render_buffers_created(f.rs), 1);
 	CHECK(render_raster_bytes(f.rs) > 0);
-	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks), 0);
+	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks, no_bounds), 0);
 	CHECK_EQ(render_buffers_created(f.rs), 0);
 
 	/* The entry pointer never changes across a reload, so gen is what tells the
 	 * renderer the pixels are new. */
 	entry.gen++;
-	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks), 1);
+	CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks, no_bounds), 1);
 	CHECK_EQ(render_buffers_created(f.rs), 1);
 
 	fixture_finish(&f, &no_hooks);
@@ -697,7 +824,7 @@ static void test_image_rerasters_on_generation_bump(void) {
 	Clay_RenderCommand miss[] = { cmd_image(2, 0, 0, 32, 32, &failed) };
 	struct fixture g;
 	fixture_init(&g);
-	render_reconcile(g.rs, commands_of(miss, 1), &no_hooks);
+	render_reconcile(g.rs, commands_of(miss, 1), &no_hooks, no_bounds);
 	CHECK_EQ(child_count(render_tree(g.parent)), 1);
 	CHECK_EQ(render_buffers_created(g.rs), 0);
 	CHECK_EQ(render_raster_bytes(g.rs), 0);
@@ -834,7 +961,7 @@ static void test_border_ring_has_no_gap_or_overlap(void) {
 		int bw = cases[i].width;
 		Clay_RenderCommand c = cmd_border(1, 0, 0, (float)size, (float)size,
 			bw, (float)cases[i].radius);
-		render_reconcile(f.rs, commands_of(&c, 1), &no_hooks);
+		render_reconcile(f.rs, commands_of(&c, 1), &no_hooks, no_bounds);
 		struct wlr_scene_tree *bt =
 			wlr_scene_tree_from_node(child_at(render_tree(f.parent), 0));
 
@@ -876,7 +1003,7 @@ static void test_clip_source_matches_the_buffer_grid(void) {
 		cmd_rect(1, 10.6f, 0, 40, 20, 4),
 		cmd_clip_end(10),
 	};
-	render_reconcile(f.rs, commands_of(cmds, 3), &no_hooks);
+	render_reconcile(f.rs, commands_of(cmds, 3), &no_hooks, no_bounds);
 	struct wlr_scene_node *node = child_at(render_tree(f.parent), 0);
 	struct wlr_scene_buffer *sb = wlr_scene_buffer_from_node(node);
 	CHECK_EQ(node->x, 15);
@@ -900,12 +1027,12 @@ static void test_verifier_catches_divergence(void) {
 		struct fixture f;
 		fixture_init(&f);
 		Clay_RenderCommand cmds[] = { cmd_rect(1, 0, 0, 10, 10, 0) };
-		render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks);
+		render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks, no_bounds);
 		/* Move the node behind the reconciler's back. The next pass sees an
 		 * unchanged command, so nothing repositions it and the scene no longer
 		 * agrees with the tree. */
 		wlr_scene_node_set_position(child_at(render_tree(f.parent), 0), 999, 999);
-		render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks);
+		render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks, no_bounds);
 		_exit(0);   /* reached only if the verifier let the divergence stand */
 	}
 	int status = 0;
@@ -926,6 +1053,8 @@ int main(void) {
 		{ "restack only when order changed", test_restack_only_when_order_changed },
 		{ "clip stack", test_clip_stack },
 		{ "clip axes", test_clip_axes },
+		{ "scopes from the word", test_scopes_from_the_word },
+		{ "border clips to the bounds", test_border_clips_to_the_bounds },
 		{ "client surface hooks", test_client_surface_hooks },
 		{ "popup owner folds to top", test_popup_owner_folds_to_top },
 		{ "custom is never clipped", test_custom_is_never_clipped },

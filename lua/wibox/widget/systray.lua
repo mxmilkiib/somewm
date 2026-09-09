@@ -245,6 +245,10 @@ local function new(revers)
 
     ret._private.icon_widgets = {}
 
+    -- The overrides below, said to the Clay compile step.
+    require("wibox.clay").describe_widget(ret, require("wibox.clay").systray,
+        "wibox.widget.systray")
+
     if revers then
         reverse = true
     end

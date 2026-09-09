@@ -73,6 +73,13 @@ typedef struct drawin_t {
 	cairo_surface_t *shape_clip;            /* Drawing clip region */
 	cairo_surface_t *shape_input;           /* Input hit-test region (click-through) */
 	cairo_surface_t *shape_border;          /* Pre-rendered anti-aliased border (ARGB32) */
+	/* What shape_bounding and shape_clip together say, when they say one
+	 * rounded rectangle (gears.shape.rounded_rect at this drawin's size,
+	 * both masks alike, no border): its corner radius in logical pixels,
+	 * 0 for a plain rectangle. -1 for masks that say anything else, which
+	 * keeps the drawable painting whole through them (widget.c). Set by
+	 * drawin_shape_update at every mask change. */
+	float shape_radius;
 
 	/* Renderer leaves (the Clay flip): stable image entries the declare
 	 * pass hands to the renderer as imageData. Each native surface is a
@@ -92,6 +99,8 @@ typedef struct drawin_t {
 	size_t widget_nodes_len;
 	struct image_entry *widget_leaves;
 	size_t widget_leaves_len;
+	char *widget_text;
+	size_t widget_text_len;
 	/* Whether widget_nodes_refused() named any reason, so a setter that
 	 * changes that can ask for the repaint that moves the drawable
 	 * across. */

@@ -977,6 +977,9 @@ function systray_icon.mt:__call(...)
     return new(...)
 end
 
+-- One image leaf, centered: the item's icon.
+require("wibox.clay").describe_class(systray_icon, require("wibox.clay").systray_icon)
+
 return setmetatable(systray_icon, systray_icon.mt)
 
 -- vim: filetype=lua:expandtab:shiftwidth=4:tabstop=8:softtabstop=4:textwidth=80

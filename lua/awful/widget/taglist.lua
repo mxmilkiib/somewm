@@ -770,6 +770,9 @@ end
 
 --@DOC_object_COMMON@
 
+-- A wrapper around base_layout: Clay solves the list as that layout.
+require("wibox.clay").passthrough(taglist, "base_layout")
+
 return setmetatable(taglist, taglist.mt)
 
 -- vim: filetype=lua:expandtab:shiftwidth=4:tabstop=8:softtabstop=4:textwidth=80

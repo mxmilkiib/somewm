@@ -24,6 +24,7 @@
 static struct {
 	const char *name;
 	PangoFontDescription *desc;
+	double px; /* the description's own absolute size, 0 for none */
 } render_fonts[RENDER_MAX_FONTS];
 static int render_fonts_len;
 
@@ -55,9 +56,13 @@ int32_t render_font_intern(const char *name) {
 	 * the cap is consulted, so a bad description names its real problem even
 	 * with the table full. */
 	PangoFontDescription *desc = pango_font_description_from_string(name);
+	double px = 0;
 	if (pango_font_description_get_set_fields(desc) & PANGO_FONT_MASK_SIZE) {
-		pango_font_description_free(desc);
-		return RENDER_FONT_ERR_SIZE;
+		if (!pango_font_description_get_size_is_absolute(desc)) {
+			pango_font_description_free(desc);
+			return RENDER_FONT_ERR_SIZE;
+		}
+		px = (double)pango_font_description_get_size(desc) / PANGO_SCALE;
 	}
 	if (render_fonts_len == RENDER_MAX_FONTS) {
 		pango_font_description_free(desc);
@@ -66,6 +71,7 @@ int32_t render_font_intern(const char *name) {
 
 	render_fonts[render_fonts_len].name = strdup(name);
 	render_fonts[render_fonts_len].desc = desc;
+	render_fonts[render_fonts_len].px = px;
 	return render_fonts_len++;
 }
 
@@ -75,10 +81,10 @@ void render_set_text(PangoLayout *layout, const char *text, int len,
 	/* An id past the table resolves to entry 0 rather than aborting: the id is
 	 * whatever a declaration put in the field, and Clay's debug view writes 0
 	 * into it without interning anything. */
-	PangoFontDescription *desc = font_id < render_fonts_len
-		? render_fonts[font_id].desc : render_fonts[0].desc;
-	pango_font_description_set_absolute_size(desc,
-		(double)font_size * scale * PANGO_SCALE);
+	int id = font_id < render_fonts_len ? font_id : 0;
+	PangoFontDescription *desc = render_fonts[id].desc;
+	double px = font_size > 0 ? (double)font_size : render_fonts[id].px;
+	pango_font_description_set_absolute_size(desc, px * scale * PANGO_SCALE);
 	pango_layout_set_font_description(layout, desc);
 
 	/* Both set unconditionally, because the measure layout is reused across

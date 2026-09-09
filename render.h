@@ -59,11 +59,12 @@ void render_destroy(struct render_state *rs,
 	const struct render_client_hooks *hooks);
 
 /* Reconcile a solved command array into the scene. Returns the number of
- * scene mutations performed (0 for an identical frame). Afterwards, in builds
- * compiled with SOMEWM_RENDER_VERIFY, the tree==scene verifier compares every
- * command box against the scene and aborts on divergence. */
+ * scene mutations performed (0 for an identical frame). bounds is the box a
+ * command clipped by RENDER_CLIP_BOUNDS is cut to (the output). Afterwards,
+ * in builds compiled with SOMEWM_RENDER_VERIFY, the tree==scene verifier
+ * compares every command box against the scene and aborts on divergence. */
 int render_reconcile(struct render_state *rs, Clay_RenderCommandArray commands,
-	const struct render_client_hooks *hooks);
+	const struct render_client_hooks *hooks, Clay_BoundingBox bounds);
 
 /* Move the per-output UI tree to the output's position in the layout. */
 void render_set_position(struct render_state *rs, int x, int y);
@@ -84,14 +85,52 @@ int render_device_len(int origin, int len, float scale);
 /* The userData channel: Clay carries each element's userData word into its
  * render commands untouched, and the renderer retains it per node. The word
  * is a packed integer, never a pointer, so a retained command can never
- * dangle into freed declarer state. The renderer itself reads only the
- * opacity byte (bits 40-47, IMAGE commands; 0 means unset, fully opaque,
- * else 1 + opacity * 254); everything else in the word is the declarer's to
- * encode and to get back from render_hit_userdata(). */
+ * dangle into freed declarer state. Bits 0-39 are the declarer's to encode
+ * and to get back from render_hit_userdata(); the renderer reads the three
+ * bytes above them:
+ *
+ * - bits 40-47, the opacity of an IMAGE command: 0 means unset, fully
+ *   opaque, else 1 + opacity * 254.
+ * - bits 48-55, the clip scope a RECTANGLE command opens, 0 for none. A
+ *   scope is the rectangle's realized box and corner radius, named by this
+ *   number under the word's bits 0-39, so two declarers never share one; it
+ *   lives for the frame. A TEXT command opens no scope and carries its text
+ *   flags here instead (render_text.h).
+ * - bits 56-63, the scope the command is clipped by: 0 for none, a number a
+ *   RECTANGLE earlier in the frame opened under the same bits 0-39, or
+ *   RENDER_CLIP_BOUNDS for the bounds render_reconcile() was handed. A
+ *   command is cut to the scope's box, rectangle and arc; a rectangle that
+ *   opens a scope of its own composes it with the one it is clipped by.
+ *
+ * Clipping is the renderer's, not Clay's: a Clay clip element is a scroll
+ * container, and a context holds ten (clay.h:2194). Clay's own SCISSOR
+ * commands still cut what they enclose, so a clip element it emits for
+ * itself (the debug inspector) is honored too. */
+#define RENDER_UD_OWNER_MASK 0xFFFFFFFFFFULL
+/* The customData of a CUSTOM command that names no client: the element opens
+ * the scope its word says and is realized as a fully transparent rect, which
+ * wlr_scene leaves out of the render list (scene_node_invisible, an alpha of
+ * 0) and still hit-tests (scene_node_at_iterator checks no alpha). That is
+ * how a container with no fill clips what it holds, and how a transparent
+ * drawin's root takes input over its whole box as a wibox does (Clay emits a
+ * RECTANGLE only for a fill, clay.h:2780, and a CUSTOM command regardless,
+ * clay.h:2875). All ones, a value no handle takes. */
+#define RENDER_CLIP_MARK ((void *)(uintptr_t)UINT64_MAX)
+#define RENDER_UD_OPACITY_SHIFT 40
+#define RENDER_UD_OPENS_SHIFT 48
+#define RENDER_UD_CLIP_SHIFT 56
+#define RENDER_CLIP_BOUNDS 0xffu
+
+static inline unsigned
+render_userdata_byte(void *ud, unsigned shift)
+{
+	return ((uintptr_t)ud >> shift) & 0xff;
+}
+
 static inline float
 render_userdata_opacity(void *ud)
 {
-	unsigned byte = ((uintptr_t)ud >> 40) & 0xff;
+	unsigned byte = render_userdata_byte(ud, RENDER_UD_OPACITY_SHIFT);
 	return byte ? (float)(byte - 1) / 254.0f : 1.0f;
 }
 
@@ -131,7 +170,9 @@ struct render_node_view {
 	Clay_BoundingBox box;   /* what Clay solved */
 	Clay_BoundingBox rbox;  /* what was realized, after the clip */
 	size_t raster_bytes;    /* nonzero for a node holding a cairo raster */
-	bool has_node;          /* false for a SCISSOR marker or a dead surface */
+	bool has_node;          /* false for a SCISSOR marker, a clip mark or a
+				 * dead surface */
+	bool clip_mark;         /* a CUSTOM command carrying RENDER_CLIP_MARK */
 	bool mismatch;          /* the scene disagrees with rbox */
 	void *user_data;
 };

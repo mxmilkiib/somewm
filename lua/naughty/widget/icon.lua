@@ -182,4 +182,34 @@ end
 
 --@DOC_object_COMMON@
 
+-- The icon as a Clay image element inside a box of the widget's `:fit`,
+-- placed as `icon:draw` places it: scaled down to fit (and up under the
+-- `scale` strategy), centered under `resize` and `center`, else at the top
+-- left. No image is an empty element.
+local clay = require("wibox.clay")
+
+clay.describe_class(icon, function(w, _, st)
+    local p = w._private
+    local image = p.image
+
+    if not image then
+        return {}
+    end
+
+    local fw, fh = w:fit(st.context, st.width, st.height)
+    local iw, ih = image:get_width(), image:get_height()
+    local strategy = p.resize_strategy or "resize"
+    local ratio = math.min(fw / iw, fh / ih)
+    local scale = (ratio < 1 or (strategy == "scale" and (iw < fw or ih < fh)))
+        and ratio or 1
+    local centered = strategy == "resize"
+        or (strategy == "center" and ratio ~= 1)
+
+    return { w = fw, h = fh,
+        align = centered and { x = "center", y = "center" } or nil,
+        specs = { { image = image._native, class = "image", aspect = iw / ih,
+            w = math.ceil(iw * scale), h = math.ceil(ih * scale),
+            refit = false } } }
+end)
+
 return setmetatable(icon, {__call = function(_, ...) return new(...) end})
