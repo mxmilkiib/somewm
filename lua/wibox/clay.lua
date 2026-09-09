@@ -30,24 +30,8 @@
 
 local base = require("wibox.widget.base")
 local beautiful = require("beautiful")
-local lgi = require("lgi")
-local lgi_core = require("lgi.core")
-local Pango = lgi.Pango
-local cairo = lgi.cairo
-local textbox_class = require("wibox.widget.textbox")
-local imagebox_class = require("wibox.widget.imagebox")
 local gcolor = require("gears.color")
-local gshape = require("gears.shape")
 local gsurface = require("gears.surface")
-local margin_class = require("wibox.container.margin")
-local background_class = require("wibox.container.background")
-local place_class = require("wibox.container.place")
-local constraint_class = require("wibox.container.constraint")
-local fixed_class = require("wibox.layout.fixed")
-local flex_class = require("wibox.layout.flex")
-local align_class = require("wibox.layout.align")
-local stack_class = require("wibox.layout.stack")
-local capi = { awesome = awesome }
 
 local clay = {}
 
@@ -87,87 +71,6 @@ local function common_convertible(w)
     local p = w._private
 
     return p.visible ~= false and (p.opacity == nil or p.opacity == 1)
-end
-
---- The corner radius a shape stands for, or nil for one Clay cannot name.
--- A shape is an arbitrary painter: the two gears shapes that are rectangles
--- are known by identity, and any other function by the path it draws;
--- `rounded_bar` and the rest keep drawing themselves.
-
--- A context for a shape function to draw its path on, for the path alone.
-local probe = cairo.Context(cairo.ImageSurface(cairo.Format.A8, 1, 1))
-
-local function shape_path(shape, w, h, r)
-    probe:new_path()
-    shape(probe, w, h, r)
-    return probe:copy_path()
-end
-
-local function same_path(a, b)
-    if a.num_data ~= b.num_data then
-        return false
-    end
-
-    local next_b = b:pairs()
-
-    for kind, points in a:pairs() do
-        local kind_b, points_b = next_b()
-
-        if kind ~= kind_b then
-            return false
-        end
-        for i, point in ipairs(points) do
-            if point.x ~= points_b[i].x or point.y ~= points_b[i].y then
-                return false
-            end
-        end
-    end
-    return true
-end
-
---- The radius a shape function draws when its path is
--- gears.shape.rounded_rect's, which is what a theme's `function(cr, w, h)
--- gears.shape.rounded_rect(cr, w, h, r) end` draws: the same path at two
--- sizes, with the radius read off the path's first point (0, r). Cached
--- per function; false for one that draws anything else.
-local shape_radii = setmetatable({}, { __mode = "k" })
-
-local function closure_radius(shape)
-    local r = shape_radii[shape]
-
-    if r == nil then
-        local w, h = 160, 96
-        local path = shape_path(shape, w, h)
-        local kind, points = path:pairs()()
-
-        r = false
-        if kind == "MOVE_TO" and points[1].x == 0 then
-            local radius = points[1].y
-
-            if same_path(path, shape_path(gshape.rounded_rect, w, h, radius))
-                    and same_path(shape_path(shape, 2 * w, 2 * h),
-                        shape_path(gshape.rounded_rect, 2 * w, 2 * h, radius)) then
-                r = radius
-            end
-        end
-        shape_radii[shape] = r
-    end
-    return r or nil
-end
-
-local function shape_radius(shape, args)
-    if shape == nil or shape == gshape.rectangle then
-        return 0
-    end
-    if shape == gshape.rounded_rect then
-        local r = args and args[1] or 10
-
-        return (type(r) == "number" and r >= 0) and r or nil
-    end
-    if type(shape) == "function" then
-        return closure_radius(shape)
-    end
-    return nil
 end
 
 --- The spec for a container's only child: the whole padded box, which is
@@ -235,522 +138,6 @@ function clay.size_leaf(node, widget, context, width, height)
     end
     return node.w ~= was.w or node.h ~= was.h
         or node.wmin ~= was.wmin or node.hmin ~= was.hmin
-end
-
---- wibox.container.margin -> Clay padding, and the margin color -> a Clay
--- border of the same widths, which covers exactly the ring `margin:draw`
--- fills with the even-odd rule.
-local function describe_margin(w)
-    local p = w._private
-
-    if w.layout ~= margin_class.layout or w.draw ~= margin_class.draw then
-        return nil
-    end
-    -- draw_empty=false makes an empty margin no size at all, where Clay's
-    -- fit wraps the padding.
-    if p.draw_empty == false then
-        return nil
-    end
-
-    local pad = { p.left or 0, p.right or 0, p.top or 0, p.bottom or 0 }
-
-    for _, v in ipairs(pad) do
-        if not whole(v) then
-            return nil
-        end
-    end
-
-    local node = { pad = pad, specs = whole_box(p.widget) }
-
-    if p.color then
-        local rgba = solid_rgba(p.color)
-
-        if not rgba then
-            return nil
-        end
-        node.border, node.bw = rgba, pad
-    end
-
-    return node
-end
-
---- wibox.container.background -> a rectangle color, a corner radius and a
--- border.
---
--- Clay draws a border inside the element box without moving its children,
--- which is what `border_strategy = "none"` does; "inner" adds the padding
--- that shrinks them.
-local function describe_background(w)
-    local p = w._private
-
-    if w.layout ~= background_class.layout
-            or w.before_draw_children ~= background_class.before_draw_children
-            or w.after_draw_children ~= background_class.after_draw_children then
-        return nil
-    end
-    -- A background image is a painter over the whole box, with no Clay
-    -- equivalent short of rastering it, which is what a leaf does.
-    if p.bgimage then
-        return nil
-    end
-
-    local bw = p.shape_border_width or 0
-
-    if not whole(bw) then
-        return nil
-    end
-
-    local radius = shape_radius(p.shape, p.shape_args)
-
-    if not radius then
-        return nil
-    end
-    -- A rounded shape and a border together do not draw the ring Clay draws:
-    -- the cairo path is inset by the border width, so the visible outer
-    -- corner is rounder than the shape names. Rather than approximate it,
-    -- the container keeps drawing itself.
-    if radius > 0 and bw > 0 then
-        return nil
-    end
-
-    local node = { radius = radius, specs = whole_box(p.widget) }
-
-    if p.background then
-        node.bg = solid_rgba(p.background)
-        if not node.bg then
-            return nil
-        end
-    end
-
-    if bw > 0 then
-        -- No color at all is black, which is what gears.color makes of nil.
-        node.border = solid_rgba(p.shape_border_color or p.foreground
-            or beautiful.fg_normal or "#000000")
-        if not node.border then
-            return nil
-        end
-        node.bw = { bw, bw, bw, bw }
-        if p.border_strategy == "inner" then
-            node.pad = { bw, bw, bw, bw }
-        end
-    end
-
-    -- A background's fg is the source its children draw with, so it rides
-    -- alongside the node rather than in it: a leaf takes the innermost one.
-    return node, p.foreground
-end
-
---- What wibox.layout.fixed and flex share: a layout direction and a child
--- gap, which Clay's childGap (clay.h:344) carries only when the spacing is
--- whole, not negative, and not a spacing widget, which is a widget placed
--- between the children rather than a gap.
--- Returns the node and the axis names along and across the direction, or
--- nil when the layout keeps drawing itself.
-local function describe_linear(w, class)
-    local p = w._private
-    local spacing = p.spacing or 0
-
-    if w.layout ~= class.layout or not whole(spacing)
-            or (spacing ~= 0 and p.spacing_widget) then
-        return nil
-    end
-    if p.dir == "y" then
-        return { dir = "y", gap = spacing, specs = {} }, "h", "w"
-    end
-    return { dir = "x", gap = spacing, specs = {} }, "w", "h"
-end
-
---- wibox.layout.fixed: every child at its content size along the direction,
--- which is the `:fit` the engine asked it for, and the whole size across.
--- The last child grows along too when `fill_space` is set.
---
--- Clay's childGap is added between every pair of children whatever their
--- size (clay.h:3080-3082), where the engine skipped the spacing of a child
--- whose `:fit` was zero.
-local function describe_fixed(w)
-    local node, along, across = describe_linear(w, fixed_class)
-
-    if not node then
-        return nil
-    end
-
-    local p = w._private
-
-    for i, child in ipairs(p.widgets) do
-        local spec = { widget = child, [across] = "grow" }
-
-        if i == #p.widgets and p.fill_space then
-            spec[along] = "grow"
-        end
-        node.specs[i] = spec
-    end
-    return node
-end
-
---- wibox.layout.flex: every child grows along the direction, with
--- `max_widget_size` as the ceiling, and across. Clay grows the smallest
--- children first until they are all equal and then all together
--- (clay.h:2357-2391), so children of one size share the space evenly; the
--- engine gives every child the same share whatever its content, so a child
--- whose converted content is wider than its share keeps that width here and
--- takes it from the others.
-local function describe_flex(w)
-    local node, along = describe_linear(w, flex_class)
-
-    if not node then
-        return nil
-    end
-
-    local p = w._private
-
-    for i, child in ipairs(p.widgets) do
-        node.specs[i] = { widget = child, w = "grow", h = "grow",
-            [along .. "max"] = p.max_widget_size }
-    end
-    return node
-end
-
---- wibox.layout.align -> three children along the direction, sized as the
--- `expand` mode says: fit for the slots the engine asked `:fit`, grow for
--- the ones it gave what was left. Empty elements stand in where the engine
--- leaves space: a grow spacer where a missing second widget would have
--- been, and in "none" mode a grow wrapper around each outer widget, aligned
--- to its edge, so the second centers in the whole width as the engine
--- centers it.
---
--- A slot that grows starts at the size of what it holds and is only ever
--- given more (clay.h:1815-1827 sums a child's content, 2357-2391 grows),
--- and the compress pass will not take it below that content
--- (clay.h:2334-2338). So a grown slot whose own subtree converted keeps a
--- content width larger than the share the engine would have given it, and
--- takes that width from the slots beside it.
-local function describe_align(w)
-    local p = w._private
-
-    if w.layout ~= align_class.layout then
-        return nil
-    end
-
-    local along, across = "w", "h"
-
-    if p.dir == "y" then
-        along, across = "h", "w"
-    end
-
-    local function slot(widget, sizing)
-        return { widget = widget, [along] = sizing, [across] = "grow" }
-    end
-
-    local specs = {}
-    local node = { dir = p.dir, specs = specs }
-
-    -- "outside" with no second widget gives both outer widgets the whole
-    -- length, one over the other, which two elements in a row cannot say.
-    if p.expand == "outside" and not p.second then
-        if p.first or p.third then
-            return nil
-        end
-        return node
-    end
-
-    if p.expand == "inside" or not p.second then
-        -- The outer widgets at their fit; the second grows between. With
-        -- no second widget the third still sits at the far edge.
-        if p.first then
-            specs[#specs + 1] = slot(p.first, "fit")
-        end
-        if p.second then
-            specs[#specs + 1] = slot(p.second, "grow")
-        elseif p.third then
-            specs[#specs + 1] = { [along] = "grow" }
-        end
-        if p.third then
-            specs[#specs + 1] = slot(p.third, "fit")
-        end
-        return node
-    end
-
-    if p.expand == "outside" then
-        -- The second at its fit; the outer widgets take what it leaves,
-        -- splitting it evenly unless one of them holds converted content
-        -- wider than its half. A missing one leaves its half empty.
-        specs[1] = p.first and slot(p.first, "grow") or { [along] = "grow" }
-        specs[2] = slot(p.second, "fit")
-        specs[3] = p.third and slot(p.third, "grow") or { [along] = "grow" }
-        return node
-    end
-
-    -- "none": the second at its fit, the outer widgets at theirs, each
-    -- pinned to its edge of a half that grows.
-    specs[1] = { [along] = "grow", [across] = "grow",
-        align = { x = "left", y = "top" },
-        children = { p.first and slot(p.first, "fit") } }
-    specs[2] = slot(p.second, "fit")
-    specs[3] = { [along] = "grow", [across] = "grow",
-        align = p.dir == "y" and { x = "left", y = "bottom" }
-            or { x = "right", y = "top" },
-        children = { p.third and slot(p.third, "fit") } }
-    return node
-end
-
---- wibox.layout.stack -> one floating element per child, attached to the
--- stack's top left and sized to it (clay.h:2230-2234 sizes a floating root
--- with grow sizing to its parent), each drawn over the one before (equal
--- zIndex, declaration order, clay.h:2603-2615). The stack's spacing and the
--- accumulated offsets are that element's padding around the child, which is
--- how the engine shrinks each child: by twice the spacing and by the offset
--- times the child count. A negative offset would need negative padding, so
--- it keeps the stack drawing itself.
-local function describe_stack(w)
-    local p = w._private
-    local spacing, ho, vo = p.spacing or 0, p.h_offset or 0, p.v_offset or 0
-
-    if w.layout ~= stack_class.layout
-            or not whole(spacing) or not whole(ho) or not whole(vo) then
-        return nil
-    end
-
-    local n = #p.widgets
-    local specs = {}
-
-    for i, child in ipairs(p.widgets) do
-        local k = i - 1
-
-        specs[i] = {
-            float = true, w = "grow", h = "grow",
-            pad = { spacing + k * ho, spacing + (n - k) * ho,
-                spacing + k * vo, spacing + (n - k) * vo },
-            children = whole_box(child),
-        }
-        if p.top_only then
-            break
-        end
-    end
-
-    return { specs = specs }
-end
-
---- wibox.container.constraint -> the child's whole box under a
--- Clay_SizingMinMax on each axis it limits: `max` caps the fit
--- (CLAY_SIZING_FIT(0, limit)), `min` floors it, and `exact` is
--- CLAY_SIZING_FIXED.
-local function describe_constraint(w)
-    local p = w._private
-    local strategy = p.strategy_name
-
-    if w.layout ~= constraint_class.layout then
-        return nil
-    end
-
-    local node = { specs = whole_box(p.widget) }
-
-    for axis, limit in pairs({ w = p.width, h = p.height }) do
-        if strategy == "exact" then
-            node[axis] = limit
-        elseif strategy == "min" then
-            node[axis .. "min"] = limit
-        elseif strategy == "max" then
-            node[axis .. "max"] = limit
-        else
-            return nil
-        end
-    end
-    return node
-end
-
---- wibox.container.place -> child alignment, with the child at its content
--- size on each axis unless `content_fill_*` makes it grow there. The place
--- itself fills the axes `fill_*` names, which is what its own `:fit`
--- answered.
-local function describe_place(w)
-    local p = w._private
-
-    if w.layout ~= place_class.layout then
-        return nil
-    end
-
-    local node = { specs = {},
-        align = { x = p.halign or "center", y = p.valign or "center" },
-        w = p.fill_horizontal and "grow" or nil,
-        h = p.fill_vertical and "grow" or nil }
-
-    if p.widget then
-        node.specs[1] = { widget = p.widget,
-            w = p.content_fill_horizontal and "grow" or "fit",
-            h = p.content_fill_vertical and "grow" or "fit" }
-    end
-    return node
-end
-
---- The color a Pango foreground attribute names, straight alpha 0-1.
-local function attr_rgba(attr)
-    local c = lgi_core.record.cast(attr, Pango.AttrColor).color
-
-    return { c.red / 65535, c.green / 65535, c.blue / 65535, 1 }
-end
-
-local function same_rgba(a, b)
-    if not a or not b then
-        return a == b
-    end
-    return a[1] == b[1] and a[2] == b[2] and a[3] == b[3] and a[4] == b[4]
-end
-
---- Pango attributes a Clay text element has no field for.
-local unsupported_attrs = {
-    "UNDERLINE", "STRIKETHROUGH", "RISE", "SHAPE", "SCALE", "LETTER_SPACING",
-    "BACKGROUND", "FOREGROUND_ALPHA", "BACKGROUND_ALPHA", "LINE_HEIGHT",
-}
-
---- The one run a textbox's layout amounts to: its text, the font in force
--- and the color its markup set, or nil when the markup says more than one
--- Clay text element can (two fonts, two colors, an underline). Pango's own
--- attribute iterator answers, so a `<span font_desc color>` around escaped
--- text, which is what the taglist and tasklist labels are, is one run.
-local function text_run(layout)
-    local text = layout.text or ""
-    local desc = layout:get_font_description()
-    local attrs = layout.attributes
-
-    desc = desc and desc:copy() or Pango.FontDescription.new()
-    if not attrs then
-        return text, desc, nil
-    end
-
-    local it = attrs:get_iterator()
-    local run_desc, run_color, first
-
-    first = true
-    repeat
-        local start = it:range()
-
-        if start < #text then
-            for _, name in ipairs(unsupported_attrs) do
-                if Pango.AttrType[name] and it:get(Pango.AttrType[name]) then
-                    return nil
-                end
-            end
-
-            local d = desc:copy()
-            local fg = it:get(Pango.AttrType.FOREGROUND)
-            local color = fg and attr_rgba(fg) or nil
-
-            it:get_font(d, nil, nil)
-            if first then
-                run_desc, run_color, first = d, color, false
-            elseif d:to_string() ~= run_desc:to_string()
-                    or not same_rgba(color, run_color) then
-                return nil
-            end
-        end
-    until not it:next()
-    return text, run_desc or desc, run_color
-end
-
---- wibox.widget.textbox -> an element aligning one CLAY_TEXT child, which
--- is what Clay's own examples make of a label: `CLAY({ .layout = {
--- .childAlignment } }) { CLAY_TEXT(text, CLAY_TEXT_CONFIG({ .fontId,
--- .textColor, .wrapMode, .textAlignment })) }`. The face is interned with
--- an absolute size at the context's dpi (render_text.h), since Clay's
--- fontSize is a whole number. Clay wraps by words and never by character,
--- and the renderer ellipsizes a line at its clip. What a text config has no
--- field for (justify, indent, line spacing, a start or middle ellipsis, a
--- draw override) keeps the textbox drawing itself.
-local function describe_textbox(w, fg, st)
-    local p = w._private
-    local layout = p.layout
-
-    if w.draw ~= textbox_class.draw then
-        return nil
-    end
-    -- Empty text draws nothing whatever the layout says (a prompt's textbox
-    -- ellipsizes at the start), and keeps its line's height, as
-    -- `textbox:fit` answers it.
-    if (layout.text or "") == "" then
-        local _, h = w:fit(st.context, st.width, st.height)
-
-        return { hmin = math.ceil(h) }
-    end
-    if layout:get_justify() or layout:get_indent() ~= 0
-            or layout:get_line_spacing() ~= 0 then
-        return nil
-    end
-
-    local ellipsize = layout:get_ellipsize()
-
-    if ellipsize ~= "NONE" and ellipsize ~= "END" then
-        return nil
-    end
-
-    local text, desc, color = text_run(layout)
-
-    if not text then
-        return nil
-    end
-    color = color or solid_rgba(fg)
-    if not color then
-        return nil
-    end
-
-    local size = desc:get_size() / Pango.SCALE
-
-    if size <= 0 then
-        return nil
-    end
-    if not desc:get_size_is_absolute() then
-        size = size * st.context.dpi / 72
-    end
-    desc:set_absolute_size(size * Pango.SCALE)
-
-    local font = capi.awesome._clay_font(desc:to_string())
-
-    if not font then
-        return nil
-    end
-
-    local halign = ({ LEFT = "left", CENTER = "center", RIGHT = "right" })
-        [layout:get_alignment()] or "left"
-
-    return { align = { x = halign, y = p.valign or "center" },
-        specs = { { text = text, font = font, color = color, wrap = "words",
-            halign = halign, ellipsize = ellipsize == "END", class = "text" } } }
-end
-
---- wibox.widget.imagebox -> an element aligning one image leaf, declared as
--- Clay's own examples declare an image: `.image = { .imageData }` with an
--- `.aspectRatio`, its height growing into the slot and its width following
--- (clay.h recomputes an aspect element's width from its final height). The
--- leaf's pixels are the widget's own surface, which the renderer references
--- and scales into the box. What the renderer does not draw (an SVG handle
--- rendered at the dpi, a `clip_shape`, a fit policy other than the aspect
--- fit, `upscale` or `downscale` off, a scaling cap, a draw override) keeps
--- the imagebox drawing itself.
-local function describe_imagebox(w, _, st)
-    local p = w._private
-
-    if w.draw ~= imagebox_class.draw then
-        return nil
-    end
-    -- No image: nothing to draw, and no size, as `imagebox:fit` answers.
-    if not p.image and not p.handle then
-        return {}
-    end
-    if not p.default or not p.image
-            or p.handle or p.clip_shape or p.max_scaling_factor
-            or (p.horizontal_fit_policy or "auto") ~= "auto"
-            or (p.vertical_fit_policy or "auto") ~= "auto"
-            or p.upscale == false or p.downscale == false then
-        return nil
-    end
-
-    -- The image's size within the drawin, as the engine asked it; an axis
-    -- it takes whole grows, and the aspect ratio keeps the other with it.
-    local image = { image = p.image._native, class = "image",
-        aspect = p.default.width / p.default.height }
-
-    clay.size_leaf(image, w, st.context, st.width, st.height)
-    return { specs = { image },
-        align = { x = p.halign or "left", y = p.valign or "top" } }
 end
 
 --- awful.widget.systray_icon -> an element centering one image leaf: the
@@ -842,12 +229,6 @@ function clay.systray(w)
     return node
 end
 
---- Per-widget describers, for a widget built with overrides of its own
--- rather than as a class (wibox.widget.systray): the widget's module says
--- what its overrides mean. Weak, so a widget goes with its describer.
-local instance_describers = setmetatable({}, { __mode = "k" })
-local instance_names = setmetatable({}, { __mode = "k" })
-
 --- Register the describer for one widget.
 -- @tparam wibox.widget w The widget.
 -- @tparam function describer The describer, as the class table's entries.
@@ -855,39 +236,23 @@ local instance_names = setmetatable({}, { __mode = "k" })
 --  tree` dump, where `widget_name` names the class it was built from.
 -- @staticfct wibox.clay.describe_widget
 function clay.describe_widget(w, describer, name)
-    instance_describers[w] = describer
-    instance_names[w] = name
+    w._clay = { describe = describer, fit = w.fit, name = name }
 end
 
---- The classes the tree knows, by the `:fit` they share with every instance.
--- A subclass that overrides `:fit` is not in here, and one that overrides
--- `:layout` or a draw callback fails its class's own identity check, which
--- is why no describer checks `:fit` itself.
-local classes = {
-    [margin_class.fit] = describe_margin,
-    [background_class.fit] = describe_background,
-    [fixed_class.fit] = describe_fixed,
-    [flex_class.fit] = describe_flex,
-    [align_class.fit] = describe_align,
-    [stack_class.fit] = describe_stack,
-    [place_class.fit] = describe_place,
-    [constraint_class.fit] = describe_constraint,
-    [textbox_class.fit] = describe_textbox,
-    [imagebox_class.fit] = describe_imagebox,
-}
 
 --- The node a widget compiles to, plus any foreground it puts in force, or
 -- nil for a widget that keeps drawing itself. `node.specs` is how the widget
 -- sizes its children. A forced size is the widget's own `:fit` answer,
 -- whatever its class would have said.
 local function describe(w, fg, st)
-    local describe_class = instance_describers[w] or classes[w.fit]
+    local record = w._clay
 
-    if not describe_class or not common_convertible(w) then
+    -- A subclass overriding fit rasters, so no describer checks fit itself.
+    if not record or w.fit ~= record.fit or not common_convertible(w) then
         return nil
     end
 
-    local node, node_fg = describe_class(w, fg, st)
+    local node, node_fg = record.describe(w, fg, st)
 
     if node then
         node.w = w._private.forced_width or node.w
@@ -896,25 +261,13 @@ local function describe(w, fg, st)
     return node, node_fg
 end
 
---- Classes whose instances do not carry their own name.
---
--- `wibox.layout.stack` and `wibox.layout.flex` are both built by calling
--- `wibox.layout.fixed.horizontal`, so `widget_name` is set from fixed's
--- source path and all three report the same name. Each defines its own
--- `:fit`, which is what tells them apart here and in the `classes` table
--- below.
-local named_classes = {
-    [stack_class.fit] = "wibox.layout.stack",
-    [flex_class.fit] = "wibox.layout.flex",
-}
-
 --- The widget's class, for the `somewm-client clay tree` dump.
 --
 -- `gears.object.modulename` derives `widget_name` from the source path and
 -- only trims it at a `lib/` directory; somewm installs its library under
 -- `lua/`, so the name arrives with the path still in front of it.
 local function class_name(w)
-    local name = instance_names[w] or named_classes[w.fit] or w.widget_name
+    local name = w._clay and w._clay.name or w.widget_name
 
     if not name then
         return nil
@@ -992,12 +345,12 @@ end
 -- @tparam string field The `_private` field holding the child.
 -- @staticfct wibox.clay.passthrough
 function clay.passthrough(class, field)
-    classes[class.fit] = function(w)
+    class._clay = { fit = class.fit, describe = function(w)
         if w.layout ~= class.layout then
             return nil
         end
         return { specs = whole_box(w._private[field]) }
-    end
+    end }
 end
 
 --- Add a widget class with its describer, for a class defined outside
@@ -1008,12 +361,12 @@ end
 -- @tparam function describer The describer, as the class table's entries.
 -- @staticfct wibox.clay.describe_class
 function clay.describe_class(class, describer)
-    classes[class.fit] = function(w, fg, st)
+    class._clay = { fit = class.fit, describe = function(w, fg, st)
         if w.draw ~= class.draw then
             return nil
         end
         return describer(w, fg, st)
-    end
+    end }
 end
 
 --- Compile a drawable's widget tree.
@@ -1051,7 +404,7 @@ function clay.compile(self, root, context, width, height)
     -- A background image is a painter over the whole drawable, with no Clay
     -- equivalent short of rastering it, which is what painting whole does.
     if not root or self.background_image
-            or not (instance_describers[root] or classes[root.fit]) then
+            or not root._clay or root.fit ~= root._clay.fit then
         return nil
     end
 
@@ -1106,6 +459,10 @@ function clay.compile(self, root, context, width, height)
     end
     return tree, st.leaves
 end
+
+clay.solid_rgba = solid_rgba
+clay.whole = whole
+clay.whole_box = whole_box
 
 return clay
 

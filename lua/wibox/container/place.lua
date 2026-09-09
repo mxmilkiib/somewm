@@ -217,6 +217,32 @@ function place.mt:__call(...)
     return new(...)
 end
 
+--- wibox.container.place -> child alignment, with the child at its content
+-- size on each axis unless `content_fill_*` makes it grow there. The place
+-- itself fills the axes `fill_*` names, which is what its own `:fit`
+-- answered.
+local function describe_place(w)
+    local p = w._private
+
+    if w.layout ~= place.layout then
+        return nil
+    end
+
+    local node = { specs = {},
+        align = { x = p.halign or "center", y = p.valign or "center" },
+        w = p.fill_horizontal and "grow" or nil,
+        h = p.fill_vertical and "grow" or nil }
+
+    if p.widget then
+        node.specs[1] = { widget = p.widget,
+            w = p.content_fill_horizontal and "grow" or "fit",
+            h = p.content_fill_vertical and "grow" or "fit" }
+    end
+    return node
+end
+
+place._clay = { describe = describe_place, fit = place.fit }
+
 return setmetatable(place, place.mt)
 
 -- vim: filetype=lua:expandtab:shiftwidth=4:tabstop=8:softtabstop=4:textwidth=80

@@ -15,6 +15,7 @@
 -- @supermodule wibox.layout.fixed
 ---------------------------------------------------------------------------
 
+local clay = require("wibox.clay")
 local base  = require("wibox.widget.base" )
 local fixed = require("wibox.layout.fixed")
 local table = table
@@ -219,6 +220,46 @@ function stack.mt:__call(...)
 end
 
 --@DOC_fixed_COMMON@
+
+--- wibox.layout.stack -> one floating element per child, attached to the
+-- stack's top left and sized to it (clay.h:2230-2234 sizes a floating root
+-- with grow sizing to its parent), each drawn over the one before (equal
+-- zIndex, declaration order, clay.h:2603-2615). The stack's spacing and the
+-- accumulated offsets are that element's padding around the child, which is
+-- how the engine shrinks each child: by twice the spacing and by the offset
+-- times the child count. A negative offset would need negative padding, so
+-- it keeps the stack drawing itself.
+local function describe_stack(w)
+    local p = w._private
+    local spacing, ho, vo = p.spacing or 0, p.h_offset or 0, p.v_offset or 0
+
+    if w.layout ~= stack.layout
+            or not clay.whole(spacing) or not clay.whole(ho) or not clay.whole(vo) then
+        return nil
+    end
+
+    local n = #p.widgets
+    local specs = {}
+
+    for i, child in ipairs(p.widgets) do
+        local k = i - 1
+
+        specs[i] = {
+            float = true, w = "grow", h = "grow",
+            pad = { spacing + k * ho, spacing + (n - k) * ho,
+                spacing + k * vo, spacing + (n - k) * vo },
+            children = clay.whole_box(child),
+        }
+        if p.top_only then
+            break
+        end
+    end
+
+    return { specs = specs }
+end
+
+-- Fixed's constructor builds stack, so widget_name names fixed.
+stack._clay = { describe = describe_stack, fit = stack.fit, name = "wibox.layout.stack" }
 
 return setmetatable(stack, stack.mt)
 -- vim: filetype=lua:expandtab:shiftwidth=4:tabstop=8:softtabstop=4:textwidth=80

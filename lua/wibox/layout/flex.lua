@@ -243,6 +243,32 @@ end
 
 --@DOC_fixed_COMMON@
 
+--- wibox.layout.flex: every child grows along the direction, with
+-- `max_widget_size` as the ceiling, and across. Clay grows the smallest
+-- children first until they are all equal and then all together
+-- (clay.h:2357-2391), so children of one size share the space evenly; the
+-- engine gives every child the same share whatever its content, so a child
+-- whose converted content is wider than its share keeps that width here and
+-- takes it from the others.
+local function describe_flex(w)
+    local node, along = fixed.describe_linear(w, flex)
+
+    if not node then
+        return nil
+    end
+
+    local p = w._private
+
+    for i, child in ipairs(p.widgets) do
+        node.specs[i] = { widget = child, w = "grow", h = "grow",
+            [along .. "max"] = p.max_widget_size }
+    end
+    return node
+end
+
+-- Fixed's constructor builds flex, so widget_name names fixed.
+flex._clay = { describe = describe_flex, fit = flex.fit, name = "wibox.layout.flex" }
+
 return flex
 
 -- vim: filetype=lua:expandtab:shiftwidth=4:tabstop=8:softtabstop=4:textwidth=80

@@ -8,6 +8,7 @@
 -- @supermodule wibox.widget.base
 ---------------------------------------------------------------------------
 
+local clay = require("wibox.clay")
 local setmetatable = setmetatable
 local base = require("wibox.widget.base")
 local gtable = require("gears.table")
@@ -184,6 +185,36 @@ end
 function constraint.mt:__call(...)
     return new(...)
 end
+
+--- wibox.container.constraint -> the child's whole box under a
+-- Clay_SizingMinMax on each axis it limits: `max` caps the fit
+-- (CLAY_SIZING_FIT(0, limit)), `min` floors it, and `exact` is
+-- CLAY_SIZING_FIXED.
+local function describe_constraint(w)
+    local p = w._private
+    local strategy = p.strategy_name
+
+    if w.layout ~= constraint.layout then
+        return nil
+    end
+
+    local node = { specs = clay.whole_box(p.widget) }
+
+    for axis, limit in pairs({ w = p.width, h = p.height }) do
+        if strategy == "exact" then
+            node[axis] = limit
+        elseif strategy == "min" then
+            node[axis .. "min"] = limit
+        elseif strategy == "max" then
+            node[axis .. "max"] = limit
+        else
+            return nil
+        end
+    end
+    return node
+end
+
+constraint._clay = { describe = describe_constraint, fit = constraint.fit }
 
 return setmetatable(constraint, constraint.mt)
 

@@ -28,7 +28,6 @@
 
 local table = table
 local pairs = pairs
-local type = type
 local floor = math.floor
 local gtable = require("gears.table")
 local base = require("wibox.widget.base")
@@ -301,11 +300,7 @@ local function get_layout(dir, first, second, third)
     local ret = base.make_widget(nil, nil, {enable_properties = true})
     ret._private.dir = dir
 
-    for k, v in pairs(align) do
-        if type(v) == "function" then
-            rawset(ret, k, v)
-        end
-    end
+    gtable.crush(ret, align, true)
 
     ret:set_expand("inside")
     ret:set_first(first)
@@ -359,6 +354,91 @@ function align.vertical(top, middle, bottom)
 end
 
 --@DOC_fixed_COMMON@
+
+--- wibox.layout.align -> three children along the direction, sized as the
+-- `expand` mode says: fit for the slots the engine asked `:fit`, grow for
+-- the ones it gave what was left. Empty elements stand in where the engine
+-- leaves space: a grow spacer where a missing second widget would have
+-- been, and in "none" mode a grow wrapper around each outer widget, aligned
+-- to its edge, so the second centers in the whole width as the engine
+-- centers it.
+--
+-- A slot that grows starts at the size of what it holds and is only ever
+-- given more (clay.h:1815-1827 sums a child's content, 2357-2391 grows),
+-- and the compress pass will not take it below that content
+-- (clay.h:2334-2338). So a grown slot whose own subtree converted keeps a
+-- content width larger than the share the engine would have given it, and
+-- takes that width from the slots beside it.
+local function describe_align(w)
+    local p = w._private
+
+    if w.layout ~= align.layout then
+        return nil
+    end
+
+    local along, across = "w", "h"
+
+    if p.dir == "y" then
+        along, across = "h", "w"
+    end
+
+    local function slot(widget, sizing)
+        return { widget = widget, [along] = sizing, [across] = "grow" }
+    end
+
+    local specs = {}
+    local node = { dir = p.dir, specs = specs }
+
+    -- "outside" with no second widget gives both outer widgets the whole
+    -- length, one over the other, which two elements in a row cannot say.
+    if p.expand == "outside" and not p.second then
+        if p.first or p.third then
+            return nil
+        end
+        return node
+    end
+
+    if p.expand == "inside" or not p.second then
+        -- The outer widgets at their fit; the second grows between. With
+        -- no second widget the third still sits at the far edge.
+        if p.first then
+            specs[#specs + 1] = slot(p.first, "fit")
+        end
+        if p.second then
+            specs[#specs + 1] = slot(p.second, "grow")
+        elseif p.third then
+            specs[#specs + 1] = { [along] = "grow" }
+        end
+        if p.third then
+            specs[#specs + 1] = slot(p.third, "fit")
+        end
+        return node
+    end
+
+    if p.expand == "outside" then
+        -- The second at its fit; the outer widgets take what it leaves,
+        -- splitting it evenly unless one of them holds converted content
+        -- wider than its half. A missing one leaves its half empty.
+        specs[1] = p.first and slot(p.first, "grow") or { [along] = "grow" }
+        specs[2] = slot(p.second, "fit")
+        specs[3] = p.third and slot(p.third, "grow") or { [along] = "grow" }
+        return node
+    end
+
+    -- "none": the second at its fit, the outer widgets at theirs, each
+    -- pinned to its edge of a half that grows.
+    specs[1] = { [along] = "grow", [across] = "grow",
+        align = { x = "left", y = "top" },
+        children = { p.first and slot(p.first, "fit") } }
+    specs[2] = slot(p.second, "fit")
+    specs[3] = { [along] = "grow", [across] = "grow",
+        align = p.dir == "y" and { x = "left", y = "bottom" }
+            or { x = "right", y = "top" },
+        children = { p.third and slot(p.third, "fit") } }
+    return node
+end
+
+align._clay = { describe = describe_align, fit = align.fit }
 
 return align
 

@@ -8,6 +8,7 @@
 -- @supermodule wibox.widget.base
 ---------------------------------------------------------------------------
 
+local clay = require("wibox.clay")
 local pairs = pairs
 local setmetatable = setmetatable
 local base = require("wibox.widget.base")
@@ -256,6 +257,45 @@ end
 function margin.mt:__call(...)
     return new(...)
 end
+
+--- wibox.container.margin -> Clay padding, and the margin color -> a Clay
+-- border of the same widths, which covers exactly the ring `margin:draw`
+-- fills with the even-odd rule.
+local function describe_margin(w)
+    local p = w._private
+
+    if w.layout ~= margin.layout or w.draw ~= margin.draw then
+        return nil
+    end
+    -- draw_empty=false makes an empty margin no size at all, where Clay's
+    -- fit wraps the padding.
+    if p.draw_empty == false then
+        return nil
+    end
+
+    local pad = { p.left or 0, p.right or 0, p.top or 0, p.bottom or 0 }
+
+    for _, v in ipairs(pad) do
+        if not clay.whole(v) then
+            return nil
+        end
+    end
+
+    local node = { pad = pad, specs = clay.whole_box(p.widget) }
+
+    if p.color then
+        local rgba = clay.solid_rgba(p.color)
+
+        if not rgba then
+            return nil
+        end
+        node.border, node.bw = rgba, pad
+    end
+
+    return node
+end
+
+margin._clay = { describe = describe_margin, fit = margin.fit }
 
 return setmetatable(margin, margin.mt)
 

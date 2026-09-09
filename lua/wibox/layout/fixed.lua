@@ -25,6 +25,7 @@
 -- @supermodule wibox.widget.base
 ---------------------------------------------------------------------------
 
+local clay = require("wibox.clay")
 local unpack = unpack or table.unpack -- luacheck: globals unpack (compatibility with Lua 5.1)
 local base  = require("wibox.widget.base")
 local table = table
@@ -473,6 +474,57 @@ function fixed:get_spacing()
 end
 
 --@DOC_fixed_COMMON@
+
+--- What wibox.layout.fixed and flex share: a layout direction and a child
+-- gap, which Clay's childGap (clay.h:344) carries only when the spacing is
+-- whole, not negative, and not a spacing widget, which is a widget placed
+-- between the children rather than a gap.
+-- Returns the node and the axis names along and across the direction, or
+-- nil when the layout keeps drawing itself.
+local function describe_linear(w, class)
+    local p = w._private
+    local spacing = p.spacing or 0
+
+    if w.layout ~= class.layout or not clay.whole(spacing)
+            or (spacing ~= 0 and p.spacing_widget) then
+        return nil
+    end
+    if p.dir == "y" then
+        return { dir = "y", gap = spacing, specs = {} }, "h", "w"
+    end
+    return { dir = "x", gap = spacing, specs = {} }, "w", "h"
+end
+
+--- wibox.layout.fixed: every child at its content size along the direction,
+-- which is the `:fit` the engine asked it for, and the whole size across.
+-- The last child grows along too when `fill_space` is set.
+--
+-- Clay's childGap is added between every pair of children whatever their
+-- size (clay.h:3080-3082), where the engine skipped the spacing of a child
+-- whose `:fit` was zero.
+local function describe_fixed(w)
+    local node, along, across = describe_linear(w, fixed)
+
+    if not node then
+        return nil
+    end
+
+    local p = w._private
+
+    for i, child in ipairs(p.widgets) do
+        local spec = { widget = child, [across] = "grow" }
+
+        if i == #p.widgets and p.fill_space then
+            spec[along] = "grow"
+        end
+        node.specs[i] = spec
+    end
+    return node
+end
+
+fixed.describe_linear = describe_linear
+
+fixed._clay = { describe = describe_fixed, fit = fixed.fit }
 
 return fixed
 
