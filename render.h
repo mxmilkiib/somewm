@@ -76,6 +76,11 @@ void render_set_position(struct render_state *rs, int x, int y);
  * this output's nodes (scale joins the raster cache key). */
 void render_set_scale(struct render_state *rs, float scale);
 
+/* The device length of a logical span, rounded at both edges: what every
+ * raster buffer is sized by, so a surface sized with it lands in its box
+ * without resampling. */
+int render_device_len(int origin, int len, float scale);
+
 /* The userData channel: Clay carries each element's userData word into its
  * render commands untouched, and the renderer retains it per node. The word
  * is a packed integer, never a pointer, so a retained command can never
@@ -114,6 +119,28 @@ void *render_hit_userdata(struct render_state *rs, struct wlr_scene_node *node);
  * must treat an id that resolves to nothing as no match rather than as an
  * unknown widget. */
 uint32_t render_hit_id(struct render_state *rs, struct wlr_scene_node *node);
+
+/* One retained node, as the tree dump reads it back (declare.c formats the
+ * line). The renderer names no object: user_data is the declarer's word and
+ * id its Clay element id, both handed back untouched. */
+struct render_node_view {
+	uint32_t type;   /* Clay_RenderCommandType */
+	uint32_t id;     /* the Clay element id; TEXT and BORDER carry a
+			  * Clay-derived per-line / per-side hash instead */
+	int16_t z;
+	Clay_BoundingBox box;   /* what Clay solved */
+	Clay_BoundingBox rbox;  /* what was realized, after the clip */
+	size_t raster_bytes;    /* nonzero for a node holding a cairo raster */
+	bool has_node;          /* false for a SCISSOR marker or a dead surface */
+	bool mismatch;          /* the scene disagrees with rbox */
+	void *user_data;
+};
+
+/* Walk the retained nodes in the last pass's draw order, bottom to top, for
+ * the tree dump. Reads only what the reconcile already retained; it neither
+ * solves nor touches the scene. */
+void render_walk(struct render_state *rs,
+	void (*fn)(void *user, const struct render_node_view *view), void *user);
 
 /* Profiling readback, logged on every solve so a long-running session can
  * assert growth stays proportional to on-screen content: live retained nodes,

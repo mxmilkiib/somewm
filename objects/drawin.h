@@ -85,15 +85,24 @@ typedef struct drawin_t {
 	struct image_entry shadow_entry;
 	shadow_config_t shadow_entry_config;
 
-	/* The converted widget chain (widget.h), outermost first and always
-	 * ending in the raster leaf that carries content_entry. NULL while the
-	 * drawable paints itself whole, which is every drawin lua/wibox/clay.lua
-	 * finds nothing to convert in. */
+	/* The converted widget tree (widget.h), in preorder, and its raster
+	 * leaves, in preorder too. NULL while the drawable paints itself whole,
+	 * which is every drawin lua/wibox/clay.lua finds nothing to convert in. */
 	struct widget_node *widget_nodes;
 	size_t widget_nodes_len;
-	/* Whether the declare pass has put this chain in front of Clay yet.
+	struct image_entry *widget_leaves;
+	size_t widget_leaves_len;
+	/* Whether widget_nodes_refused() named any reason, so a setter that
+	 * changes that can ask for the repaint that moves the drawable
+	 * across. */
+	bool widget_nodes_refused;
+	/* What the last compile answered (enum widget_nodes_state, widget.h),
+	 * for the tree dump. A uint8_t because drawin.h names no widget
+	 * type. */
+	uint8_t widget_nodes_state;
+	/* Whether the declare pass has put this tree in front of Clay yet.
 	 * Clay's element hashmap is persistent and answers a lookup with the
-	 * last box an id ever had, so without this a chain that changed since
+	 * last box an id ever had, so without this a tree that changed since
 	 * the last frame would read back the boxes of the one it replaced. */
 	bool widget_nodes_declared;
 } drawin_t;
@@ -132,6 +141,10 @@ void luaA_drawin_set_strut(lua_State *L, drawin_t *drawin, strut_t strut);
 void luaA_drawin_apply_geometry(drawin_t *drawin);
 /* Hand a renderer image entry a new owned surface (NULL clears it) */
 void drawin_entry_set(struct image_entry *entry, cairo_surface_t *owned);
+
+/* Mark the output this drawin is on stale, so the next frame re-declares it.
+ * A no-op for a drawin with no screen yet, or a screen with no monitor. */
+void drawin_mark_dirty(drawin_t *drawin);
 
 /* Drawin refresh cycle (called from main event loop) */
 void drawin_refresh(void);

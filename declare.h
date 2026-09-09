@@ -67,11 +67,12 @@ void *declare_handle_get(uint64_t handle, enum declare_kind *kind);
 void declare_handle_drop(void *object);
 
 /* Test hook (awesome._test_widget_boxes): the boxes the last solve gave a
- * drawin's converted widget chain (widget.h), outermost first, drawin-local
- * and rounded. Reads the output's own context, so it reports what the frame
- * drew rather than a second solve of its own, and reports nothing until the
- * declare pass has put the current chain in front of Clay. Writes at most
- * WIDGET_NODES_MAX entries and returns how many. */
+ * drawin's converted widget tree (widget.h), in the tree's preorder, one per
+ * node that stands for a widget, drawin-local and rounded. Reads the output's
+ * own context, so it reports what the frame drew rather than a second solve
+ * of its own, and reports nothing until the declare pass has put the current
+ * tree in front of Clay. Writes at most WIDGET_NODES_MAX entries and returns
+ * how many. */
 int declare_widget_boxes(drawin_t *d, int (*boxes)[4]);
 
 /* Test hook (awesome._test_declare_order): the desktop band's draw order for
@@ -89,6 +90,14 @@ declare_userdata_handle(void *userdata)
 {
 	return (uint64_t)(uintptr_t)userdata & 0xFFFFFFFFFFULL;
 }
+
+/* The solved tree of every output (or of `only`), in draw order: one header
+ * line of counters per band, then one line per retained node naming its
+ * element id, command type, z, solved box, realized box and what it is.
+ * Reads back the last reconcile rather than solving again, and marks a node
+ * the scene disagrees with, so a release build without the tree==scene
+ * verifier still reports a divergence. The caller frees the string. */
+char *declare_dump(struct Monitor *only);
 
 /* The input backmap: the object whose leaf drew node (renderer-owned image
  * nodes, border sides, borrowed surface trees), or NULL for a node no band
