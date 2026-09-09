@@ -14,7 +14,6 @@
 local base  = require("wibox.widget.base" )
 local flex  = require("wibox.layout.flex" )
 local fixed = require("wibox.layout.fixed")
-local clay = require("wibox.clay")
 local table = table
 local pairs = pairs
 local floor = math.floor
@@ -496,7 +495,7 @@ function ratio.vertical(...)
     return get_layout("vertical", ...)
 end
 
-local function describe_ratio(w, _, st)
+local function describe_ratio(w)
     local node, along, across = fixed.describe_linear(w, ratio)
 
     if not node or w._private.spacing ~= 0
@@ -507,7 +506,6 @@ local function describe_ratio(w, _, st)
         local share = math.max(0, math.min(1, w._private.ratios[k] or 0))
         node.specs[k] = { widget = child, [along] = { percent = share }, [across] = "grow" }
     end
-    clay.size_leaf(node, w, st.context, st.width, st.height)
     return node
 end
 

@@ -95,7 +95,7 @@ end)
 -- icon is an empty element, as `:fit` answers 0.
 local clay = require("wibox.clay")
 
-clay.describe_class(clienticon, function(w, _, st)
+clay.describe_class(clienticon, function(w)
     local s, sw, sh = icon_surface(w._private.client)
 
     if not s then
@@ -104,7 +104,6 @@ clay.describe_class(clienticon, function(w, _, st)
 
     local image = { image = s._native, class = "image", aspect = sw / sh }
 
-    clay.size_leaf(image, w, st.context, st.width, st.height)
     return { specs = { image } }
 end)
 

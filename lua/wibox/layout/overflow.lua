@@ -11,8 +11,11 @@
 
 local base = require('wibox.widget.base')
 local fixed = require('wibox.layout.fixed')
+local clay = require('wibox.clay')
+local gmatrix = require('gears.matrix')
 local separator = require('wibox.widget.separator')
 local gtable = require('gears.table')
+local timer = require('gears.timer')
 local gshape = require('gears.shape')
 local gobject = require('gears.object')
 local mousegrabber = mousegrabber
@@ -75,6 +78,74 @@ function overflow:fit(context, orig_width, orig_height)
         return used_in_dir, used_max
     end
 end
+
+local function describe_overflow(w)
+    local content, along, across = fixed.describe_linear(w, overflow)
+    local p = w._private
+
+    if not content or not clay.whole(p.scrollbar_width) then
+        return nil
+    end
+
+    local is_y = along == "h"
+    local avail, used = p.avail_in_dir, p.used_in_dir
+    local overflowing = avail and used and used > avail
+
+    content.children, content.specs = {}, nil
+    content.w, content.h = "grow", "grow"
+    content.scroll = is_y and "y" or "x"
+    content.scrolled = overflowing and p.scroll_factor * (used - avail) or 0
+    for i, child in ipairs(p.widgets) do
+        content.children[i] = { widget = child,
+            [across] = p.fill_space and "grow" or nil }
+    end
+
+    -- At most the offer along the direction, as the engine's fit answers
+    -- (base.fit_widget clamps it): a fit node takes its content's size,
+    -- and the drawable's root, a floating element, is clamped by nothing
+    -- but its own limits (wibox.clay compile, third_party/clay.h:2224-2239).
+    local node = { dir = is_y and "x" or "y", [along .. "max"] = "offer",
+        specs = { content } }
+
+    if p.scrollbar_enabled and overflowing then
+        local length = math.floor(avail / used * avail)
+        local position = math.floor((avail - length) * p.scroll_factor)
+        local track = { [across] = p.scrollbar_width, [along] = "grow",
+            pad = is_y and { 0, 0, position, 0 } or { position, 0, 0, 0 },
+            children = { { [across] = p.scrollbar_width, [along] = length,
+                children = clay.whole_box(p.scrollbar_widget) } } }
+
+        p.bar_length = length
+        if p.scrollbar_position == "left" or p.scrollbar_position == "top" then
+            table.insert(node.specs, 1, track)
+        else
+            node.specs[2] = track
+        end
+    end
+
+    node.solved = function(n)
+        local size = is_y and "height" or "width"
+        local axis = is_y and "y" or "x"
+        local solved_avail, solved_used = n.box[size], 0
+        local children = content.children
+
+        if #children > 0 then
+            local first, last = children[1].box, children[#children].box
+
+            solved_used = last[axis] + last[size] - first[axis]
+        end
+        if solved_avail ~= p.avail_in_dir or solved_used ~= p.used_in_dir then
+            p.avail_in_dir, p.used_in_dir = solved_avail, solved_used
+            -- The drawable wires the tree's widgets after placing them
+            -- (drawable.lua draw_converted): a signal sent now is lost on
+            -- the first conversion.
+            timer.delayed_call(w.emit_signal, w, "widget::layout_changed")
+        end
+    end
+    return node
+end
+
+overflow._clay = { describe = describe_overflow, fit = overflow.fit }
 
 -- Layout children, scrollbar and spacing widgets.
 -- Only those widgets that are currently visible will be placed.
@@ -432,9 +503,10 @@ local function build_grabber(container, initial_x, initial_y, geo)
     -- coordinates.
     -- This is required for mouse movement to work when the widget has been
     -- transformed by something like `wibox.container.rotate`.
-    local matrix_from_device = geo.hierarchy:get_matrix_from_device()
     local wgeo = geo.drawable.drawable:geometry()
-    local matrix = matrix_from_device:translate(-wgeo.x, -wgeo.y)
+    local matrix = geo.hierarchy
+        and geo.hierarchy:get_matrix_from_device():translate(-wgeo.x, -wgeo.y)
+        or gmatrix.create_translate(-wgeo.x - geo.x, -wgeo.y - geo.y)
 
     return function(mouse)
         if not mouse.buttons[1] then

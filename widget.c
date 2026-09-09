@@ -300,8 +300,6 @@ read_node(lua_State *L, int idx, struct widget_node *n)
 		ok = false;
 	}
 	lua_pop(L, 1);
-	if (n->image && !read_number(L, idx, "aspect", 0, 1e6, &n->aspect))
-		ok = false;
 	if (n->image) {
 		static const char *const filters[] = {
 			"fast", "good", "best", "nearest", "bilinear"
@@ -316,6 +314,20 @@ read_node(lua_State *L, int idx, struct widget_node *n)
 			else
 				ok = false;
 		}
+		lua_getfield(L, idx, "natural");
+		n->natural = lua_toboolean(L, -1);
+		lua_pop(L, 1);
+	}
+	lua_getfield(L, idx, "scroll");
+	bool has_scroll = !lua_isnil(L, -1);
+	lua_pop(L, 1);
+	if (has_scroll) {
+		static const char *const axes[] = { "x", "y" };
+
+		if (!read_word(L, idx, "scroll", axes, 2, &n->scroll)
+				|| !read_number(L, idx, "scrolled", 0, 1e6, &n->scrolled))
+			return false;
+		n->scroll++;
 	}
 	lua_getfield(L, idx, "spacer");
 	n->widget = !lua_toboolean(L, -1);
@@ -411,6 +423,10 @@ widget_leaves_size(drawin_t *d, int (*dev)[2])
 			entry->filter = n->filter;
 			entry->gen++;
 		}
+		if (entry->natural != n->natural) {
+			entry->natural = n->natural;
+			entry->gen++;
+		}
 		/* The widget's own surface: referenced, and a new reference only
 		 * when it is another surface, so its generation moves with it. */
 		if (n->image) {
@@ -444,6 +460,7 @@ widget_nodes_clear(drawin_t *d)
 	d->widget_leaves_len = 0;
 	p_delete(&d->widget_nodes);
 	d->widget_nodes_len = 0;
+	d->widget_scrolls = 0;
 	p_delete(&d->widget_text);
 	d->widget_text_len = 0;
 	d->widget_nodes_declared = false;
@@ -506,7 +523,7 @@ widget_nodes_gate(lua_State *L, drawin_t *d, int udx)
  * room for, which costs one drawable its conversion; not counting it can
  * exhaust the context, which aborts. */
 static bool
-over_budget(drawin_t *d, size_t len)
+over_budget(drawin_t *d, size_t len, size_t scrolls)
 {
 	Monitor *m = d->screen ? d->screen->monitor : NULL;
 	size_t total = len;
@@ -517,10 +534,12 @@ over_budget(drawin_t *d, size_t len)
 		drawin_t *other = *item;
 
 		if (other != d && other->screen
-				&& other->screen->monitor == m)
+				&& other->screen->monitor == m) {
 			total += other->widget_nodes_len;
+			scrolls += other->widget_scrolls;
+		}
 	}
-	return total > WIDGET_NODES_OUTPUT_MAX;
+	return total > WIDGET_NODES_OUTPUT_MAX || scrolls > WIDGET_SCROLLS_OUTPUT_MAX;
 }
 
 bool
@@ -546,7 +565,10 @@ widget_nodes_set(lua_State *L, drawin_t *d, int idx)
 	lua_newtable(L);
 	int shapes = lua_gettop(L);
 	bool ok = read_tree(L, idx, nodes, &len, &leaves, 0, &clips, shapes);
-	if (!ok || over_budget(d, len)) {
+	size_t scrolls = 0;
+	for (size_t i = 0; i < len; i++)
+		scrolls += nodes[i].scroll != 0;
+	if (!ok || over_budget(d, len, scrolls)) {
 		lua_pop(L, 1);
 		return nodes_drop(d, ok ? WIDGET_NODES_OVER_BUDGET
 			: len == WIDGET_NODES_MAX || clips > WIDGET_CLIPS_MAX
@@ -600,6 +622,7 @@ widget_nodes_set(lua_State *L, drawin_t *d, int idx)
 	d->widget_nodes = p_new(struct widget_node, len);
 	memcpy(d->widget_nodes, nodes, len * sizeof(*nodes));
 	d->widget_nodes_len = len;
+	d->widget_scrolls = scrolls;
 	p_delete(&d->widget_text);
 	d->widget_text = text_len ? p_dup(text_buf, text_len) : NULL;
 	d->widget_text_len = text_len;

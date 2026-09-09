@@ -24,7 +24,6 @@
 -- @supermodule wibox.widget.base
 ---------------------------------------------------------------------------
 
-local clay = require("wibox.clay")
 local lgi = require("lgi")
 local cairo = lgi.cairo
 
@@ -837,16 +836,12 @@ function imagebox.mt:__call(...)
     return new(...)
 end
 
---- wibox.widget.imagebox -> an element aligning one image leaf, declared as
--- Clay's own examples declare an image: `.image = { .imageData }` with an
--- `.aspectRatio`, its height growing into the slot and its width following
--- (clay.h recomputes an aspect element's width from its final height). The
--- leaf's pixels are the widget's own surface, which the renderer references
--- and scales into the box. What the renderer does not draw (an SVG handle
--- rendered at the dpi, a `clip_shape`, a fit policy other than the aspect
--- fit, `upscale` or `downscale` off, a scaling cap, a draw override) keeps
--- the imagebox drawing itself.
-local function describe_imagebox(w, _, st)
+--- wibox.widget.imagebox -> an element aligning one image leaf, whose
+-- aspect the compile step sizes from the offer. The renderer references
+-- the widget's surface and scales it into that box. An SVG handle, a
+-- clip shape, another fit policy, downscaling off, a scaling cap or a draw
+-- override keeps the imagebox drawing itself.
+local function describe_imagebox(w)
     local p = w._private
 
     if w.draw ~= imagebox.draw then
@@ -860,16 +855,16 @@ local function describe_imagebox(w, _, st)
             or p.handle or p.clip_shape or p.max_scaling_factor
             or (p.horizontal_fit_policy or "auto") ~= "auto"
             or (p.vertical_fit_policy or "auto") ~= "auto"
-            or p.upscale == false or p.downscale == false then
+            or p.downscale == false then
         return nil
     end
 
-    -- The image's size within the drawin, as the engine asked it; an axis
-    -- it takes whole grows, and the aspect ratio keeps the other with it.
     local image = { image = p.image._native, class = "image",
         aspect = p.default.width / p.default.height }
 
-    clay.size_leaf(image, w, st.context, st.width, st.height)
+    if p.upscale == false or p.resize == false then
+        image.wmax, image.hmax = p.default.width, p.default.height
+    end
     return { specs = { image },
         align = { x = p.halign or "left", y = p.valign or "top" } }
 end

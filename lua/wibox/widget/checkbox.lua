@@ -261,7 +261,7 @@ local function fit(_, _, w, h)
     return size, size
 end
 
-local function describe_checkbox(w, _, st)
+local function describe_checkbox(w)
     if rawget(w, "draw") ~= draw then
         return nil
     end
@@ -306,8 +306,7 @@ local function describe_checkbox(w, _, st)
                 return clay.shape_ops(check_shape, wa.width, wa.height, wa.x, wa.y)
             end }
     end
-    local node = { specs = { outline, check } }
-    clay.size_leaf(node, w, st.context, st.width, st.height)
+    local node = { square = true, specs = { outline, check } }
     return node
 end
 

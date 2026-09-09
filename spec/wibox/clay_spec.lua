@@ -305,12 +305,12 @@ describe("wibox.clay", function()
     it("sizes a leaf by its fit, growing on an axis it takes whole", function()
         -- A stub answers its own size whatever it is offered: no fill,
         -- even at exactly the bound. A widget that answers the bound fills.
-        local node = fixed_node(utils.widget_stub(30, 100))
+        local node = fixed_node(utils.widget_stub(30, 90))
 
         assert.is_true(node.raster)
         assert.is_equal(30, node.w)
         assert.is_equal("grow", node.h)
-        assert.is_equal(100, node.hmin)
+        assert.is_equal(90, node.hmin)
 
         local fill = utils.widget_stub(30, 100)
 

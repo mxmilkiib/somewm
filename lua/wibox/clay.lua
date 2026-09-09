@@ -8,23 +8,27 @@
 -- converts the drawable paints itself whole, as it always did.
 --
 -- The walk descends the widget tree itself, not a laid-out hierarchy: Clay
--- is the only solver of a converted tree, and no box is computed here. A
--- node is pure description, and its sizing is Clay's own, one of the four
+-- is the only solver of a converted tree, and the walk computes no box,
+-- only the offer each node passes down. A node's sizing is one of the four
 -- types clay.h names: `fit` wraps the content, which is Clay's default
--- (CLAY_SIZING_FIT), `grow` fills the parent (CLAY_SIZING_GROW), and a
--- number is told (CLAY_SIZING_FIXED), and a table `{ percent = p }` is a
--- share of the parent (CLAY_SIZING_PERCENT, clay.h:72, 294-295). A
--- container says which of the first two each child gets, in place of the
+-- (CLAY_SIZING_FIT), `grow` fills the parent (CLAY_SIZING_GROW), a number
+-- is told (CLAY_SIZING_FIXED), and a table `{ percent = p }` is a share of
+-- the parent (CLAY_SIZING_PERCENT, clay.h:66-72, 289-297). A container
+-- says which of the first two each child gets, in place of the
 -- `:fit` question the layout engine asked; a widget's own preference (a
 -- forced size, a place that fills) refines fit and never overrides grow,
 -- since fit is the content size and that preference is the content.
 --
--- A raster leaf is the one node the walk sizes. Clay measures nothing but
--- text (Clay_SetMeasureTextFunction), and an image element is a bare
--- pointer (Clay_ImageElementConfig), so a leaf is declared as Clay's own
--- image examples declare one: sized by its caller. The size is the leaf
--- widget's `:fit` at the drawin's bound, and an axis on which the widget
--- takes all it is offered grows instead, which is what that answer means.
+-- The offer is the box the engine's `:fit` was asked with: the drawin at
+-- the root, less each node's padding on the way down. Clay measures
+-- nothing but text (Clay_SetMeasureTextFunction, clay.h:889), and an image
+-- element is a bare pointer (Clay_ImageElementConfig, clay.h:414-416), so
+-- a node that says `aspect` or `square` is told both sizes from the offer,
+-- a forced axis standing. A cap of `"offer"` (`wmax`, `hmax`) is the
+-- offer on that axis, for a node whose content it cuts rather than
+-- outgrows. A raster leaf is sized by its widget's `:fit` at the offer,
+-- and an axis on which the widget takes the whole offer grows instead,
+-- which is what that answer means.
 --
 -- @module wibox.clay
 ---------------------------------------------------------------------------
@@ -183,9 +187,8 @@ end
 -- child fills what it is given, and a parent that wraps its content still
 -- counts that size, as the engine's `:fit` counted it through a container
 -- that hands its child the whole box. Fit gives way to what the child said.
--- The spec stays on the node, so a leaf sized again merges again.
+-- A floor from either side stands, and the larger of two.
 local function merge_sizing(node, spec)
-    node.spec = spec
     for _, k in ipairs { "w", "h" } do
         if spec[k] == "grow" then
             if type(node[k]) == "number" then
@@ -194,6 +197,13 @@ local function merge_sizing(node, spec)
             node[k] = "grow"
         elseif node[k] == nil then
             node[k] = spec[k]
+        end
+    end
+    for _, k in ipairs { "wmin", "hmin" } do
+        if spec[k] and node[k] then
+            node[k] = math.max(spec[k], node[k])
+        else
+            node[k] = spec[k] or node[k]
         end
     end
     -- A cap from either side stands, and the tighter of two.
@@ -206,20 +216,9 @@ local function merge_sizing(node, spec)
     end
 end
 
---- Size a leaf node by its widget's `:fit` within a bound, as the engine
--- asked it: at compile time the bound is the drawin, and once Clay has
--- solved, the bound its parents leave it (`wibox.drawable` asks again). An
--- axis the widget takes whole grows, so Clay gives it what the layout
--- leaves. Returns whether the node changed.
---
--- @tparam table node The leaf's node.
--- @tparam wibox.widget widget The widget the leaf draws.
--- @tparam table context The widget context.
--- @tparam number width The bound's width.
--- @tparam number height The bound's height.
--- @treturn boolean Whether the node's sizing changed.
--- @staticfct wibox.clay.size_leaf
-function clay.size_leaf(node, widget, context, width, height)
+-- Size a raster leaf by its widget's fit at the offer. An axis the widget
+-- takes whole grows; an axis of its own size is told.
+local function size_leaf(node, widget, context, width, height)
     local no_parent = base.no_parent_I_know_what_I_am_doing
     local fw, fh = base.fit_widget(no_parent, context, widget, width, height)
     -- A widget that takes all it is offered answers one more pixel when
@@ -227,16 +226,8 @@ function clay.size_leaf(node, widget, context, width, height)
     -- size is exactly the bound.
     local fw2 = base.fit_widget(no_parent, context, widget, width + 1, height)
     local _, fh2 = base.fit_widget(no_parent, context, widget, width, height + 1)
-    local own = { w = fw2 > fw and "grow" or math.ceil(fw),
-        h = fh2 > fh and "grow" or math.ceil(fh) }
-    local was = { w = node.w, h = node.h, wmin = node.wmin, hmin = node.hmin }
-
-    node.w, node.h, node.wmin, node.hmin = own.w, own.h, nil, nil
-    if node.spec then
-        merge_sizing(node, node.spec)
-    end
-    return node.w ~= was.w or node.h ~= was.h
-        or node.wmin ~= was.wmin or node.hmin ~= was.hmin
+    node.w = fw2 > fw and "grow" or math.ceil(fw)
+    node.h = fh2 > fh and "grow" or math.ceil(fh)
 end
 
 --- awful.widget.systray_icon -> an element centering one image leaf: the
@@ -284,9 +275,8 @@ function clay.systray_icon(w)
     local scale = math.min(sw / iw, sh / ih)
 
     return { w = sw, h = sh, align = { x = "center", y = "center" },
-        specs = { { image = surface, aspect = iw / ih, class = "image",
-            w = math.ceil(iw * scale), h = math.ceil(ih * scale),
-            refit = false } } }
+        specs = { { image = surface, class = "image",
+            w = math.ceil(iw * scale), h = math.ceil(ih * scale) } } }
 end
 
 --- wibox.widget.systray -> the fixed layout it is, with the padding and
@@ -375,17 +365,58 @@ local function class_name(w)
 end
 
 --- A raster leaf for the subtree at `widget`: the widget draws itself, with
--- `fg` as its source, at its `:fit` within the drawin.
-local function leaf(st, widget, parent, fg)
+-- `fg` as its source, at its `:fit` within the offer.
+local function leaf(st, widget, parent, fg, offer)
     local node = { raster = true, class = class_name(widget),
         widget = widget, leaf = #st.leaves + 1 }
 
     -- Asked through the parent once, so the engine records that the
     -- parent's own fit depends on this widget's.
-    base.fit_widget(parent, st.context, widget, st.width, st.height)
-    clay.size_leaf(node, widget, st.context, st.width, st.height)
+    base.fit_widget(parent, st.context, widget, offer.w, offer.h)
+    size_leaf(node, widget, st.context, offer.w, offer.h)
     st.leaves[node.leaf] = { widget = widget, fg = fg, node = node }
     return node
+end
+
+-- Resolve a shape's size from the offer before forced axes override it.
+local function resolve_size(node, offer)
+    for _, k in ipairs { "w", "h" } do
+        if node[k .. "max"] == "offer" then
+            node[k .. "max"] = offer[k]
+        end
+    end
+    if node.aspect or node.square then
+        local w = math.min(offer.w, node.wmax or math.huge)
+        local h = math.min(offer.h, node.hmax or math.huge)
+        local rw, rh
+
+        if node.aspect then
+            rw = math.ceil(math.min(w, h * node.aspect))
+            rh = math.ceil(math.min(h, w / node.aspect))
+        else
+            rw, rh = math.min(w, h), math.min(w, h)
+        end
+        node.w = type(node.w) == "number" and node.w or rw
+        node.h = type(node.h) == "number" and node.h or rh
+    end
+end
+
+-- The node's box at most, and the offer its padding leaves for children.
+-- Floating children take the full box (third_party/clay.h:2224-2237).
+local function node_offer(node, offer)
+    local box = {}
+
+    for _, k in ipairs { "w", "h" } do
+        local size = node[k]
+
+        box[k] = math.min(type(size) == "number" and size
+            or type(size) == "table" and offer[k] * size.percent or offer[k],
+            node[k .. "max"] or math.huge)
+    end
+    local pad = node.pad or { 0, 0, 0, 0 }
+
+    return { w = math.max(0, box.w - pad[1] - pad[2]),
+        h = math.max(0, box.h - pad[3] - pad[4]) }, box
 end
 
 local compile_node
@@ -393,14 +424,18 @@ local compile_node
 --- The nodes for a list of child specs: a widget's node with the sizing its
 -- parent decided, or an empty element the parent asked for, which stands for
 -- no widget and is left out of the box readback.
-local function compile_specs(st, specs, parent, fg)
+local function compile_specs(st, specs, parent, fg, offer, box)
     local nodes = {}
 
     for i, spec in ipairs(specs) do
         local node
+        local bound = spec.float and box or offer
+
+        resolve_size(spec, bound)
+        local inner, spec_box = node_offer(spec, bound)
 
         if spec.widget then
-            node = compile_node(st, spec.widget, parent, fg)
+            node = compile_node(st, spec.widget, parent, fg, spec_box)
             merge_sizing(node, spec)
         else
             node = spec
@@ -412,7 +447,7 @@ local function compile_specs(st, specs, parent, fg)
                 st.leaves[node.leaf] = { image = true, node = node }
             end
             node.children = spec.children
-                and compile_specs(st, spec.children, parent, fg) or nil
+                and compile_specs(st, spec.children, parent, fg, inner, spec_box) or nil
         end
         nodes[i] = node
     end
@@ -420,14 +455,20 @@ local function compile_specs(st, specs, parent, fg)
 end
 
 --- The node tree for `widget`.
-function compile_node(st, widget, parent, fg)
+function compile_node(st, widget, parent, fg, offer)
     local node, node_fg = describe(widget, fg, st)
 
     if not node then
-        return leaf(st, widget, parent, fg)
+        return leaf(st, widget, parent, fg, offer)
     end
 
-    node.children = compile_specs(st, node.specs or {}, widget, node_fg or fg)
+    if node.fit then
+        offer = { w = node.wmax or 9999, h = node.hmax or 9999 }
+    end
+    resolve_size(node, offer)
+    local inner, box = node_offer(node, offer)
+
+    node.children = compile_specs(st, node.specs or {}, widget, node_fg or fg, inner, box)
     node.specs = nil
     node.class = class_name(widget)
     node.widget = widget
@@ -486,15 +527,15 @@ end
 -- tree` dump), `widget`, and `children`. A text element is a node with
 -- `text`, `font` (an id from `awesome._clay_font`), `color`, `wrap`,
 -- `halign` and `ellipsize`, and nothing else; an image leaf is a node with
--- `image` (a cairo surface's native pointer), `aspect`, and its sizing. The
--- C side reads the description and ignores `widget` and `leaf`, which are
--- the drawable's.
+-- `image` (a cairo surface's native pointer) and its sizing. The compile
+-- step resolves `aspect` and `square` into sizes. The C side ignores these
+-- words and `widget` and `leaf`, which are the drawable's.
 --
 -- @tparam table self The drawable, for its own background, background image
 --  and foreground.
 -- @tparam wibox.widget|nil root The drawable's widget.
 -- @tparam table context The widget context.
--- @tparam number width The drawable's width, the bound every leaf is fit in.
+-- @tparam number width The drawable's width, the root's offer.
 -- @tparam number height The drawable's height.
 -- @treturn[1] table The node tree.
 -- @treturn[1] table The raster leaves, in preorder.
@@ -520,7 +561,7 @@ function clay.compile(self, root, context, width, height)
 
     local st = { leaves = {}, context = context, width = width, height = height }
     local node = compile_node(st, root, base.no_parent_I_know_what_I_am_doing,
-        self.foreground_color)
+        self.foreground_color, { w = width, h = height })
 
     -- The root's class matched but its properties did not: the leaf still
     -- covers every pixel it did, so there is nothing to gain and a whole

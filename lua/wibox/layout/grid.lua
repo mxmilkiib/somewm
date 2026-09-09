@@ -34,6 +34,8 @@ local gmath = require("gears.math")
 local gcolor = require("gears.color")
 local base = require("wibox.widget.base")
 local cairo = require("lgi").cairo
+local clay = require("wibox.clay")
+local timer = require("gears.timer")
 
 local grid = { mt = {} }
 
@@ -1176,6 +1178,118 @@ function grid:layout(context, width, height)
     return l
 end
 
+-- Rows fit their cells and gaps (third_party/clay.h:1818-1856), with
+-- told sizes as floors (third_party/clay.h:1867-1868,1878-1879).
+-- Content growth raises the floors; shrinking content keeps them until
+-- the grid emits widget::layout_changed.
+local function describe_grid(w)
+    local p = w._private
+    if w.layout ~= grid.layout or p.has_border
+            or not clay.whole(p.horizontal_spacing) or not clay.whole(p.vertical_spacing)
+            or not clay.whole(p.min_cols_size) or not clay.whole(p.min_rows_size)
+            or (p.horizontal_expand and not p.horizontal_homogeneous)
+            or (p.vertical_expand and not p.vertical_homogeneous) then
+        return nil
+    end
+    for _, data in ipairs(p.widgets) do
+        if data.row_span > 1
+                or #find_widgets_at(p.widgets, data.row, data.col, data.row_span, data.col_span) > 1 then
+            return nil
+        end
+    end
+
+    local told, rows, records = p.told, {}, {}
+    for r = 1, p.num_rows do
+        local cells = {}
+        rows[r] = { dir = "x", gap = p.horizontal_spacing, children = cells,
+            hmin = told and told.rows[r] }
+        records[r] = {}
+        local c = 1
+        while c <= p.num_cols do
+            local found = find_widgets_at(p.widgets, r, c)
+            local data = found and p.widgets[found[1]]
+            local cell = {}
+            if data then
+                cell.widget = data.widget
+                records[r][#records[r] + 1] = { index = #cells + 1, col = c, span = data.col_span }
+                if told then
+                    local width = (data.col_span - 1) * p.horizontal_spacing
+                    for j = c, c + data.col_span - 1 do
+                        width = width + told.cols[j]
+                    end
+                    cell.w, cell.h = "grow", "grow"
+                    cell.wmin, cell.hmin = width, told.rows[r]
+                end
+                c = c + data.col_span
+            else
+                cell.wmin = told and told.cols[c]
+                c = c + 1
+            end
+            cells[#cells + 1] = cell
+        end
+    end
+
+    local node = { dir = "y", gap = p.vertical_spacing, specs = rows }
+    node.solved = function(n)
+        local cols, heights = {}, {}
+        for c = 1, p.num_cols do
+            cols[c] = told and told.cols[c] or p.min_cols_size
+        end
+        for r = 1, p.num_rows do
+            heights[r] = told and told.rows[r] or p.min_rows_size
+            for _, cell in ipairs(records[r]) do
+                local box = rows[r].children[cell.index].box
+                local spacing = (cell.span - 1) * p.horizontal_spacing
+                local width = spacing
+                if told then
+                    for c = cell.col, cell.col + cell.span - 1 do
+                        width = width + told.cols[c]
+                    end
+                end
+                if not told or box.width > width then
+                    local measured = math.ceil((box.width - spacing) / cell.span)
+                    for c = cell.col, cell.col + cell.span - 1 do
+                        cols[c] = math.max(cols[c], measured)
+                    end
+                end
+                if not told or box.height > told.rows[r] then
+                    heights[r] = math.max(heights[r], box.height)
+                end
+            end
+        end
+        if p.horizontal_homogeneous then
+            local size = max_value(cols)
+            if p.horizontal_expand and p.num_cols > 0 then
+                size = math.max(size,
+                    math.floor((n.box.width - (p.num_cols - 1) * p.horizontal_spacing) / p.num_cols))
+            end
+            for c = 1, p.num_cols do cols[c] = size end
+        end
+        if p.vertical_homogeneous then
+            local size = max_value(heights)
+            if p.vertical_expand and p.num_rows > 0 then
+                size = math.max(size,
+                    math.floor((n.box.height - (p.num_rows - 1) * p.vertical_spacing) / p.num_rows))
+            end
+            for r = 1, p.num_rows do heights[r] = size end
+        end
+        local changed = not p.told
+        for c = 1, p.num_cols do
+            if not p.told or cols[c] ~= p.told.cols[c] then changed = true end
+        end
+        for r = 1, p.num_rows do
+            if not p.told or heights[r] ~= p.told.rows[r] then changed = true end
+        end
+        if changed then
+            p.told = { cols = cols, rows = heights }
+            timer.delayed_call(w.emit_signal, w, "widget::redraw_needed")
+        end
+    end
+    return node
+end
+
+grid._clay = { describe = describe_grid, fit = grid.fit }
+
 local function create_border_mask(self, areas, default_color)
     if areas.surface then return areas.surface end
 
@@ -1369,6 +1483,7 @@ local function new(orientation)
 
     ret:connect_signal("widget::layout_changed", function(self)
         self._private.area_cache = {}
+        self._private.told = nil
     end)
 
     setup_border_widths(ret)

@@ -1107,7 +1107,7 @@ local function describe_border(w, _, st)
                     or image.default.width == 0 or image.default.height == 0 then
                 return nil
             end
-            box.image, box.class, box.refit = image.image._native, "image", false
+            box.image, box.class = image.image._native, "image"
             box.filter = image.scaling_quality
         end
         return { specs = { box } }
@@ -1159,7 +1159,6 @@ local function describe_border(w, _, st)
                         elseif ib then
                             cell.image, cell.class = ib._private.image._native, "image"
                             cell.filter = ib._private.scaling_quality
-                            cell.refit = false
                         end
                     end
                     if position == "fill" then

@@ -103,6 +103,7 @@ typedef struct drawin_t {
 	 * which is every drawin lua/wibox/clay.lua finds nothing to convert in. */
 	struct widget_node *widget_nodes;
 	size_t widget_nodes_len;
+	size_t widget_scrolls;
 	struct image_entry *widget_leaves;
 	size_t widget_leaves_len;
 	struct widget_shape *widget_shapes;

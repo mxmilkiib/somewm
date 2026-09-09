@@ -1251,16 +1251,19 @@ static struct cairo_buffer *rasterize_image(Clay_RenderCommand *cmd,
 	cairo_t *cr = cairo_create(cb->surface);
 	apply_clip_round(cr, cmd->boundingBox, mask, scale);
 
-	/* w and h are already device pixels, so scaling the native surface to fill
-	 * them (below) also carries the output scale: the image is sampled once, at
-	 * device density. The corner radii scale to match. */
+	/* w and h are device pixels. Natural images scale only by the output
+	 * scale; other images scale to fill the box. The corner radii scale
+	 * to device pixels in both cases. */
 	Clay_CornerRadius radius = scale_corner_radius(
 		cmd->renderData.image.cornerRadius, scale);
 	if (!corner_radius_zero(radius)) {
 		rounded_rect_path(cr, 0, 0, w, h, radius);
 		cairo_clip(cr);
 	}
-	cairo_scale(cr, (double)w / entry->width, (double)h / entry->height);
+	if (entry->natural)
+		cairo_scale(cr, scale, scale);
+	else
+		cairo_scale(cr, (double)w / entry->width, (double)h / entry->height);
 	cairo_pattern_t *pattern = cairo_pattern_create_for_surface(entry->native);
 	if (entry->filter > 0)
 		cairo_pattern_set_filter(pattern, entry->filter - 1);

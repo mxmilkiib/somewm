@@ -57,11 +57,12 @@ struct widget_node {
 	bool floating;       /* attached to the parent's top left, off the flow */
 	bool raster;         /* an image leaf */
 	/* A raster leaf whose pixels are the widget's own cairo surface (an
-	 * imagebox's image), referenced rather than painted by Lua, with the
-	 * aspect ratio Clay keeps (Clay_AspectRatioElementConfig). */
+	 * imagebox's image), referenced rather than painted by Lua. */
 	const void *image;
-	float aspect;
 	uint8_t filter;      /* cairo_filter_t + 1, 0 keeps cairo's default */
+	bool natural;
+	uint8_t scroll;      /* 0 none, 1 x, 2 y */
+	float scrolled;
 	uint16_t shape;
 	float fill[4];
 	float stroke[4];
@@ -110,6 +111,9 @@ struct widget_node {
  * raises CLAY_ERROR_TYPE_ELEMENTS_CAPACITY_EXCEEDED (clay.h:780), which the
  * error handler treats as the bug it is and aborts on. */
 #define WIDGET_NODES_OUTPUT_MAX 6144
+
+/* Scroll records per context (third_party/clay.h:2194). */
+#define WIDGET_SCROLLS_OUTPUT_MAX 10
 
 /* Why d has to paint itself whole, as a mask of reasons, or 0 for a drawin
  * that can convert: shape_bounding and shape_clip are applied to the

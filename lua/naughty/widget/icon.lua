@@ -207,9 +207,8 @@ clay.describe_class(icon, function(w, _, st)
 
     return { w = fw, h = fh,
         align = centered and { x = "center", y = "center" } or nil,
-        specs = { { image = image._native, class = "image", aspect = iw / ih,
-            w = math.ceil(iw * scale), h = math.ceil(ih * scale),
-            refit = false } } }
+        specs = { { image = image._native, class = "image",
+            w = math.ceil(iw * scale), h = math.ceil(ih * scale) } } }
 end)
 
 return setmetatable(icon, {__call = function(_, ...) return new(...) end})

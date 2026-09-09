@@ -679,9 +679,7 @@ local function describe_background(w)
             or w.after_draw_children ~= background.after_draw_children then
         return nil
     end
-    -- A background image is a painter over the whole box, with no Clay
-    -- equivalent short of rastering it, which is what a leaf does.
-    if p.bgimage then
+    if type(p.bgimage) == "function" then
         return nil
     end
 
@@ -705,6 +703,11 @@ local function describe_background(w)
     end
 
     local node = { radius = radius, specs = clay.whole_box(p.widget) }
+
+    if p.bgimage then
+        node.specs = { { image = p.bgimage._native, class = "image", natural = true,
+            w = "grow", h = "grow", children = clay.whole_box(p.widget) } }
+    end
 
     if p.background then
         node.bg = clay.solid_rgba(p.background)

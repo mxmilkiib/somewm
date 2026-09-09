@@ -208,85 +208,23 @@ end
 -- Pair every widget node with the box Clay solved for it, in the preorder
 -- both sides use, and collect the converted widgets with their parents. A
 -- leaf's widget is its hierarchy's, which reaches the drawable on its own.
-local function place_nodes(node, boxes, widgets, parent, k, parent_node, index)
+local function place_nodes(node, boxes, widgets, parent, k, index)
     index[#index + 1] = node
     if not node.spacer then
         k = k + 1
         node.box = boxes[k]
     end
-    node.parent = parent_node
     if node.widget and not node.raster then
         widgets[node.widget] = parent or false
         parent = node.widget
     end
     for _, child in ipairs(node.children or {}) do
-        k = place_nodes(child, boxes, widgets, parent, k, node, index)
+        k = place_nodes(child, boxes, widgets, parent, k, index)
+    end
+    if node.solved then
+        node.solved(node)
     end
     return k
-end
-
--- The bound the engine asked a leaf's widget with, from the solved boxes:
--- the box of the nearest layout with a direction minus the padding of every
--- container between, and along that direction minus what the layout's other
--- children took and the gaps, capped by every box above it up to the root,
--- so that a first solve that overflowed the drawin does not offer the
--- overflow back. The containers between hand their child the whole box, so
--- their own boxes say nothing the leaf did not say itself. Nil while a box
--- is missing.
-local function leaf_bound(node)
-    local pad_w, pad_h = 0, 0
-    local w, h = math.huge, math.huge
-    local child, parent, directed = node, node.parent, false
-
-    while parent do
-        local pad = parent.pad or { 0, 0, 0, 0 }
-
-        pad_w = pad_w + pad[1] + pad[2]
-        pad_h = pad_h + pad[3] + pad[4]
-        if parent.box then
-            local pw, ph = parent.box.width - pad_w, parent.box.height - pad_h
-
-            if parent.dir and not directed then
-                local along = parent.dir == "y" and "height" or "width"
-                local used = (parent.gap or 0) * math.max(0, #parent.children - 1)
-
-                directed = true
-                for _, c in ipairs(parent.children) do
-                    if c ~= child and c.box then
-                        used = used + c.box[along]
-                    end
-                end
-                if along == "width" then
-                    pw = pw - used
-                else
-                    ph = ph - used
-                end
-            end
-            w, h = math.min(w, pw), math.min(h, ph)
-        end
-        child, parent = parent, parent.parent
-    end
-    if w == math.huge then
-        return nil
-    end
-    return math.max(0, w), math.max(0, h)
-end
-
--- Size every leaf again within the bound the engine would have asked its
--- widget with: the compile step could only offer the drawin. Returns
--- whether any leaf changed, in which case the tree solves again.
-local function refit_leaves(leaves, context)
-    local changed = false
-
-    for _, leaf in ipairs(leaves) do
-        local w, h = leaf_bound(leaf.node)
-
-        if leaf.node.refit ~= false and w and wclay.size_leaf(leaf.node,
-                leaf.widget or leaf.node.parent.widget, context, w, h) then
-            changed = true
-        end
-    end
-    return changed
 end
 
 -- The tree did not convert: nothing of it stays on this drawable.
@@ -312,15 +250,7 @@ local function draw_converted(self, context, width, height, dirty)
 
     local widgets, index = {}, {}
 
-    place_nodes(tree, boxes, widgets, nil, 0, nil, index)
-    if refit_leaves(leaves, context) then
-        scale, boxes = self.drawable:_clay_nodes(tree)
-        if not scale then
-            return unconvert(self)
-        end
-        widgets, index = {}, {}
-        place_nodes(tree, boxes, widgets, nil, 0, nil, index)
-    end
+    place_nodes(tree, boxes, widgets, nil, 0, index)
     self._clay_tree = tree
     -- The tree's nodes in preorder, which is how the C side numbers them
     -- (widget.c read_tree), so a hit comes back as an index into this.

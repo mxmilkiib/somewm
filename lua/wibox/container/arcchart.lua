@@ -391,7 +391,7 @@ function arcchart.mt:__call(...)
     return new(...)
 end
 
-local function describe_arcchart(w, fg, st)
+local function describe_arcchart(w, fg)
     if w.layout ~= arcchart.layout
             or w.before_draw_children ~= arcchart.before_draw_children
             or w.after_draw_children ~= arcchart.after_draw_children then
@@ -439,16 +439,13 @@ local function describe_arcchart(w, fg, st)
     local use_rounded_edges = sum ~= max_val and w:get_rounded_edge()
     local offset_angle = w:get_start_angle() or math.pi
 
-    -- The content square is the smaller side of the box the drawable offers,
-    -- as fit answers it, less the insets; centre alignment places it where
-    -- content_workarea does. render.c rounded_rect_path clamps PILL to half
-    -- its side, so its clip scope is the circle before_draw_children cuts to.
+    -- The content square is the smaller inner side of the offer, as fit
+    -- answers it; centre alignment places it where content_workarea does.
+    -- render.c rounded_rect_path clamps PILL to half its side, so its clip
+    -- scope is the circle before_draw_children cuts to.
     local PILL = 1e6
-    local size = math.min(st.width, st.height)
     local node = { pad = pad, align = { x = "center", y = "center" }, specs = {
-        { w = math.max(0, size - left - right - 2 * offset),
-            h = math.max(0, size - top - bottom - 2 * offset),
-            radius = PILL, children = clay.whole_box(w._private.widget) },
+        { square = true, radius = PILL, children = clay.whole_box(w._private.widget) },
     } }
     local specs = node.specs
     if bg then
@@ -500,7 +497,6 @@ local function describe_arcchart(w, fg, st)
             }
         end
     end
-    clay.size_leaf(node, w, st.context, st.width, st.height)
     return node
 end
 

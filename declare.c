@@ -26,6 +26,7 @@
 #include <wlr/util/log.h>
 
 #include "clay.h"
+#include "clay_impl.h"
 #include "declare.h"
 #include "render.h"
 #include "render_text.h"
@@ -657,6 +658,14 @@ widget_node_decl(const struct widget_node *n, Clay_ElementId id, int16_t z,
 		e.border.width = (Clay_BorderWidth) {
 			n->bw[0], n->bw[1], n->bw[2], n->bw[3], 0 };
 	}
+	if (n->scroll) {
+		e.clip = (Clay_ClipElementConfig) {
+			.horizontal = n->scroll == 1,
+			.vertical = n->scroll == 2,
+			.childOffset = { n->scroll == 1 ? -n->scrolled : 0,
+				n->scroll == 2 ? -n->scrolled : 0 },
+		};
+	}
 	if (n->floating) {
 		/* A stack child: off the flow, at the parent's top left, in the
 		 * drawin's band (a floating element is its own tree root, sorted
@@ -728,8 +737,6 @@ declare_widget_subtree(drawin_t *d, size_t i, Clay_ElementId id, int16_t z,
 		e.image.imageData = &d->widget_leaves[(*leaf)++];
 	if (n->shape)
 		e.custom.customData = render_shape_tag(&d->widget_shapes[n->shape - 1].shape);
-	if (n->image)
-		e.aspectRatio = (Clay_AspectRatioElementConfig) { n->aspect };
 
 	Clay__OpenElement();
 	Clay__ConfigureOpenElementPtr(&e);
@@ -1105,6 +1112,7 @@ declare_widget_solve(drawin_t *d, int (*boxes)[4], int (*dev)[2])
 	previous = Clay_GetCurrentContext();
 	Clay_SetCurrentContext(ctx);
 	render_text_set_measure_scale(m->wlr_output->scale);
+	clay_scroll_records_clear();
 	Clay_BeginLayout();
 	root_id = widget_root_id((uint32_t)handle_for(d, DECLARE_KIND_DRAWIN));
 	declare_widget_subtree(d, 0, root_id, 0, d->x - m->m.x, d->y - m->m.y,
@@ -1127,6 +1135,7 @@ declare_output_order(struct declare_output *dout, Monitor *m, void **objects,
 
 	Clay_SetCurrentContext(dout->desktop.clay);
 	render_text_set_measure_scale(dout->wlr_output->scale);
+	clay_scroll_records_clear();
 	Clay_BeginLayout();
 	declare_scene(m);
 	Clay_RenderCommandArray commands = Clay_EndLayout();
@@ -1369,6 +1378,7 @@ declare_output_frame(struct declare_output *dout, Monitor *m, bool lock_active)
 	band->declare_us = now_us();
 	Clay_SetCurrentContext(band->clay);
 	render_text_set_measure_scale(dout->wlr_output->scale);
+	clay_scroll_records_clear();
 	Clay_BeginLayout();
 	if (lock_active)
 		declare_lock_scene(m);
@@ -1573,6 +1583,8 @@ dump_widget_node(buffer_t *buf, drawin_t *d, size_t i, Clay_ElementId id,
 			};
 			buffer_addf(buf, " filter=%s", filters[n->filter - 1]);
 		}
+		if (n->natural)
+			buffer_adds(buf, " natural");
 	} else if (n->raster)
 		buffer_adds(buf, " raster");
 	else if (n->shape)
@@ -1581,6 +1593,10 @@ dump_widget_node(buffer_t *buf, drawin_t *d, size_t i, Clay_ElementId id,
 		buffer_adds(buf, " spacer");
 	if (n->clip_opens)
 		buffer_adds(buf, " clip");
+	if (n->scroll)
+		buffer_addf(buf, " scroll=%s", n->scroll == 1 ? "x" : "y");
+	if (n->scrolled > 0)
+		buffer_addf(buf, " scrolled=%g", n->scrolled);
 	if (n->text) {
 		buffer_addf(buf, " \"%.*s\" font=%u", (int)n->text_len,
 			d->widget_text + n->text_off, n->font);
