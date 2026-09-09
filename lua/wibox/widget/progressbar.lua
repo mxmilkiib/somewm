@@ -342,24 +342,30 @@ local properties = { "border_color", "color"     , "background_color",
 local function describe_progressbar(w)
     local p = w._private
     if p.ticks then
-        return nil
+        clay.ignore(w, "ticks", "are not drawn")
     end
     local bar_border_color = p.bar_border_color or beautiful.progressbar_bar_border_color
     local bar_border_width = p.bar_border_width or beautiful.progressbar_bar_border_width
         or p.border_width or beautiful.progressbar_border_width or 0
     if bar_border_color and bar_border_width > 0 then
-        return nil
+        clay.ignore(w, "bar_border_width", "is not drawn")
     end
 
     local foreground = clay.solid_rgba(p.color or beautiful.progressbar_fg or "#ff0000")
     local background = clay.solid_rgba(p.background_color or beautiful.progressbar_bg or "#ff0000aa")
     local bcol = p.border_color or beautiful.progressbar_border_color
     local border = bcol and clay.solid_rgba(bcol)
-    if not foreground or not background or (bcol and not border) then
-        return nil
+    if not foreground then
+        clay.ignore(w, "color", "is not solid and is transparent")
+    end
+    if not background then
+        clay.ignore(w, "background_color", "is not solid and is transparent")
+    end
+    if bcol and not border then
+        clay.ignore(w, "border_color", "is not solid and is transparent")
     end
     local bw = p.border_width or beautiful.progressbar_border_width or 0
-    bw = bcol and bw or 0
+    bw = border and clay.pixels(w, "border_width", bw) or 0
     local clip = p.clip ~= false and beautiful.progressbar_clip ~= false
     local margins, paddings = {}, {}
     for i, prop in ipairs { "margins", "paddings" } do
@@ -367,21 +373,15 @@ local function describe_progressbar(w)
         local sides = i == 1 and margins or paddings
         for j, side in ipairs { "left", "right", "top", "bottom" } do
             local v = type(value) == "number" and value or (value and value[side] or 0)
-            if not clay.whole(v) then
-                return nil
-            end
-            sides[j] = v
+            sides[j] = clay.pixels(w, prop .. "." .. side, v)
         end
     end
 
     local bg_shape = p.shape or beautiful.progressbar_shape or shape.rectangle
     local radius = clay.shape_radius(bg_shape)
-    -- The inset cairo stroke has a rounder outer corner than the shape radius.
-    if radius and radius > 0 and bw > 0 then
-        return nil
-    end
     if radius == nil and clip then
-        return nil
+        clay.ignore(w, "clip", "is not cut to the shape")
+        clip = false
     end
     local bar_shape = p.bar_shape or beautiful.progressbar_bar_shape or shape.rectangle
     local bar_radius = clay.shape_radius(bar_shape)
@@ -402,7 +402,7 @@ local function describe_progressbar(w)
         end
     end
     local bar
-    if ratio > 0 then
+    if ratio > 0 and foreground then
         bar = { w = { percent = ratio }, h = "grow" }
         if bar_radius then
             bar.bg, bar.radius = foreground, bar_radius

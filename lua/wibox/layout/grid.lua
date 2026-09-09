@@ -931,24 +931,28 @@ end
 -- the grid emits widget::layout_changed.
 local function describe_grid(w)
     local p = w._private
-    if p.has_border
-            or not clay.whole(p.horizontal_spacing) or not clay.whole(p.vertical_spacing)
-            or not clay.whole(p.min_cols_size) or not clay.whole(p.min_rows_size)
-            or (p.horizontal_expand and not p.horizontal_homogeneous)
-            or (p.vertical_expand and not p.vertical_homogeneous) then
-        return nil
+    if p.has_border then
+        return clay.refuse(w, "border_width", "is not drawn")
     end
+    if (p.horizontal_expand and not p.horizontal_homogeneous)
+            or (p.vertical_expand and not p.vertical_homogeneous) then
+        return clay.refuse(w, "expand", "needs homogeneous")
+    end
+    local horizontal_spacing = clay.pixels(w, "horizontal_spacing", p.horizontal_spacing)
+    local vertical_spacing = clay.pixels(w, "vertical_spacing", p.vertical_spacing)
+    local min_cols_size = clay.pixels(w, "min_cols_size", p.min_cols_size)
+    local min_rows_size = clay.pixels(w, "min_rows_size", p.min_rows_size)
     for _, data in ipairs(p.widgets) do
         if data.row_span > 1
                 or #find_widgets_at(p.widgets, data.row, data.col, data.row_span, data.col_span) > 1 then
-            return nil
+            return clay.refuse(w, "row_span", "and overlapping cells are not laid out")
         end
     end
 
     local told, rows, records = p.told, {}, {}
     for r = 1, p.num_rows do
         local cells = {}
-        rows[r] = { dir = "x", gap = p.horizontal_spacing, children = cells,
+        rows[r] = { dir = "x", gap = horizontal_spacing, children = cells,
             hmin = told and told.rows[r] }
         records[r] = {}
         local c = 1
@@ -960,7 +964,7 @@ local function describe_grid(w)
                 cell.widget = data.widget
                 records[r][#records[r] + 1] = { index = #cells + 1, col = c, span = data.col_span }
                 if told then
-                    local width = (data.col_span - 1) * p.horizontal_spacing
+                    local width = (data.col_span - 1) * horizontal_spacing
                     for j = c, c + data.col_span - 1 do
                         width = width + told.cols[j]
                     end
@@ -976,17 +980,17 @@ local function describe_grid(w)
         end
     end
 
-    local node = { dir = "y", gap = p.vertical_spacing, specs = rows }
+    local node = { dir = "y", gap = vertical_spacing, specs = rows }
     node.solved = function(n)
         local cols, heights = {}, {}
         for c = 1, p.num_cols do
-            cols[c] = told and told.cols[c] or p.min_cols_size
+            cols[c] = told and told.cols[c] or min_cols_size
         end
         for r = 1, p.num_rows do
-            heights[r] = told and told.rows[r] or p.min_rows_size
+            heights[r] = told and told.rows[r] or min_rows_size
             for _, cell in ipairs(records[r]) do
                 local box = rows[r].children[cell.index].box
-                local spacing = (cell.span - 1) * p.horizontal_spacing
+                local spacing = (cell.span - 1) * horizontal_spacing
                 local width = spacing
                 if told then
                     for c = cell.col, cell.col + cell.span - 1 do
@@ -1008,7 +1012,7 @@ local function describe_grid(w)
             local size = max_value(cols)
             if p.horizontal_expand and p.num_cols > 0 then
                 size = math.max(size,
-                    math.floor((n.box.width - (p.num_cols - 1) * p.horizontal_spacing) / p.num_cols))
+                    math.floor((n.box.width - (p.num_cols - 1) * horizontal_spacing) / p.num_cols))
             end
             for c = 1, p.num_cols do cols[c] = size end
         end
@@ -1016,7 +1020,7 @@ local function describe_grid(w)
             local size = max_value(heights)
             if p.vertical_expand and p.num_rows > 0 then
                 size = math.max(size,
-                    math.floor((n.box.height - (p.num_rows - 1) * p.vertical_spacing) / p.num_rows))
+                    math.floor((n.box.height - (p.num_rows - 1) * vertical_spacing) / p.num_rows))
             end
             for r = 1, p.num_rows do heights[r] = size end
         end

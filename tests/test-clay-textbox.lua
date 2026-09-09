@@ -5,8 +5,8 @@
 -- renderer's measure callback and the renderer rasters it with pangocairo,
 -- so the widget draws nothing itself. Plain text converts, and so does
 -- Pango markup that amounts to one run of one font and one color, which is
--- what the taglist and tasklist labels are; richer markup keeps the textbox
--- drawing itself, and an empty textbox converts whatever its settings, since
+-- what the taglist and tasklist labels are; richer markup uses the first
+-- run (third_party/clay.h:374-398). An empty textbox converts whatever its settings, since
 -- it draws nothing. A text change is a tree change.
 --
 -- Run: make test-one TEST=tests/test-clay-textbox.lua
@@ -107,7 +107,7 @@ local steps = {
 
         local tb = textboxes(list)
 
-        assert(#tb == 3, "expected three textboxes, got " .. #tb)
+        assert(#tb == 4, "expected four textboxes, got " .. #tb)
         assert(not tb[1].node.image and tb[1].text,
             "plain text did not become a text element: " .. tb[1].node.line)
         assert(tb[1].text.line:find('"Hello world"', 1, true),
@@ -116,10 +116,12 @@ local steps = {
             "a one-run markup did not become a text element: " .. tb[2].node.line)
         assert(tb[2].text.line:find('"Red & plain"', 1, true),
             "the markup's text is not unescaped: " .. tb[2].text.line)
-        assert(#awesome._test_widget_boxes(bar.drawin) == 5, "the refused widget still has a box")
-        assert(not tb[3].node.image and not tb[3].text
-            and tb[3].node.box.width == 0,
-            "an empty textbox is not an empty element: " .. tb[3].node.line)
+        assert(#awesome._test_widget_boxes(bar.drawin) == 6, "the converted widgets do not all have boxes")
+        assert(tb[3].text and tb[3].text.line:find('"Bold and not"', 1, true),
+            "the multi-run markup is not one text element: " .. tb[3].node.line)
+        assert(not tb[4].node.image and not tb[4].text
+            and tb[4].node.box.width == 0,
+            "an empty textbox is not an empty element: " .. tb[4].node.line)
         -- Clay sized the textboxes: fit along, the whole bar across.
         assert(tb[1].node.line:find(" w=fit h=grow ", 1, true),
             "the textbox is not sized by Clay: " .. tb[1].node.line)

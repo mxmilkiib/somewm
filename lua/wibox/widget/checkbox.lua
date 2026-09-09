@@ -212,10 +212,20 @@ local function describe_checkbox(w)
     local border = clay.solid_rgba(border_color)
     local check_fill = clay.solid_rgba(check_color)
     local check_border = clay.solid_rgba(check_border_color)
-    if (main_color and not main) or (bg and not background)
-            or (border_color and not border) or (check_color and not check_fill)
-            or (check_border_color and not check_border) then
-        return nil
+    if main_color and not main then
+        clay.ignore(w, "color", "is not solid and is transparent")
+    end
+    if bg and not background then
+        clay.ignore(w, "bg", "is not solid and is transparent")
+    end
+    if border_color and not border then
+        clay.ignore(w, "border_color", "is not solid and is transparent")
+    end
+    if check_color and not check_fill then
+        clay.ignore(w, "check_color", "is not solid and is transparent")
+    end
+    if check_border_color and not check_border then
+        clay.ignore(w, "check_border_color", "is not solid and is transparent")
     end
 
     local background_shape = w:get_shape() or shape.rectangle

@@ -3,8 +3,8 @@
 --
 -- A converted imagebox holds one image leaf whose pixels are the widget's
 -- own surface, with the image's aspect ratio: the renderer scales the
--- surface into the box Clay solved. An imagebox that draws more than that
--- (a clip shape) keeps drawing itself.
+-- surface into the box Clay solved (third_party/clay.h:414-416). A clip
+-- shape is ignored.
 --
 -- Run: make test-one TEST=tests/test-clay-imagebox.lua
 ---------------------------------------------------------------------------
@@ -97,15 +97,16 @@ local steps = {
 
         local ib = imageboxes(list)
 
-        assert(#ib == 3, "expected three imageboxes, got " .. #ib)
+        assert(#ib == 4, "expected four imageboxes, got " .. #ib)
         assert(not ib[1].node.image and ib[1].image,
             "the first imagebox is not an image element: " .. ib[1].node.line)
         assert(not ib[2].node.image and ib[2].image,
             "the padded imagebox is not an image element: " .. ib[2].node.line)
-        assert(#awesome._test_widget_boxes(bar.drawin) == 6, "the refused widget still has a box")
-        assert(not ib[3].node.image and not ib[3].image
-            and ib[3].node.box.width == 0,
-            "an imagebox with no image is not an empty element: " .. ib[3].node.line)
+        assert(#awesome._test_widget_boxes(bar.drawin) == 7, "the converted widgets do not all have boxes")
+        assert(ib[3].image, "the unclipped imagebox is not an image element")
+        assert(not ib[4].node.image and not ib[4].image
+            and ib[4].node.box.width == 0,
+            "an imagebox with no image is not an empty element: " .. ib[4].node.line)
 
         -- Scaled to the bar's height, and to the padded slot's, keeping the
         -- square; the margin's slot was sized for the taller image.

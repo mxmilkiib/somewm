@@ -180,7 +180,7 @@ local steps = {
         return true
     end,
 
-    -- A rounded shape with a border refuses the background and its subtree.
+    -- A rounded shape with a border keeps the background and its subtree.
     function(count)
         if count == 1 then
             box.bg = BOX_BG
@@ -188,12 +188,12 @@ local steps = {
             box.widget.margins = INNER
             return nil
         end
-        if #awesome._test_widget_boxes(bar.drawin) == 2 then
-            io.stderr:write("[PASS] a rounded shape with a border refuses the background\n")
+        if #awesome._test_widget_boxes(bar.drawin) == 5 then
+            io.stderr:write("[PASS] a rounded shape with a border converts\n")
             box.shape = nil
             return true
         end
-        assert(count < 20, "the background with a rounded shape and border was not refused")
+        assert(count < 20, "the background with a rounded shape and border did not convert")
     end,
 
     function(count)

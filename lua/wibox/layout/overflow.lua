@@ -27,9 +27,7 @@ local function describe_overflow(w)
     local content, along, across = fixed.describe_linear(w)
     local p = w._private
 
-    if not content or not clay.whole(p.scrollbar_width) then
-        return nil
-    end
+    local scrollbar_width = clay.pixels(w, "scrollbar_width", p.scrollbar_width)
 
     local is_y = along == "h"
     local avail, used = p.avail_in_dir, p.used_in_dir
@@ -54,9 +52,9 @@ local function describe_overflow(w)
     if p.scrollbar_enabled and overflowing then
         local length = math.floor(avail / used * avail)
         local position = math.floor((avail - length) * p.scroll_factor)
-        local track = { [across] = p.scrollbar_width, [along] = "grow",
+        local track = { [across] = scrollbar_width, [along] = "grow",
             pad = is_y and { 0, 0, position, 0 } or { position, 0, 0, 0 },
-            children = { { [across] = p.scrollbar_width, [along] = length,
+            children = { { [across] = scrollbar_width, [along] = length,
                 children = clay.whole_box(p.scrollbar_widget) } } }
 
         p.bar_length = length

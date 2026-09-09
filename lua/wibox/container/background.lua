@@ -329,32 +329,19 @@ end
 local function describe_background(w)
     local p = w._private
 
-    if type(p.bgimage) == "function" then
-        return nil
-    end
-
-    local bw = p.shape_border_width or 0
-
-    if not clay.whole(bw) then
-        return nil
-    end
-
+    local bw = clay.pixels(w, "shape_border_width", p.shape_border_width)
     local radius = clay.shape_radius(p.shape, p.shape_args)
 
     if not radius then
-        return nil
-    end
-    -- A rounded shape and a border together do not draw the ring Clay draws:
-    -- the cairo path is inset by the border width, so the visible outer
-    -- corner is rounder than the shape names. Rather than approximate it,
-    -- the container keeps drawing itself.
-    if radius > 0 and bw > 0 then
-        return nil
+        clay.ignore(w, "shape", "is not a rounded rectangle and draws as its box")
+        radius = 0
     end
 
     local node = { radius = radius, specs = clay.whole_box(p.widget) }
 
-    if p.bgimage then
+    if type(p.bgimage) == "function" then
+        clay.ignore(w, "bgimage", "is a function and is not drawn")
+    elseif p.bgimage then
         node.specs = { { image = p.bgimage._native, class = "image", natural = true,
             w = "grow", h = "grow", children = clay.whole_box(p.widget) } }
     end
@@ -363,10 +350,13 @@ local function describe_background(w)
         node.bg = clay.solid_rgba(p.background)
         if not node.bg then
             local fill = clay.fill(p.background)
-            if not fill or radius > 0 or bw > 0 then return nil end
-            node.fill = fill
-            node.shape = function(width, height)
-                return clay.shape_ops(gshape.rectangle, width, height)
+            if not fill then
+                clay.ignore(w, "bg", "is not a solid or a gradient and is transparent")
+            else
+                node.fill = fill
+                node.shape = function(width, height)
+                    return clay.shape_ops(gshape.rounded_rect, width, height, 0, 0, radius)
+                end
             end
         end
     end
@@ -376,11 +366,12 @@ local function describe_background(w)
         node.border = clay.solid_rgba(p.shape_border_color or p.foreground
             or beautiful.fg_normal or "#000000")
         if not node.border then
-            return nil
-        end
-        node.bw = { bw, bw, bw, bw }
-        if p.border_strategy == "inner" then
-            node.pad = { bw, bw, bw, bw }
+            clay.ignore(w, "shape_border_color", "is not solid and the border is transparent")
+        else
+            node.bw = { bw, bw, bw, bw }
+            if p.border_strategy == "inner" then
+                node.pad = { bw, bw, bw, bw }
+            end
         end
     end
 

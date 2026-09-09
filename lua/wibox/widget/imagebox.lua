@@ -28,6 +28,7 @@ local lgi = require("lgi")
 local cairo = lgi.cairo
 
 local base = require("wibox.widget.base")
+local clay = require("wibox.clay")
 local surface = require("gears.surface")
 local gtable = require("gears.table")
 local gdebug = require("gears.debug")
@@ -649,9 +650,9 @@ end
 
 --- wibox.widget.imagebox -> an element aligning one image leaf, whose
 -- aspect the compile step sizes from the offer. The renderer references
--- the widget's surface and scales it into that box. An SVG handle, a
--- clip shape, another fit policy, downscaling off, a scaling cap or a draw
--- override keeps the imagebox drawing itself.
+-- the widget's surface and scales it into that box (third_party/clay.h:414-416).
+-- Clip shapes, fit policies, downscaling off and scaling caps are ignored.
+-- An SVG handle or an image with no default size is refused.
 local function describe_imagebox(w)
     local p = w._private
 
@@ -659,12 +660,23 @@ local function describe_imagebox(w)
     if not p.image and not p.handle then
         return {}
     end
-    if not p.default or not p.image
-            or p.handle or p.clip_shape or p.max_scaling_factor
-            or (p.horizontal_fit_policy or "auto") ~= "auto"
-            or (p.vertical_fit_policy or "auto") ~= "auto"
-            or p.downscale == false then
-        return nil
+    if not p.default or not p.image or p.handle then
+        return clay.refuse(w, "image", "is an SVG or has no size to render at")
+    end
+    if p.clip_shape then
+        clay.ignore(w, "clip_shape", "is not applied")
+    end
+    if p.max_scaling_factor then
+        clay.ignore(w, "max_scaling_factor", "is not applied")
+    end
+    for _, axis in ipairs { "horizontal", "vertical" } do
+        local prop = axis .. "_fit_policy"
+        if (p[prop] or "auto") ~= "auto" then
+            clay.ignore(w, prop, "is drawn as auto")
+        end
+    end
+    if p.downscale == false then
+        clay.ignore(w, "downscale", "is not applied")
     end
 
     local image = { image = p.image._native, class = "image",

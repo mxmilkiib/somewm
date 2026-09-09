@@ -316,18 +316,15 @@ end
 --@DOC_fixed_COMMON@
 
 --- What wibox.layout.fixed and flex share: a layout direction and a child
--- gap, which Clay's childGap (clay.h:344) carries only when the spacing is
--- whole, not negative, and not a spacing widget, which is a widget placed
--- between the children rather than a gap.
--- Returns the node and the axis names along and across the direction, or
--- nil when the layout keeps drawing itself.
+-- gap in whole pixels (third_party/clay.h:344). A spacing widget, a widget
+-- placed between the children rather than a gap, is not drawn.
+-- Returns the node and the axis names along and across the direction.
 local function describe_linear(w)
     local p = w._private
-    local spacing = p.spacing or 0
+    local spacing = clay.pixels(w, "spacing", p.spacing)
 
-    if not clay.whole(spacing)
-            or (spacing ~= 0 and p.spacing_widget) then
-        return nil
+    if spacing ~= 0 and p.spacing_widget then
+        clay.ignore(w, "spacing_widget", "is not drawn")
     end
     if p.dir == "y" then
         return { dir = "y", gap = spacing, specs = {} }, "h", "w"
@@ -344,10 +341,6 @@ end
 -- whose `:fit` was zero.
 local function describe_fixed(w)
     local node, along, across = describe_linear(w)
-
-    if not node then
-        return nil
-    end
 
     local p = w._private
 

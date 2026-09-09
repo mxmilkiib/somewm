@@ -182,12 +182,6 @@ function clay.fill(col)
     return fill
 end
 
---- Clay pads, gaps and border widths are whole uint16 pixels
--- (clay.h:330-335 padding, 344 childGap, 533-541 border widths).
-local function whole(v)
-    return type(v) == "number" and v >= 0 and v <= 65535 and v % 1 == 0
-end
-
 --- The spec for a container's only child: the whole padded box, which is
 -- what `margin:layout` and `background:layout` place it at.
 local function whole_box(widget)
@@ -231,16 +225,27 @@ end
 --- awful.widget.systray_icon -> an element centering one image leaf: the
 -- item's pixmap, or the icon file its name resolves to, at the slot's
 -- square scaled to keep the icon's aspect, as `systray_icon:draw` paints
--- it. A hovered, urgent or overlaid icon, or one under a
--- `beautiful.systray_icon_style`, draws more than an image, and keeps
--- drawing itself.
+-- it (third_party/clay.h:414-416). Hover, urgency, overlays and
+-- `beautiful.systray_icon_style` are ignored. An icon without a usable
+-- pixmap or icon file is refused.
 function clay.systray_icon(w)
     local p = w._private
     local item = p.item
 
-    if not item or p.is_hovered or beautiful.systray_icon_style
-            or item.status == "NeedsAttention" or item.overlay_icon then
-        return nil
+    if not item then
+        return clay.refuse(w, "icon", "has no pixmap and no icon file to draw")
+    end
+    if p.is_hovered then
+        clay.ignore(w, "is_hovered", "is drawn as the plain icon")
+    end
+    if item.status == "NeedsAttention" then
+        clay.ignore(w, "status", "is drawn as the plain icon")
+    end
+    if item.overlay_icon then
+        clay.ignore(w, "overlay_icon", "is drawn as the plain icon")
+    end
+    if beautiful.systray_icon_style then
+        clay.ignore(w, "systray_icon_style", "is drawn as the plain icon")
     end
 
     local size = p.forced_size or 24
@@ -253,13 +258,13 @@ function clay.systray_icon(w)
         local path = p.current_icon
 
         if type(path) ~= "string" then
-            return nil
+            return clay.refuse(w, "icon", "has no pixmap and no icon file to draw")
         end
         if not p.clay_icon or p.clay_icon.path ~= path then
             local loaded = gsurface.load_silently(path)
 
             if not loaded then
-                return nil
+                return clay.refuse(w, "icon", "has no pixmap and no icon file to draw")
             end
             p.clay_icon = { path = path, surface = loaded }
         end
@@ -267,7 +272,7 @@ function clay.systray_icon(w)
         iw, ih = p.clay_icon.surface.width, p.clay_icon.surface.height
     end
     if not (iw > 0 and ih > 0) then
-        return nil
+        return clay.refuse(w, "icon", "has no pixmap and no icon file to draw")
     end
 
     local scale = math.min(sw / iw, sh / ih)
@@ -280,18 +285,21 @@ end
 --- wibox.widget.systray -> the fixed layout it is, with the padding and
 -- the background its overrides add (`beautiful.systray_paddings`,
 -- `beautiful.bg_systray`) and the least size its `:fit` answers. More than
--- one row (`beautiful.systray_max_rows`) is a grid, which keeps the tray
--- drawing itself.
+-- one row is drawn as one; spacing widgets and a non-solid background
+-- are ignored. Padding and spacing round to uint16 pixels
+-- (third_party/clay.h:330-335, 344).
 function clay.systray(w)
     local p = w._private
-    local padding = beautiful.systray_paddings or 0
+    local padding = clay.pixels(w, "systray_paddings", beautiful.systray_paddings)
     local rows = math.floor(tonumber(beautiful.systray_max_rows) or 1)
-    local spacing = p.spacing or 0
+    local spacing = clay.pixels(w, "spacing", p.spacing)
     local size = w.base_size or 24
 
-    if rows > 1 or not whole(padding) or not whole(spacing)
-            or (spacing ~= 0 and p.spacing_widget) then
-        return nil
+    if rows > 1 then
+        clay.ignore(w, "systray_max_rows", "above 1 is one row")
+    end
+    if spacing ~= 0 and p.spacing_widget then
+        clay.ignore(w, "spacing_widget", "is not drawn")
     end
 
     local along, across = "w", "h"
@@ -307,7 +315,7 @@ function clay.systray(w)
     if beautiful.bg_systray then
         node.bg = solid_rgba(beautiful.bg_systray)
         if not node.bg then
-            return nil
+            clay.ignore(w, "bg_systray", "is not solid and is transparent")
         end
     end
     for i, child in ipairs(p.widgets) do
@@ -342,7 +350,45 @@ local function class_name(w)
 end
 
 local warned = {}
-local warned_background, warned_bgimage = false, false
+local warned_props = {}
+
+--- Warn once per class and property that a value Clay cannot hold is
+-- left out, and go on without it. `who` is a widget or a name.
+function clay.ignore(who, property, what)
+    local name = type(who) == "string" and who or class_name(who) or "?"
+    local key = name .. " " .. property
+    if not warned_props[key] then
+        warned_props[key] = true
+        gdebug.print_warning("wibox.clay: " .. key .. " " .. what)
+    end
+end
+
+--- The same warning for a property that keeps the widget out of the
+-- tree; a describer returns it.
+function clay.refuse(who, property, what)
+    clay.ignore(who, property, what .. " and is left out of the tree")
+    return nil
+end
+
+--- The nearest whole pixel.
+function clay.round(v)
+    return math.floor(v + 0.5)
+end
+
+--- A padding, gap, offset or border width as Clay holds it: whole uint16
+-- pixels (clay.h:330-335, 344, 533-541). A fraction rounds silently; a
+-- negative or oversized value is clamped with a warning.
+function clay.pixels(who, property, v)
+    v = clay.round(v or 0)
+    if v < 0 then
+        clay.ignore(who, property, "is negative and is 0")
+        return 0
+    elseif v > 65535 then
+        clay.ignore(who, property, "exceeds 65535 and is 65535")
+        return 65535
+    end
+    return v
+end
 
 --- The node a widget compiles to, plus any foreground it puts in force, or
 -- nil for a hidden or refused widget. `node.specs` sizes its children.
@@ -546,9 +592,8 @@ end
 function clay.compile(self, root, context, width, height)
     local base_rgba = solid_rgba(self.background_color)
     local fill = not base_rgba and clay.fill(self.background_color)
-    if self.background_color and not base_rgba and not fill and not warned_background then
-        warned_background = true
-        gdebug.print_warning("wibox.clay: an unsupported background pattern is transparent")
+    if self.background_color and not base_rgba and not fill then
+        clay.ignore("drawable", "bg", "is not a solid or a gradient and is transparent")
     end
     local st = { leaves = {}, widgets = {}, context = context, width = width, height = height }
     local node = root and compile_node(st, root, nil,
@@ -584,10 +629,7 @@ function clay.compile(self, root, context, width, height)
     end
     if self.background_image then
         if type(self.background_image) == "function" then
-            if not warned_bgimage then
-                warned_bgimage = true
-                gdebug.print_warning("wibox.clay: a function bgimage is ignored")
-            end
+            clay.ignore("drawable", "bgimage", "is a function and is not drawn")
         else
             node = { image = self.background_image._native, class = "image", natural = true,
                 w = "grow", h = "grow", spacer = true, children = { node } }
@@ -604,7 +646,6 @@ function clay.compile(self, root, context, width, height)
 end
 
 clay.solid_rgba = solid_rgba
-clay.whole = whole
 clay.whole_box = whole_box
 
 return clay

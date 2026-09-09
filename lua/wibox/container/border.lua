@@ -137,10 +137,10 @@ local function compute_side_borders(self, ctx)
     self._private.original_md = setup_origin_common(self, ctx)
 
     local m = {
-        left   = override.left,
-        right  = override.right,
-        top    = override.top,
-        bottom = override.bottom,
+        left   = clay.pixels(self, "borders.left", override.left),
+        right  = clay.pixels(self, "borders.right", override.right),
+        top    = clay.pixels(self, "borders.top", override.top),
+        bottom = clay.pixels(self, "borders.bottom", override.bottom),
     }
 
     -- Limit the border to what the surface can provide.
@@ -902,13 +902,24 @@ local function describe_border(w, _, st)
     if p.pending_border_images then
         init_border_images(w)
     end
-    if p.honor_borders == false or p.ontop == false
-            or p.border_merging or p.expand_corners or p.border_image_dpi then
-        return nil
+    if p.honor_borders == false then
+        return clay.refuse(w, "honor_borders", "is not drawn")
+    end
+    if p.ontop == false then
+        return clay.refuse(w, "ontop", "is not drawn")
+    end
+    if p.border_merging then
+        return clay.refuse(w, "border_merging", "is not drawn")
+    end
+    if p.expand_corners then
+        return clay.refuse(w, "expand_corners", "is not drawn")
+    end
+    if p.border_image_dpi then
+        return clay.refuse(w, "border_image_dpi", "is not drawn")
     end
     for _, mode in ipairs(fit_types) do
         if p[mode .. "_fit_policy"] ~= "fit" then
-            return nil
+            clay.ignore(w, mode .. "_fit_policy", "is drawn as fit")
         end
     end
 
@@ -916,14 +927,7 @@ local function describe_border(w, _, st)
     local pad = {}
 
     for i, side in ipairs { "left", "right", "top", "bottom" } do
-        if not clay.whole((p.borders or {})[side]) then
-            return nil
-        end
-        local value = paddings[side] or 0
-
-        if not clay.whole(value) then
-            return nil
-        end
+        local value = clay.pixels(w, "paddings." .. side, paddings[side])
         pad[i] = p.widget and value or 0
     end
 
@@ -943,7 +947,7 @@ local function describe_border(w, _, st)
 
             if image.handle or not image.image
                     or image.default.width == 0 or image.default.height == 0 then
-                return nil
+                return clay.refuse(w, "border_images", "is an SVG or has no size to render at")
             end
             box.image, box.class = image.image._native, "image"
             box.filter = image.scaling_quality
@@ -963,7 +967,7 @@ local function describe_border(w, _, st)
 
                 if image.handle or not image.image
                         or image.default.width == 0 or image.default.height == 0 then
-                    return nil
+                    return clay.refuse(w, "border_images", "is an SVG or has no size to render at")
                 end
                 checked[ib] = true
             end

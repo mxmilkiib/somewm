@@ -196,15 +196,12 @@ end
 -- zIndex, declaration order, clay.h:2603-2615). The stack's spacing and the
 -- accumulated offsets are that element's padding around the child, which is
 -- how the engine shrinks each child: by twice the spacing and by the offset
--- times the child count. A negative offset would need negative padding, so
--- it keeps the stack drawing itself.
+-- times the child count.
 local function describe_stack(w)
     local p = w._private
-    local spacing, ho, vo = p.spacing or 0, p.h_offset or 0, p.v_offset or 0
-
-    if not clay.whole(spacing) or not clay.whole(ho) or not clay.whole(vo) then
-        return nil
-    end
+    local spacing = clay.pixels(w, "spacing", p.spacing)
+    local ho = clay.pixels(w, "horizontal_offset", p.h_offset)
+    local vo = clay.pixels(w, "vertical_offset", p.v_offset)
 
     local n = #p.widgets
     local specs = {}

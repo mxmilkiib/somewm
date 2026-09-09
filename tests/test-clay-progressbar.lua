@@ -8,7 +8,7 @@ local wibox = require("wibox")
 
 local s = screen[1]
 local geo = s.geometry
-local bar, progressbar
+local bar, progressbar, converted_boxes
 local BG = "#204080"
 
 local function pixel(x, y, hex)
@@ -36,7 +36,6 @@ local steps = {
                 value = 0.5, color = "#ff0000", background_color = "#00ff00",
                 margins = 4, paddings = 2, widget = wibox.widget.progressbar,
             }
-            -- The empty margin keeps the tree inspectable when the bar rasters.
             bar = wibox { x = geo.x + 100, y = geo.y + 100, width = 200, height = 40,
                 screen = s, visible = true, bg = BG,
                 widget = wibox.container.margin(progressbar) }
@@ -46,6 +45,7 @@ local steps = {
             assert(count < 20, "the progressbar never converted")
             return nil
         end
+        converted_boxes = #awesome._test_widget_boxes(bar.drawin)
         check_box(6, 6, 94, 28)
         assert(pixel(53, 20, "#ff0000"), "the bar centre is not red")
         assert(pixel(104, 20, "#00ff00"), "the background is not green")
@@ -105,11 +105,11 @@ local steps = {
             return nil
         end
         local line = awesome._clay_tree(s):match("[^\n]*wibox.widget.progressbar[^\n]*")
-        assert(not line, "wibox.widget.progressbar was not refused")
-        assert(#awesome._test_widget_boxes(bar.drawin) == 2, "the refused subtree still has boxes")
-        assert(pixel(51, 20, BG), "the centre does not show the bar background")
+        assert(line, "wibox.widget.progressbar did not convert")
+        assert(#awesome._test_widget_boxes(bar.drawin) == converted_boxes, "ticks changed the widget boxes")
+        assert(pixel(51, 20, "#00ff00"), "the centre is not green")
         bar.visible = false
-        io.stderr:write("[PASS] ticks refuse the progressbar\n")
+        io.stderr:write("[PASS] ticks are ignored in the progressbar\n")
         return true
     end,
 }

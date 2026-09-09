@@ -11,6 +11,7 @@
 -- @see 03-declarative-layout.md
 ---------------------------------------------------------------------------
 
+local clay = require("wibox.clay")
 local base  = require("wibox.widget.base" )
 local flex  = require("wibox.layout.flex" )
 local fixed = require("wibox.layout.fixed")
@@ -390,9 +391,13 @@ end
 local function describe_ratio(w)
     local node, along, across = fixed.describe_linear(w)
 
-    if not node or w._private.spacing ~= 0
-            or w:get_inner_fill_strategy() ~= "default" then
-        return nil
+    if w._private.spacing ~= 0 then
+        clay.ignore(w, "spacing", "is not drawn")
+        node.gap = 0
+    end
+    if w:get_inner_fill_strategy() ~= "default" then
+        clay.ignore(w, "inner_fill_strategy",
+            "is not applied; the space the ratios leave stays at the end")
     end
     for k, child in ipairs(w._private.widgets) do
         local share = math.max(0, math.min(1, w._private.ratios[k] or 0))

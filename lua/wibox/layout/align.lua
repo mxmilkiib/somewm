@@ -29,6 +29,7 @@
 local pairs = pairs
 local gtable = require("gears.table")
 local base = require("wibox.widget.base")
+local clay = require("wibox.clay")
 
 local align = {}
 
@@ -235,16 +236,16 @@ local function describe_align(w)
     local specs = {}
     local node = { dir = p.dir, specs = specs }
 
-    -- "outside" with no second widget gives both outer widgets the whole
-    -- length, one over the other, which two elements in a row cannot say.
-    if p.expand == "outside" and not p.second then
-        if p.first or p.third then
-            return nil
+    local expand = p.expand
+    if expand == "outside" and not p.second then
+        if not p.first and not p.third then
+            return node
         end
-        return node
+        clay.ignore(w, "expand", "outside needs a second widget and is none")
+        expand = "none"
     end
 
-    if p.expand == "inside" or not p.second then
+    if expand == "inside" or (not p.second and p.expand ~= "outside") then
         -- The outer widgets at their fit; the second grows between. With
         -- no second widget the third still sits at the far edge.
         if p.first then
@@ -261,7 +262,7 @@ local function describe_align(w)
         return node
     end
 
-    if p.expand == "outside" then
+    if expand == "outside" then
         -- The second at its fit; the outer widgets take what it leaves,
         -- splitting it evenly unless one of them holds converted content
         -- wider than its half. A missing one leaves its half empty.

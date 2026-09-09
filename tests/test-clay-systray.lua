@@ -4,7 +4,7 @@
 -- wibox.widget.systray is a fixed layout with padding and a least size,
 -- and each systray_icon centers the item's icon in its square slot. A
 -- converted tray holds one image element per icon, from the item's pixmap;
--- an urgent icon draws more than an image and keeps drawing itself.
+-- an urgent icon uses the same plain image (third_party/clay.h:414-416).
 --
 -- Run: make test-one TEST=tests/test-clay-systray.lua
 ---------------------------------------------------------------------------
@@ -17,7 +17,7 @@ local wibox = require("wibox")
 local s = screen[1]
 local BX, BY, BW, BH = 0, 0, 400, 24
 local cap = capture.new(s, BX, BY, BW, BH)
-local bar, tray, items
+local bar, tray, items, converted_boxes
 
 -- A solid ARGB32 pixmap of one color, in the network byte order the item
 -- takes (StatusNotifierItem's).
@@ -124,13 +124,14 @@ local steps = {
         end)
 
         if ok then
+            converted_boxes = #awesome._test_widget_boxes(bar.drawin)
             io.stderr:write("[PASS] the renderer draws the icons\n")
             return true
         end
         assert(count_ < 20, "the icons were not drawn")
     end,
 
-    -- An urgent item is refused.
+    -- An urgent item draws as the plain icon.
     function(count_)
         if count_ == 1 then
             items[2].status = "NeedsAttention"
@@ -139,13 +140,13 @@ local steps = {
 
         local _, list = nodes()
 
-        if count(list, "wibox.widget.systray_icon", false) == 1 then
-            assert(#awesome._test_widget_boxes(bar.drawin) == 4, "the refused icon still has a box")
-            io.stderr:write("[PASS] an urgent icon is refused\n")
+        if count(list, "wibox.widget.systray_icon", false) == 2 then
+            assert(#awesome._test_widget_boxes(bar.drawin) == converted_boxes, "urgency changed the widget boxes")
+            io.stderr:write("[PASS] an urgent icon draws as the plain icon\n")
             bar.visible = false
             return true
         end
-        assert(count_ < 20, "the urgent icon was not refused")
+        assert(count_ < 20, "the urgent icon did not convert")
     end,
 }
 

@@ -7,7 +7,7 @@ local wibox = require("wibox")
 
 local s = screen[1]
 local geo = s.geometry
-local bar, layout
+local bar, layout, converted_boxes
 local BG = "#204080"
 
 local function pixel(x, y, hex)
@@ -34,6 +34,7 @@ local steps = {
             assert(count < 20, "the ratio never converted")
             return nil
         end
+        converted_boxes = #awesome._test_widget_boxes(bar.drawin)
         local shares = 0
         for _ in awesome._clay_tree(s):gmatch("[^\n]* w=33%.3333%%[^\n]*") do
             shares = shares + 1
@@ -63,10 +64,10 @@ local steps = {
             return nil
         end
         local line = awesome._clay_tree(s):match("[^\n]*wibox.layout.ratio[^\n]*")
-        assert(not line, "wibox.layout.ratio was not refused")
-        assert(#awesome._test_widget_boxes(bar.drawin) == 2, "the refused subtree still has boxes")
+        assert(line, "wibox.layout.ratio did not convert")
+        assert(#awesome._test_widget_boxes(bar.drawin) == converted_boxes, "the converted box count changed")
         bar.visible = false
-        io.stderr:write("[PASS] spacing refuses the ratio\n")
+        io.stderr:write("[PASS] spacing is ignored in the ratio\n")
         return true
     end,
 }

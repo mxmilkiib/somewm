@@ -139,12 +139,13 @@ local function describe_separator(w)
     local p = w._private
     local s = p.shape or beautiful.separator_shape
     if p.draw or beautiful.separator_draw then
-        return nil
+        clay.ignore(w, "draw", "is not applied")
     end
     local col = p.color or beautiful.separator_color
     local fill = clay.solid_rgba(col)
     if col and not fill then
-        return nil
+        clay.ignore(w, "color", "is not solid and is transparent")
+        fill = { 0, 0, 0, 0 }
     end
     fill = fill or { 0, 0, 0, 1 }
     if not s then
@@ -182,7 +183,7 @@ local function describe_separator(w)
         if bc then
             stroke = clay.solid_rgba(bc)
             if not stroke then
-                return nil
+                clay.ignore(w, "border_color", "is not solid and is transparent")
             end
         else
             fill = nil

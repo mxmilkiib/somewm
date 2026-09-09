@@ -212,18 +212,16 @@ end
 local function describe_margin(w)
     local p = w._private
 
-    -- draw_empty=false makes an empty margin no size at all, where Clay's
-    -- fit wraps the padding.
+    if p.draw_empty == false and not p.widget then
+        return { pad = { 0, 0, 0, 0 }, specs = {} }
+    end
     if p.draw_empty == false then
-        return nil
+        clay.ignore(w, "draw_empty", "is false and the margins are drawn around an empty child")
     end
 
-    local pad = { p.left or 0, p.right or 0, p.top or 0, p.bottom or 0 }
-
-    for _, v in ipairs(pad) do
-        if not clay.whole(v) then
-            return nil
-        end
+    local pad = {}
+    for i, side in ipairs { "left", "right", "top", "bottom" } do
+        pad[i] = clay.pixels(w, side, p[side])
     end
 
     local node = { pad = pad, specs = clay.whole_box(p.widget) }
@@ -232,9 +230,10 @@ local function describe_margin(w)
         local rgba = clay.solid_rgba(p.color)
 
         if not rgba then
-            return nil
+            clay.ignore(w, "color", "is not solid and is transparent")
+        else
+            node.border, node.bw = rgba, pad
         end
-        node.border, node.bw = rgba, pad
     end
 
     return node

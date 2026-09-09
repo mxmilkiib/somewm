@@ -269,29 +269,25 @@ local function describe_arcchart(w, fg)
     local background = clay.solid_rgba(bg)
     local border_color = w:get_border_color()
     local border = clay.solid_rgba(border_color or "#000000")
-    if (bg and not background) or (border_color and not border) then
-        return nil
+    if bg and not background then
+        clay.ignore(w, "bg", "is not solid and is transparent")
+    end
+    if border_color and not border then
+        clay.ignore(w, "border_color", "is not solid and the border is transparent")
     end
     local colors = w:get_colors() or {}
     local fills = {}
     for k, col in pairs(colors) do
         fills[k] = clay.solid_rgba(col)
         if col and not fills[k] then
-            return nil
+            clay.ignore(w, "colors", "holds a colour that is not solid, drawn transparent")
         end
     end
 
     local padding = w._private.paddings or {}
-    local left, right = padding.left or 0, padding.right or 0
-    local top, bottom = padding.top or 0, padding.bottom or 0
-    if left + right ~= top + bottom then
-        return nil
-    end
-    local pad = { offset + left, offset + right, offset + top, offset + bottom }
-    for _, v in ipairs(pad) do
-        if not clay.whole(v) then
-            return nil
-        end
+    local pad = {}
+    for i, side in ipairs { "left", "right", "top", "bottom" } do
+        pad[i] = clay.pixels(w, "paddings." .. side, offset + (padding[side] or 0))
     end
 
     local sum = 0
@@ -311,7 +307,7 @@ local function describe_arcchart(w, fg)
         { square = true, radius = PILL, children = clay.whole_box(w._private.widget) },
     } }
     local specs = node.specs
-    if bg then
+    if background then
         specs[#specs + 1] = {
             float = true, w = "grow", h = "grow", stroke = background,
             stroke_width = thickness + 2 * border_width,
@@ -329,23 +325,28 @@ local function describe_arcchart(w, fg)
             local arc_start, arc_end = math.pi - end_angle, math.pi - start_angle
             local start_rounded = use_rounded_edges and k == #values
             local end_rounded = use_rounded_edges and k == 1
-            fill = fills[k] or fill or clay.solid_rgba(fg)
-            if not fill then
-                return nil
+            if colors[k] then
+                fill = fills[k]
+            else
+                fill = fill or clay.solid_rgba(fg)
             end
-            specs[#specs + 1] = {
-                float = true, w = "grow", h = "grow", fill = fill,
-                shape = function(width, height)
-                    local wa = outline_workarea(width, height)
-                    return clay.shape_ops(shape.arc, wa.width - border_width,
-                        wa.height - border_width, wa.x + border_width / 2,
-                        wa.y + border_width / 2, thickness + border_width,
-                        arc_start, arc_end, start_rounded, end_rounded)
-                end,
-            }
+            if not fill then
+                clay.ignore(w, "colors", "holds a colour that is not solid, drawn transparent")
+            else
+                specs[#specs + 1] = {
+                    float = true, w = "grow", h = "grow", fill = fill,
+                    shape = function(width, height)
+                        local wa = outline_workarea(width, height)
+                        return clay.shape_ops(shape.arc, wa.width - border_width,
+                            wa.height - border_width, wa.x + border_width / 2,
+                            wa.y + border_width / 2, thickness + border_width,
+                            arc_start, arc_end, start_rounded, end_rounded)
+                    end,
+                }
+            end
             start_angle = end_angle
         end
-        if border_width > 0 and #values > 0 then
+        if border and border_width > 0 and #values > 0 then
             specs[#specs + 1] = {
                 float = true, w = "grow", h = "grow", stroke = border,
                 stroke_width = border_width,

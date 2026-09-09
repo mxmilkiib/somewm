@@ -182,7 +182,7 @@ local function describe_constraint(w)
         elseif strategy == "max" then
             node[axis .. "max"] = limit
         else
-            return nil
+            clay.ignore(w, "strategy", "is unknown and no limit is applied")
         end
     end
     return node

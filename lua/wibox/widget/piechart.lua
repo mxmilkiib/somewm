@@ -203,13 +203,18 @@ local function describe_piechart(w, fg)
     local colors = w:get_colors()
     local col_count = colors and #colors or 0
     local border = clay.solid_rgba(border_color)
-    if border_color and not border then return nil end
+    if border_color and not border then
+        clay.ignore(w, "border_color", "is not solid and is transparent")
+    end
     local foreground
     if has_label or (border_width > 0 and not border_color) then
         foreground = clay.solid_rgba(fg)
-        if not foreground then return nil end
+        if not foreground then
+            clay.ignore(w, "fg", "is not solid and the labels are not drawn")
+            has_label = false
+        end
     end
-    local stroke = border_width > 0 and (border or foreground) or nil
+    local stroke = border_width > 0 and (border or (not border_color and foreground)) or nil
     -- Floating GROW takes the parent box (third_party/clay.h:2224-2237),
     -- anchored to it (third_party/clay.h:2634-2636); equal zIndex roots
     -- paint in declaration order (third_party/clay.h:2603-2615).
@@ -222,8 +227,9 @@ local function describe_piechart(w, fg)
         local end_angle = start + 2 * math.pi * (v / sum)
         local col = colors and colors[math.fmod(count, col_count) + 1]
         local fill = clay.solid_rgba(col)
-        if col and not fill then return nil end
-        if fill or stroke then
+        if col and not fill then
+            clay.ignore(w, "colors", "holds a colour that is not solid, drawn transparent")
+        elseif fill or stroke then
             specs[#specs + 1] = {
                 float = true, w = "grow", h = "grow", fill = fill,
                 stroke = stroke, stroke_width = border_width,

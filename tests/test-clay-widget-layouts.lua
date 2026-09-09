@@ -166,11 +166,11 @@ local steps = {
         return true
     end,
 
-    -- Fractional spacing refuses the stack and all its children.
+    -- Fractional spacing rounds to a whole pixel.
     function(count)
         if count == 1 then bar.widget.spacing = 0.5; return nil end
-        assert(#awesome._test_widget_boxes(bar.drawin) == 1, "the stack was not refused")
-        io.stderr:write("[PASS] fractional spacing refuses the stack subtree\n")
+        assert(#awesome._test_widget_boxes(bar.drawin) == 13, "the stack did not stay converted")
+        io.stderr:write("[PASS] fractional spacing rounds in the stack\n")
         return true
     end,
     function(count)

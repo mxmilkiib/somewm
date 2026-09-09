@@ -7,7 +7,7 @@ local wibox = require("wibox")
 
 local s = screen[1]
 local geo = s.geometry
-local bar, layout
+local bar, layout, converted_boxes
 local BG = "#204080"
 
 local function pixel(x, y, hex)
@@ -45,6 +45,7 @@ local steps = {
             assert(count < 20, "the manual layout never converted")
             return nil
         end
+        converted_boxes = #awesome._test_widget_boxes(bar.drawin)
         local wrappers = {}
         for line in awesome._clay_tree(s):gmatch("[^\n]* spacer[^\n]*") do
             wrappers[#wrappers + 1] = line
@@ -74,10 +75,10 @@ local steps = {
             return nil
         end
         local line = awesome._clay_tree(s):match("[^\n]*wibox.layout.manual[^\n]*")
-        assert(not line, "wibox.layout.manual was not refused")
-        assert(#awesome._test_widget_boxes(bar.drawin) == 2, "the refused subtree still has boxes")
+        assert(line, "wibox.layout.manual did not convert")
+        assert(#awesome._test_widget_boxes(bar.drawin) == converted_boxes, "the converted box count changed")
         bar.visible = false
-        io.stderr:write("[PASS] callable points refuse the manual layout\n")
+        io.stderr:write("[PASS] callable points skip their child in the manual layout\n")
         return true
     end,
 }

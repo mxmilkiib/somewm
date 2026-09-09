@@ -12,6 +12,7 @@
 ---------------------------------------------------------------------------
 local gtable = require("gears.table")
 local base = require("wibox.widget.base")
+local clay = require("wibox.clay")
 local unpack = unpack or table.unpack -- luacheck: globals unpack (compatibility with Lua 5.1)
 
 local manual_layout = {}
@@ -203,18 +204,32 @@ local function describe_manual(w)
     local node = { w = "grow", h = "grow", specs = {} }
     for k, child in ipairs(w._private.widgets) do
         local pt = w._private.pos[k] or { x = 0, y = 0 }
+        local valid = true
         if type(pt) == "function" or (getmetatable(pt) or {}).__call then
-            return nil
-        end
-        for _, key in ipairs { "x", "y", "width", "height" } do
-            local value = pt[key]
-            if value ~= nil and (type(value) ~= "number"
-                    or ((key == "width" or key == "height") and value < 0)) then
-                return nil
+            clay.ignore(w, "position", "is a function and the widget is skipped")
+            valid = false
+        else
+            for _, key in ipairs { "x", "y", "width", "height" } do
+                if pt[key] ~= nil and type(pt[key]) ~= "number" then
+                    clay.ignore(w, "position", "is not a number and the widget is skipped")
+                    valid = false
+                    break
+                end
             end
         end
-        node.specs[k] = { float = true, x = pt.x, y = pt.y, w = pt.width, h = pt.height,
-            children = { { widget = child, w = "grow", h = "grow" } } }
+        if valid then
+            local width, height = pt.width, pt.height
+            if width and width < 0 then
+                clay.ignore(w, "width", "is negative and is 0")
+                width = 0
+            end
+            if height and height < 0 then
+                clay.ignore(w, "height", "is negative and is 0")
+                height = 0
+            end
+            node.specs[#node.specs + 1] = { float = true, x = pt.x, y = pt.y, w = width, h = height,
+                children = { { widget = child, w = "grow", h = "grow" } } }
+        end
     end
     return node
 end

@@ -626,17 +626,18 @@ end
 local function describe_graph(w)
     local p = w._private
     local bg = clay.solid_rgba(p.background_color or prop_fallbacks.background_color)
-    local bw = p.border_width or prop_fallbacks.border_width
-    if not bg or not clay.whole(bw) then
-        return nil
+    local bw = clay.pixels(w, "border_width", p.border_width or prop_fallbacks.border_width)
+    if not bg then
+        clay.ignore(w, "background_color", "is not solid and is transparent")
     end
     local node = { w = "grow", h = "grow", bg = bg, specs = {} }
     if bw > 0 then
         node.border = clay.solid_rgba(p.border_color or prop_fallbacks.border_color)
         if not node.border then
-            return nil
+            clay.ignore(w, "border_color", "is not solid and is transparent")
+        else
+            node.bw = { bw, bw, bw, bw }
         end
-        node.bw = { bw, bw, bw, bw }
     end
 
     local has_nan = false
@@ -646,7 +647,7 @@ local function describe_graph(w)
         if graph_should_draw_data_group(w, g) then
             local fill = clay.solid_rgba(w:pick_data_group_color(g))
             if not fill then
-                return nil
+                clay.ignore(w, "color", "holds a colour that is not solid, drawn transparent")
             end
             for _, value in ipairs(values) do
                 if value ~= value then
@@ -654,6 +655,33 @@ local function describe_graph(w)
                     break
                 end
             end
+            if fill then
+                node.specs[#node.specs + 1] = {
+                    float = true, w = "grow", h = "grow", fill = fill,
+                    shape = function(width, height)
+                        local values_width, values_height = width - 2 * bw, height - 2 * bw
+                        local n = w:compute_drawn_values_num(values_width)
+                        graph_gather_drawn_values_num_stats(w, n)
+                        if n == 0 then
+                            return {}
+                        end
+                        return clay.shape_ops(function(cr)
+                            graph_walk_values(w, cr, values_height, n, function(group_idx, x, value_y, base_y, transform)
+                                if group_idx == g and x ~= nil then
+                                    graph_emit_value(w, cr, x, value_y, base_y, transform)
+                                end
+                            end)
+                        end, values_width, values_height, bw, bw)
+                    end,
+                }
+            end
+        end
+    end
+    if p.nan_indication and has_nan then
+        local fill = clay.solid_rgba(p.nan_color or prop_fallbacks.nan_color)
+        if not fill then
+            clay.ignore(w, "nan_color", "is not solid and is transparent")
+        else
             node.specs[#node.specs + 1] = {
                 float = true, w = "grow", h = "grow", fill = fill,
                 shape = function(width, height)
@@ -663,41 +691,17 @@ local function describe_graph(w)
                     if n == 0 then
                         return {}
                     end
+                    local step_width = p.step_width or prop_fallbacks.step_width
                     return clay.shape_ops(function(cr)
-                        graph_walk_values(w, cr, values_height, n, function(group_idx, x, value_y, base_y, transform)
-                            if group_idx == g and x ~= nil then
-                                graph_emit_value(w, cr, x, value_y, base_y, transform)
+                        graph_walk_values(w, cr, values_height, n, function(group_idx, x)
+                            if group_idx == nil and x ~= nil then
+                                cr:rectangle(x, 0, step_width, values_height)
                             end
                         end)
                     end, values_width, values_height, bw, bw)
                 end,
             }
         end
-    end
-    if p.nan_indication and has_nan then
-        local fill = clay.solid_rgba(p.nan_color or prop_fallbacks.nan_color)
-        if not fill then
-            return nil
-        end
-        node.specs[#node.specs + 1] = {
-            float = true, w = "grow", h = "grow", fill = fill,
-            shape = function(width, height)
-                local values_width, values_height = width - 2 * bw, height - 2 * bw
-                local n = w:compute_drawn_values_num(values_width)
-                graph_gather_drawn_values_num_stats(w, n)
-                if n == 0 then
-                    return {}
-                end
-                local step_width = p.step_width or prop_fallbacks.step_width
-                return clay.shape_ops(function(cr)
-                    graph_walk_values(w, cr, values_height, n, function(group_idx, x)
-                        if group_idx == nil and x ~= nil then
-                            cr:rectangle(x, 0, step_width, values_height)
-                        end
-                    end)
-                end, values_width, values_height, bw, bw)
-            end,
-        }
     end
     return node
 end

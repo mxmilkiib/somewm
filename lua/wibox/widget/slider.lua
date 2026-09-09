@@ -356,7 +356,7 @@ local function describe_slider(w)
     local p = w._private
     local bbw = p.bar_border_width or beautiful.slider_bar_border_width or 0
     if bbw > 0 then
-        return nil
+        clay.ignore(w, "bar_border_width", "is not drawn")
     end
 
     local bar_color = p.bar_color or beautiful.slider_bar_color
@@ -367,9 +367,17 @@ local function describe_slider(w)
     local active_fill = clay.solid_rgba(active)
     local handle_fill = clay.solid_rgba(handle_color)
     local handle_stroke = clay.solid_rgba(handle_border_color)
-    if (bar_color and not background) or (active and not active_fill)
-            or (handle_color and not handle_fill) or (handle_border_color and not handle_stroke) then
-        return nil
+    if bar_color and not background then
+        clay.ignore(w, "bar_color", "is not solid and is transparent")
+    end
+    if active and not active_fill then
+        clay.ignore(w, "bar_active_color", "is not solid and is transparent")
+    end
+    if handle_color and not handle_fill then
+        clay.ignore(w, "handle_color", "is not solid and is transparent")
+    end
+    if handle_border_color and not handle_stroke then
+        clay.ignore(w, "handle_border_color", "is not solid and is transparent")
     end
 
     local margins = p.bar_margins or beautiful.slider_bar_margins
@@ -380,29 +388,27 @@ local function describe_slider(w)
         local sides = i == 1 and bar_margins or handle_margins
         for j, side in ipairs { "left", "right", "top", "bottom" } do
             local v = type(value) == "number" and value or (value and value[side] or 0)
-            if not clay.whole(v) then
-                return nil
-            end
-            sides[j] = v
+            sides[j] = clay.pixels(w, prop .. "." .. side, v)
         end
     end
-    if bar_h and not clay.whole(bar_h) then
-        return nil
+    if bar_h then
+        bar_h = clay.pixels(w, "bar_height", bar_h)
     end
 
     local hw = p.handle_width or beautiful.slider_handle_width
     local hbw = p.handle_border_width or beautiful.slider_handle_border_width or 0
     local draws_active = type(bar_color) == "string" and type(active) == "string"
+        and active_fill ~= nil
     if draws_active and not hw and bar_h then
-        return nil
+        clay.ignore(w, "handle_width", "is unset with a bar_height and is half the bar's height")
     end
     if draws_active and not handle_color then
-        return nil
+        clay.ignore(w, "handle_color", "is unset and the handle takes the bar colour")
     end
     local bar_shape = p.bar_shape or beautiful.slider_bar_shape or properties.bar_shape
     local radius = clay.shape_radius(bar_shape)
     if draws_active and radius == nil then
-        return nil
+        clay.ignore(w, "bar_shape", "does not cut the active bar")
     end
 
     local value = p.value or p.min or 0
@@ -412,7 +418,9 @@ local function describe_slider(w)
     local rate = range > 0 and (value - minimum) / range or 0
     local handle_shape = p.handle_shape or beautiful.slider_handle_shape or properties.handle_shape
     handle_fill = handle_fill or background or { 0, 0, 0, 1 }
-    handle_stroke = handle_stroke or handle_fill
+    if not handle_border_color then
+        handle_stroke = handle_fill
+    end
 
     local bar = { w = "grow", h = bar_h or "grow" }
     if radius then
@@ -426,7 +434,7 @@ local function describe_slider(w)
     if draws_active then
         bar.children = { { w = "grow", h = "grow", fill = active_fill,
             shape = function(width, height)
-                local slider_height = height + bar_margins[3] + bar_margins[4]
+                local slider_height = bar_h and height or height + bar_margins[3] + bar_margins[4]
                 local handle_width = hw or math.floor(slider_height / 2)
                 local baw = math.floor(rate * width - (handle_width - hbw / 2) * (rate - 0.5))
                 if baw <= 0 then

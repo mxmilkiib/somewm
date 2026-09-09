@@ -234,20 +234,20 @@ local function describe_radialprogressbar(w)
 
     local border = clay.solid_rgba(w:get_border_color() or "#0000ff")
     local progress = clay.solid_rgba(w:get_color() or "#ff00ff")
-    if not border or not progress then
-        return nil
+    if not border then
+        clay.ignore(w, "border_color", "is not solid and is transparent")
+    end
+    if not progress then
+        clay.ignore(w, "color", "is not solid and is transparent")
     end
 
     local bw = w._private.border_width or
         beautiful.radialprogressbar_border_width or default_outline_width
     local percent = w._percent or 0
     local padding = w._private.paddings or {}
-    local pad = { bw / 2 + (padding.left or 0), bw / 2 + (padding.right or 0),
-        bw / 2 + (padding.top or 0), bw / 2 + (padding.bottom or 0) }
-    for _, v in ipairs(pad) do
-        if not clay.whole(v) then
-            return nil
-        end
+    local pad = {}
+    for i, side in ipairs { "left", "right", "top", "bottom" } do
+        pad[i] = clay.pixels(w, "paddings." .. side, bw / 2 + (padding[side] or 0))
     end
 
     -- render.c rounded_rect_path clamps PILL to half the shorter side,
@@ -256,17 +256,21 @@ local function describe_radialprogressbar(w)
     local node = { pad = pad, specs = {
         { w = "grow", h = "grow", radius = PILL,
             children = clay.whole_box(w._private.widget) },
-        { float = true, w = "grow", h = "grow", stroke = border, stroke_width = bw,
+    } }
+    if border then
+        node.specs[#node.specs + 1] = { float = true, w = "grow", h = "grow", stroke = border, stroke_width = bw,
             shape = function(width, height)
                 local wa = outline_workarea(w, width, height)
                 return clay.shape_ops(shape.rounded_bar, wa.width, wa.height, wa.x, wa.y)
-            end },
-        { float = true, w = "grow", h = "grow", stroke = progress, stroke_width = bw,
+            end }
+    end
+    if progress then
+        node.specs[#node.specs + 1] = { float = true, w = "grow", h = "grow", stroke = progress, stroke_width = bw,
             shape = function(width, height)
                 local wa = outline_workarea(w, width, height)
                 return clay.shape_ops(shape.radial_progress, wa.width, wa.height, wa.x, wa.y, percent)
-            end },
-    } }
+            end }
+    end
     if not w._private.widget then
         node.w, node.h = "grow", "grow"
     end

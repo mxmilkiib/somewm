@@ -162,10 +162,6 @@ end
 local function describe_flex(w)
     local node, along = fixed.describe_linear(w)
 
-    if not node then
-        return nil
-    end
-
     local p = w._private
 
     node.share = along

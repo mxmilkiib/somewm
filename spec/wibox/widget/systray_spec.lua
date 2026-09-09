@@ -177,6 +177,29 @@ describe("wibox.widget.systray (SNI)", function()
     end)
 
 
+    describe("clay properties", function()
+        it("draws multiple rows as one", function()
+            beautiful_mock.systray_max_rows = 2
+            local warning = stub(require("gears.debug"), "print_warning")
+            assert.is_not_nil(widget._clay.describe(widget))
+            assert.stub(warning).was_called(1)
+            warning:revert()
+        end)
+
+        it("rounds padding", function()
+            beautiful_mock.systray_paddings = 2.5
+            assert.is_same({ 3, 3, 3, 3 }, widget._clay.describe(widget).pad)
+        end)
+
+        it("omits a gradient background", function()
+            beautiful_mock.bg_systray = "linear:0,0:10,0:0,#000000:1,#ffffff"
+            local warning = stub(require("gears.debug"), "print_warning")
+            assert.is_nil(widget._clay.describe(widget).bg)
+            assert.stub(warning).was_called(1)
+            warning:revert()
+        end)
+    end)
+
     describe("background color", function()
         it("uses beautiful.bg_systray", function()
             beautiful_mock.bg_systray = "#ff0000"

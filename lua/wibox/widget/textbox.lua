@@ -521,12 +521,11 @@ local unsupported_attrs = {
     "BACKGROUND", "FOREGROUND_ALPHA", "BACKGROUND_ALPHA", "LINE_HEIGHT",
 }
 
---- The one run a textbox's layout amounts to: its text, the font in force
--- and the color its markup set, or nil when the markup says more than one
--- Clay text element can (two fonts, two colors, an underline). Pango's own
+--- The text with the first run's font and color. Unsupported attributes
+-- are ignored (third_party/clay.h:374-398). Pango's own
 -- attribute iterator answers, so a `<span font_desc color>` around escaped
 -- text, which is what the taglist and tasklist labels are, is one run.
-local function text_run(layout)
+local function text_run(w, layout)
     local text = layout.text or ""
     local desc = layout:get_font_description()
     local attrs = layout.attributes
@@ -546,7 +545,7 @@ local function text_run(layout)
         if start < #text then
             for _, name in ipairs(unsupported_attrs) do
                 if Pango.AttrType[name] and it:get(Pango.AttrType[name]) then
-                    return nil
+                    clay.ignore(w, "markup", "uses an attribute a text element has no field for, which is not drawn")
                 end
             end
 
@@ -559,7 +558,7 @@ local function text_run(layout)
                 run_desc, run_color, first = d, color, false
             elseif d:to_string() ~= run_desc:to_string()
                     or not same_rgba(color, run_color) then
-                return nil
+                clay.ignore(w, "markup", "has more than one run and is drawn as one")
             end
         end
     until not it:next()
@@ -571,10 +570,12 @@ end
 -- .childAlignment } }) { CLAY_TEXT(text, CLAY_TEXT_CONFIG({ .fontId,
 -- .textColor, .wrapMode, .textAlignment })) }`. The face is interned with
 -- an absolute size at the context's dpi (render_text.h), since Clay's
--- fontSize is a whole number. Clay wraps by words and never by character,
--- and the renderer ellipsizes a line at its clip. What a text config has no
--- field for (justify, indent, line spacing, a start or middle ellipsis, a
--- draw override) keeps the textbox drawing itself.
+-- fontSize is a whole number (third_party/clay.h:374-398). Clay wraps by
+-- words and never by character, and the renderer ellipsizes a line at its
+-- clip. What a text config has no field for is ignored: markup uses the
+-- first font and color, justify, indent and line spacing are not applied,
+-- and start and middle ellipses use the end. Only a face that cannot be
+-- interned is refused.
 local function describe_textbox(w, fg, st)
     local p = w._private
     local layout = p.layout
@@ -583,31 +584,35 @@ local function describe_textbox(w, fg, st)
     if (layout.text or "") == "" then
         return {}
     end
-    if layout:get_justify() or layout:get_indent() ~= 0
-            or layout:get_line_spacing() ~= 0 then
-        return nil
+    if layout:get_justify() then
+        clay.ignore(w, "justify", "is not applied")
+    end
+    if layout:get_indent() ~= 0 then
+        clay.ignore(w, "indent", "is not applied")
+    end
+    if layout:get_line_spacing() ~= 0 then
+        clay.ignore(w, "line_spacing", "is not applied")
     end
 
     local ellipsize = layout:get_ellipsize()
 
     if ellipsize ~= "NONE" and ellipsize ~= "END" then
-        return nil
+        clay.ignore(w, "ellipsize", "start and middle ellipsize at the end")
+        ellipsize = "END"
     end
 
-    local text, desc, color = text_run(layout)
-
-    if not text then
-        return nil
-    end
+    local text, desc, color = text_run(w, layout)
     color = color or clay.solid_rgba(fg)
     if not color then
-        return nil
+        clay.ignore(w, "fg", "is not solid and the text is transparent")
+        color = { 0, 0, 0, 0 }
     end
 
     local size = desc:get_size() / Pango.SCALE
 
     if size <= 0 then
-        return nil
+        clay.ignore(w, "font", "has no size and the text is not drawn")
+        return {}
     end
     if not desc:get_size_is_absolute() then
         size = size * st.context.dpi / 72
@@ -617,7 +622,7 @@ local function describe_textbox(w, fg, st)
     local font = capi.awesome._clay_font(desc:to_string())
 
     if not font then
-        return nil
+        return clay.refuse(w, "font", "could not be interned")
     end
 
     local halign = ({ LEFT = "left", CENTER = "center", RIGHT = "right" })
