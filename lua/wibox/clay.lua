@@ -530,10 +530,6 @@ local function describe_stack(w)
     return { specs = specs }
 end
 
---- wibox.container.place -> child alignment, with the child at its content
--- size on each axis unless `content_fill_*` makes it grow there. The place
--- itself fills the axes `fill_*` names, which is what its own `:fit`
--- answered.
 --- wibox.container.constraint -> the child's whole box under a
 -- Clay_SizingMinMax on each axis it limits: `max` caps the fit
 -- (CLAY_SIZING_FIT(0, limit)), `min` floors it, and `exact` is
@@ -562,6 +558,10 @@ local function describe_constraint(w)
     return node
 end
 
+--- wibox.container.place -> child alignment, with the child at its content
+-- size on each axis unless `content_fill_*` makes it grow there. The place
+-- itself fills the axes `fill_*` names, which is what its own `:fit`
+-- answered.
 local function describe_place(w)
     local p = w._private
 
@@ -710,15 +710,10 @@ local function describe_textbox(w, fg, st)
 
     local halign = ({ LEFT = "left", CENTER = "center", RIGHT = "right" })
         [layout:get_alignment()] or "left"
-    local node = { specs = {},
-        align = { x = halign, y = p.valign or "center" } }
 
-    if text ~= "" then
-        node.specs[1] = { text = text, font = font, color = color,
-            wrap = "words", halign = halign, ellipsize = ellipsize == "END",
-            class = "text" }
-    end
-    return node
+    return { align = { x = halign, y = p.valign or "center" },
+        specs = { { text = text, font = font, color = color, wrap = "words",
+            halign = halign, ellipsize = ellipsize == "END", class = "text" } } }
 end
 
 --- wibox.widget.imagebox -> an element aligning one image leaf, declared as

@@ -70,10 +70,10 @@ int32_t render_font_intern(const char *name);
 void render_set_text(PangoLayout *layout, const char *text, int len,
 	uint16_t font_id, uint16_t font_size, float scale, int max_width);
 
-/* The scale of the output currently solving, published before each Clay pass so
- * the measure callback below measures text at that output's device size. Its own
- * channel rather than the callback's userData because there is no per-output
- * object on this side of the port yet; the declare pass sets it in stage 4. */
+/* The scale of the output currently solving, set by the declare pass before
+ * each Clay pass so the measure callback below measures text at that output's
+ * device size. Its own channel rather than the callback's userData, which is
+ * fixed at Clay_SetMeasureTextFunction time, once per context. */
 void render_text_set_measure_scale(float scale);
 
 /* Clay's measure callback, handed to Clay_SetMeasureTextFunction once per

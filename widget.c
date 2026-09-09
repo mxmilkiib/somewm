@@ -342,7 +342,7 @@ leaves_count(drawin_t *d, size_t count)
 	if (count == d->widget_leaves_len)
 		return;
 	for (size_t i = count; i < d->widget_leaves_len; i++)
-		drawin_entry_set(&d->widget_leaves[i], NULL);
+		image_entry_set(&d->widget_leaves[i], NULL);
 	p_realloc(&d->widget_leaves, count);
 	if (count > d->widget_leaves_len)
 		memset(&d->widget_leaves[d->widget_leaves_len], 0,
@@ -369,7 +369,7 @@ widget_leaves_size(drawin_t *d, int (*dev)[2])
 			cairo_surface_t *surface = (cairo_surface_t *)n->image;
 
 			if (entry->native != surface)
-				drawin_entry_set(entry, cairo_surface_reference(surface));
+				image_entry_set(entry, cairo_surface_reference(surface));
 			continue;
 		}
 		w = MAX(1, dev[sized][0]);
@@ -377,7 +377,7 @@ widget_leaves_size(drawin_t *d, int (*dev)[2])
 		sized++;
 		if (entry->native && entry->width == w && entry->height == h)
 			continue;
-		drawin_entry_set(entry, cairo_image_surface_create(
+		image_entry_set(entry, cairo_image_surface_create(
 			CAIRO_FORMAT_ARGB32, w, h));
 		entry->fresh = true;
 	}
@@ -387,7 +387,7 @@ void
 widget_nodes_clear(drawin_t *d)
 {
 	for (size_t i = 0; i < d->widget_leaves_len; i++)
-		drawin_entry_set(&d->widget_leaves[i], NULL);
+		image_entry_set(&d->widget_leaves[i], NULL);
 	p_delete(&d->widget_leaves);
 	d->widget_leaves_len = 0;
 	p_delete(&d->widget_nodes);
@@ -407,9 +407,7 @@ widget_nodes_refused(drawin_t *d)
 		| (d->shape_clip && !masks_convert ? WIDGET_REFUSED_SHAPE_CLIP : 0)
 		| (d->shape_input ? WIDGET_REFUSED_SHAPE_INPUT : 0)
 		| (d->opacity >= 0 && d->opacity < 1
-			? WIDGET_REFUSED_OPACITY : 0)
-		| (d == globalconf.systray.parent
-			? WIDGET_REFUSED_SYSTRAY : 0);
+			? WIDGET_REFUSED_OPACITY : 0);
 }
 
 /* Drop whatever was stored and say why, which is Lua's signal to paint the
@@ -435,10 +433,8 @@ widget_nodes_gate(lua_State *L, drawin_t *d, int udx)
 		nodes_drop(d, WIDGET_NODES_REFUSED);
 	/* The drawable is an item of the drawin's own env table, so reaching it
 	 * needs the drawin already on the stack. The object registry does not
-	 * hold a wibox's drawin, so looking it up there answers nil. A caller
-	 * with no index (the tray's previous host) leaves the repaint to the
-	 * next redraw, which sees the converted state change either way. */
-	if (udx != 0 && d->drawable) {
+	 * hold a wibox's drawin, so looking it up there answers nil. */
+	if (d->drawable) {
 		luaA_object_push_item(L, udx, d->drawable);
 		luaA_object_emit_signal(L, -1, "property::surface", 0);
 		lua_pop(L, 1);

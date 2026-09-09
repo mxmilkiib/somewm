@@ -148,8 +148,6 @@ void luaA_drawin_set_strut(lua_State *L, drawin_t *drawin, strut_t strut);
 
 /* Drawin geometry synchronization */
 void luaA_drawin_apply_geometry(drawin_t *drawin);
-/* Hand a renderer image entry a new owned surface (NULL clears it) */
-void drawin_entry_set(struct image_entry *entry, cairo_surface_t *owned);
 
 /* Mark the output this drawin is on stale, so the next frame re-declares it.
  * A no-op for a drawin with no screen yet, or a screen with no monitor. */
@@ -158,10 +156,7 @@ void drawin_mark_dirty(drawin_t *drawin);
 /* Drawin refresh cycle (called from main event loop) */
 void drawin_refresh(void);
 
-/* Re-feed the content entry from the drawable's pixels. Callers outside
- * the widget path need it for state composited into the entry rather than
- * drawn into it, which the systray is: dropping the tray has to repaint
- * the host, or its icons stay baked in until something else redraws. */
+/* Re-feed the content entry from the drawable's pixels. */
 void drawin_refresh_drawable(drawin_t *drawin);
 
 /* Apply an A1 or ARGB32 shape mask to a surface.

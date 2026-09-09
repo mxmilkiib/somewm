@@ -67,6 +67,11 @@ struct declare_output {
 	struct declare_band desktop;
 	struct declare_band lock;
 	bool dirty;
+	/* This output's crop of the wallpaper (globalconf.wallpaper), and the
+	 * surface generation and layout position it was cut from. */
+	struct image_entry wallpaper;
+	uint64_t wallpaper_gen;
+	int wallpaper_x, wallpaper_y;
 };
 
 /* Zero hooks until window.c installs the real ones at startup; the
@@ -161,6 +166,7 @@ declare_leaf(Clay_ElementDeclaration *decl)
  * a band. A window's band comes from its stacking attribute; a transient
  * that sets none inherits its parent's. */
 enum {
+	Z_WALLPAPER = 0,
 	Z_LAYER_BACKGROUND = 10,
 	Z_CLIENT_DESKTOP = 20,
 	Z_DRAWIN_BG = 30,
@@ -811,9 +817,62 @@ declare_fullscreen_bg(Monitor *m)
 	declare_leaf(&bg);
 }
 
+/* The wallpaper: this output's crop of the surface root.c paints over the
+ * whole layout, an image leaf under everything else. Cut again when the
+ * surface changes or the output moves in the layout; the entry's pointer
+ * stays, so the leaf's node is retained and re-rastered. The leaf's word
+ * names the Monitor under a kind of its own, so the dump can say what it is
+ * and the input filter (window.c) refuses it pointer input like a drawin's
+ * border. */
+static void
+declare_wallpaper(Monitor *m)
+{
+	struct declare_output *dout = m->declare;
+	struct image_entry *e = &dout->wallpaper;
+	cairo_surface_t *wall = globalconf.wallpaper;
+	uint64_t handle;
+	Clay_ElementDeclaration w;
+
+	if (!wall || m->m.width <= 0 || m->m.height <= 0) {
+		image_entry_set(e, NULL);
+		return;
+	}
+	if (dout->wallpaper_gen != globalconf.wallpaper_gen
+			|| e->width != m->m.width || e->height != m->m.height
+			|| dout->wallpaper_x != m->m.x || dout->wallpaper_y != m->m.y) {
+		cairo_surface_t *crop = cairo_image_surface_create(
+			CAIRO_FORMAT_ARGB32, m->m.width, m->m.height);
+		cairo_t *cr;
+
+		if (cairo_surface_status(crop) != CAIRO_STATUS_SUCCESS) {
+			cairo_surface_destroy(crop);
+			image_entry_set(e, NULL);
+			return;
+		}
+		cr = cairo_create(crop);
+		cairo_set_source_surface(cr, wall, -m->m.x, -m->m.y);
+		cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+		cairo_paint(cr);
+		cairo_destroy(cr);
+		cairo_surface_flush(crop);
+		image_entry_set(e, crop);
+		dout->wallpaper_gen = globalconf.wallpaper_gen;
+		dout->wallpaper_x = m->m.x;
+		dout->wallpaper_y = m->m.y;
+	}
+
+	handle = handle_for(m, DECLARE_KIND_WALLPAPER);
+	w = leaf_at(CLAY_STRING("wallpaper"), (uint32_t)handle, Z_WALLPAPER,
+		0, 0, m->m.width, m->m.height);
+	w.image.imageData = e;
+	w.userData = leaf_userdata(handle, 1.0f);
+	declare_leaf(&w);
+}
+
 static void
 declare_scene(Monitor *m)
 {
+	declare_wallpaper(m);
 	declare_layer_surfaces(m);
 	declare_clients(m);
 	declare_drawins(m);
@@ -1028,14 +1087,17 @@ declare_output_order(struct declare_output *dout, Monitor *m, void **objects,
 
 	for (int32_t i = 0; i < commands.length && n < cap; i++) {
 		Clay_RenderCommand *cmd = Clay_RenderCommandArray_Get(&commands, i);
+		enum declare_kind kind = 0;
 		void *object = declare_handle_get(
-			declare_userdata_handle(cmd->userData), NULL);
+			declare_userdata_handle(cmd->userData), &kind);
 
 		/* A leaf with no handle (the fullscreen backing) is not an
-		 * object. A client declares a border leaf
-		 * and a surface leaf, a drawin up to three image leaves; the
-		 * object enters the order once, at its lowest leaf. */
-		if (!object || (n > 0 && objects[n - 1] == object))
+		 * object, and the wallpaper's is the Monitor, not a Lua object.
+		 * A client declares a border leaf and a surface leaf, a drawin
+		 * up to three image leaves; the object enters the order once, at
+		 * its lowest leaf. */
+		if (!object || kind == DECLARE_KIND_WALLPAPER
+				|| (n > 0 && objects[n - 1] == object))
 			continue;
 		objects[n++] = object;
 	}
@@ -1185,6 +1247,7 @@ declare_output_destroy(struct declare_output *dout)
 {
 	declare_band_wipe(&dout->desktop);
 	declare_band_wipe(&dout->lock);
+	image_entry_set(&dout->wallpaper, NULL);
 	free(dout);
 }
 
@@ -1345,6 +1408,10 @@ dump_what(buffer_t *buf, uint32_t id, void *userdata)
 		buffer_addf(buf, "layer %s", ls->namespace ? ls->namespace : "?");
 		break;
 	}
+	case DECLARE_KIND_WALLPAPER:
+		buffer_addf(buf, "wallpaper %s",
+			((Monitor *)object)->wlr_output->name);
+		break;
 	case DECLARE_KIND_DRAWIN: {
 		drawin_t *d = object;
 		const struct widget_node *n = NULL;
@@ -1409,8 +1476,8 @@ dump_node(void *user, const struct render_node_view *v)
 
 /* One axis of a node's sizing, as the tree declares it, not as it solved:
  * a number is CLAY_SIZING_FIXED, fit and grow are Clay's other two types,
- * with the floor and ceiling when the node set them. The root is fixed at the drawin's
- * geometry by place_fixed whatever the node says. */
+ * with the floor and ceiling when the node set them. A fixed root is the
+ * drawin's geometry whatever the node says (declare_widget_subtree). */
 static void
 dump_sizing(buffer_t *buf, const struct widget_node *n, int axis)
 {
@@ -1494,7 +1561,6 @@ dump_whole(buffer_t *buf, drawin_t *d)
 		{ WIDGET_REFUSED_SHAPE_CLIP, "shape_clip" },
 		{ WIDGET_REFUSED_SHAPE_INPUT, "shape_input" },
 		{ WIDGET_REFUSED_OPACITY, "opacity" },
-		{ WIDGET_REFUSED_SYSTRAY, "systray" },
 	};
 	unsigned mask;
 

@@ -59,7 +59,6 @@
 #include "render.h"
 #include "animation.h"
 #include "event.h"
-#include "systray.h"
 #include "draw.h"
 #include "objects/spawn.h"
 

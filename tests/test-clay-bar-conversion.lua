@@ -331,22 +331,6 @@ local steps = {
                 "the opacity is not named: " .. head)
         end),
 
-    -- The legacy tray host (awesome.systray), which composites into the
-    -- drawable's own pixels. Nothing in lua/ calls it; a config still can.
-    bar_step({ what = "a legacy systray host paints whole" },
-        function(head, _, bar)
-            -- Taking the tray drops the tree there and then, so the dump
-            -- says so without waiting for a redraw.
-            awesome.systray(bar.drawin, 0, 0, 16, true)
-
-            local hosted = block(bar)
-
-            assert(hosted:find("whole:", 1, true)
-                and hosted:find("systray", 1, true),
-                "the tray host is not named: " .. hosted)
-            awesome.systray(bar.drawin)
-        end),
-
     -- A tree past the per-drawin node cap is refused, not truncated, and
     -- not fatal: Clay's own capacity is what the budget is protecting.
     bar_step({

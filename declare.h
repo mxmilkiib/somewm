@@ -13,9 +13,7 @@ typedef struct drawin_t drawin_t;
 
 /* Per-output declare/solve state: the output's Clay context, the retained
  * render_state its solved commands reconcile into, and the dirty flag the
- * frame handler consumes. Inert until the frame handler runs declare, solve,
- * reconcile; created early so the flip edits the frame path, not the output
- * lifecycle. */
+ * frame handler consumes. */
 struct declare_output;
 
 struct declare_output *declare_output_create(struct wlr_output *wlr_output);
@@ -63,6 +61,8 @@ enum declare_kind {
 	DECLARE_KIND_CLIENT = 1,
 	DECLARE_KIND_LAYER,
 	DECLARE_KIND_DRAWIN,
+	/* The object is the Monitor whose wallpaper crop the leaf shows. */
+	DECLARE_KIND_WALLPAPER,
 };
 
 void *declare_handle_get(uint64_t handle, enum declare_kind *kind);

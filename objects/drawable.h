@@ -30,9 +30,6 @@ typedef struct drawable_t {
 	/* Cairo surface for drawing */
 	cairo_surface_t *surface;
 
-	/* Wayland buffer (replaces X11 pixmap) */
-	struct wlr_buffer *buffer;
-
 	/* X11 pixmap stub (for AwesomeWM compatibility) - always 0 on Wayland */
 	uint32_t pixmap;
 
@@ -77,8 +74,5 @@ struct wlr_buffer *drawable_create_buffer(drawable_t *d);
 
 /* Buffer creation from raw Cairo pixel data (for non-drawable Cairo surfaces) */
 struct wlr_buffer *drawable_create_buffer_from_data(int width, int height, const void *cairo_data, size_t cairo_stride);
-
-/* Create empty buffer for rendering into (for screenshots) */
-struct wlr_buffer *drawable_create_empty_buffer(int width, int height);
 
 #endif /* DRAWABLE_H */

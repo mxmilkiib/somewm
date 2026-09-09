@@ -12,26 +12,12 @@
 #include "../globalconf.h"
 #include "../shadow.h"
 #include "../declare.h"
-#include "../systray.h"
 #include "../widget.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_output.h>
-#include <wlr/render/allocator.h>
-#include <wlr/render/wlr_texture.h>
-#include <wlr/render/wlr_renderer.h>
-#include <wlr/types/wlr_buffer.h>
-#include <wlr/interfaces/wlr_buffer.h>
-#include <wlr/render/pass.h>
-#include <drm_fourcc.h>
-
-/* Access to global state from somewm.c */
-extern struct wlr_scene_tree *layers[];
-extern struct wlr_renderer *drw;
-extern struct wlr_allocator *alloc;
 
 /* AwesomeWM class system - drawin class */
 lua_class_t drawin_class;
@@ -310,22 +296,6 @@ drawin_paint_pixels(cairo_t *cr, cairo_surface_t *src)
 	cairo_paint(cr);
 }
 
-/* Hand an entry a new owned surface (destroying the previous one) and bump
- * its generation so the renderer re-rasters. NULL clears the entry; a no-op
- * clear does not bump. */
-void
-drawin_entry_set(struct image_entry *entry, cairo_surface_t *owned)
-{
-	if (!entry->native && !owned)
-		return;
-	if (entry->native)
-		cairo_surface_destroy(entry->native);
-	entry->native = owned;
-	entry->width = owned ? cairo_image_surface_get_width(owned) : 0;
-	entry->height = owned ? cairo_image_surface_get_height(owned) : 0;
-	entry->gen++;
-}
-
 /* Rebuild the shadow composite entry when its inputs changed; the memo
  * (entry size vs drawin size plus radius, and the stored config) makes
  * redundant calls free. */
@@ -333,7 +303,7 @@ static void
 drawin_update_shadow_entry(drawin_t *d, const shadow_config_t *config)
 {
 	if (!config || !config->enabled) {
-		drawin_entry_set(&d->shadow_entry, NULL);
+		image_entry_set(&d->shadow_entry, NULL);
 		return;
 	}
 	int bx, by, bw, bh;
@@ -343,7 +313,7 @@ drawin_update_shadow_entry(drawin_t *d, const shadow_config_t *config)
 			&& memcmp(&d->shadow_entry_config, config, sizeof(*config)) == 0)
 		return;
 
-	drawin_entry_set(&d->shadow_entry,
+	image_entry_set(&d->shadow_entry,
 		shadow_render_composite(config, d->width, d->height));
 	d->shadow_entry_config = *config;
 }
@@ -420,7 +390,7 @@ drawin_refresh_drawable(drawin_t *drawin)
 	if (work_surface != d->surface) {
 		if (clipped_surface && clipped_surface != work_surface)
 			cairo_surface_destroy(clipped_surface);
-		drawin_entry_set(entry, work_surface);
+		image_entry_set(entry, work_surface);
 	} else {
 		int cw = cairo_image_surface_get_width(d->surface);
 		int ch = cairo_image_surface_get_height(d->surface);
@@ -433,15 +403,11 @@ drawin_refresh_drawable(drawin_t *drawin)
 			cairo_destroy(cr);
 			entry->gen++;
 		} else {
-			drawin_entry_set(entry, drawin_copy_surface(d->surface));
+			image_entry_set(entry, drawin_copy_surface(d->surface));
 		}
 	}
 	if (!entry->native)
 		return;
-	/* Tray icons draw into the entry, over the widget pixels, exactly
-	 * where the old scene overlay stacked them. A no-op unless this
-	 * drawin hosts the systray. */
-	systray_composite(drawin, entry->native);
 	cairo_surface_flush(entry->native);
 
 	/* Wake the frame path: the gen bump above changed declared content.
@@ -576,10 +542,6 @@ drawin_wipe(drawin_t *w)
 	if (!w)
 		return;
 
-	/* If this drawin was hosting the systray, clean it up */
-	if (globalconf.systray.parent == w)
-		globalconf.systray.parent = NULL;
-
 	/* Clear any lock surface/cover pointers referencing this drawin (EDGE-2) */
 	some_notify_drawin_destroyed(w);
 
@@ -587,9 +549,9 @@ drawin_wipe(drawin_t *w)
 	 * NULL, and the entry surfaces the declare pass hands out. */
 	declare_handle_drop(w);
 	widget_nodes_clear(w);
-	drawin_entry_set(&w->content_entry, NULL);
-	drawin_entry_set(&w->border_entry, NULL);
-	drawin_entry_set(&w->shadow_entry, NULL);
+	image_entry_set(&w->content_entry, NULL);
+	image_entry_set(&w->border_entry, NULL);
+	image_entry_set(&w->shadow_entry, NULL);
 
 	/* Note: drawable reference cleanup handled by class system */
 	w->drawable = NULL;
@@ -1029,12 +991,6 @@ drawin_moveresize(lua_State *L, int udx, int x, int y, int width, int height)
 				d->surface = NULL;
 			}
 
-			/* Clean up old buffer */
-			if (d->buffer) {
-				wlr_buffer_drop(d->buffer);
-				d->buffer = NULL;
-			}
-
 			/* Create new surface if we have valid dimensions */
 			if (drawin->width > 0 && drawin->height > 0) {
 				/* Get scale for HiDPI support.
@@ -1275,7 +1231,7 @@ drawin_border_refresh_single(drawin_t *d)
 	/* border_surface's ownership moves to the renderer's border entry;
 	 * without a border there is no entry and no leaf. */
 	border_surface = d->border_width > 0 ? drawin_render_border(d) : NULL;
-	drawin_entry_set(&d->border_entry, border_surface);
+	image_entry_set(&d->border_entry, border_surface);
 
 	drawin_mark_dirty(d);
 }
@@ -1386,9 +1342,9 @@ luaA_drawin_gc(lua_State *L)
 		 * next frame */
 		declare_handle_drop(drawin);
 		widget_nodes_clear(drawin);
-		drawin_entry_set(&drawin->content_entry, NULL);
-		drawin_entry_set(&drawin->border_entry, NULL);
-		drawin_entry_set(&drawin->shadow_entry, NULL);
+		image_entry_set(&drawin->content_entry, NULL);
+		image_entry_set(&drawin->border_entry, NULL);
+		image_entry_set(&drawin->shadow_entry, NULL);
 		declare_mark_all_dirty();
 	}
 	return 0;

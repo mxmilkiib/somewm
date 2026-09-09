@@ -55,7 +55,7 @@ somewm_inc = include_directories('.', 'third_party')
 
 # The renderer, named once: the compositor links it and the C unit test compiles
 # it again with the verifier forced on.
-render_sources = files('render.c', 'render_text.c', 'render_image.c')
+render_sources = files('render.c', 'render_text.c')
 
 # Math library (for round(), etc.)
 m_dep = cc.find_library('m', required: false)
@@ -466,7 +466,6 @@ somewm_sources = [
   'ewmh.c',
   'event.c',
   'xkb.c',
-  'systray.c',
   'shadow.c',
   'strut.c',
   'property.c',
@@ -503,7 +502,6 @@ somewm_sources = [
   'objects/keybinding.c',
   # objects/awesome.c merged into luaa.c
   'objects/button.c',
-  'objects/wibox.c',
   'objects/ipc.c',
   'objects/selection_getter.c',
   'objects/selection_acquire.c',
@@ -593,7 +591,7 @@ test_render = executable(
   ['tests/test-render.c', render_sources],
   include_directories: somewm_inc,
   link_with: clay_lib,
-  dependencies: [wlroots, wayland_server, cairo, pangocairo, gdk_pixbuf, m_dep],
+  dependencies: [wlroots, wayland_server, cairo, pangocairo, m_dep],
   c_args: ['-DSOMEWM_RENDER_VERIFY'],
   install: false,
 )

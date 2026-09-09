@@ -131,8 +131,6 @@ bool client_configure_to_box(client_t *c);
 #include <wlr/types/wlr_compositor.h>
 #include <drm_fourcc.h>
 
-#include "../systray.h"
-
 /* External references to somewm.c globals */
 extern struct wlr_renderer *drw;
 extern struct wlr_scene_tree *layers[NUM_LAYERS];

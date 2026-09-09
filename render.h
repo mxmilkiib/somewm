@@ -26,9 +26,9 @@ struct render_state;
  * root coordinates. C to C, never Lua; optional (a NULL reposition is not
  * called).
  *
- * The renderer holds no client knowledge. Nothing implements these hooks yet:
- * somewm's mapping (handle = the client, resolve returns c->scene) arrives with
- * the declare pass in stage 4. */
+ * The renderer holds no client knowledge: window.c implements these (handle =
+ * the client, resolve returns c->scene) and declare.c hands them to every
+ * reconcile. */
 struct render_client_hooks {
 	struct wlr_scene_tree *(*resolve)(void *data, uint64_t handle);
 	void (*configure)(void *data, uint64_t handle, int width, int height);
@@ -138,26 +138,8 @@ render_userdata_opacity(void *ud)
  * or an ancestor for a border's side rects), or 0 for a node this
  * render_state did not draw. Works for every command type, which is what
  * makes it the input backmap: BORDER and TEXT nodes carry no element id
- * (render_hit_id below) but do carry their element's word. */
+ * but do carry their element's word. */
 void *render_hit_userdata(struct render_state *rs, struct wlr_scene_node *node);
-
-/* The scene-node-to-Clay-id backmap: given a scene node the scene hit test
- * returned, find the retained chrome node that drew it (the node itself, or an
- * ancestor for a square border's side rects) and return that command's Clay
- * element id. Only RECTANGLE, IMAGE, and CUSTOM commands carry the element id
- * directly; TEXT and BORDER commands carry a Clay-derived per-line / per-side
- * hash that is not the element id, so those report 0 (not comparable to
- * Clay_GetPointerOverIds). Also 0 for a node this render_state did not draw (a
- * client surface, another output's chrome). Chrome is small and hit events are
- * rare, so a linear scan is fine.
- *
- * One RECTANGLE is not an element: for a border with betweenChildren > 0 Clay
- * emits a divider rectangle per gap carrying Clay__HashNumber(parentId, n)
- * (clay.h:3002, 3017). That id is well-formed but names no element, and the
- * command array carries no flag telling it apart from a real one, so a caller
- * must treat an id that resolves to nothing as no match rather than as an
- * unknown widget. */
-uint32_t render_hit_id(struct render_state *rs, struct wlr_scene_node *node);
 
 /* One retained node, as the tree dump reads it back (declare.c formats the
  * line). The renderer names no object: user_data is the declarer's word and

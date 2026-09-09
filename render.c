@@ -30,9 +30,6 @@
  * bound (degenerate, and far past any real chrome). CLIP_INF stands in for an
  * unclipped axis: outputs are at most a few thousand px, so it never clamps. */
 #define CLIP_STACK_MAX 64
-/* Clip scopes opened in one frame (render.h): a declarer's converted tree
- * opens one per rounded container and one at its root. */
-#define CLIP_SCOPES_MAX 1024
 #define CLIP_INF 1.0e6f
 
 /* A wlr_buffer backed by a cairo image surface, for rasterized text. */
@@ -232,6 +229,49 @@ struct render_state {
  * pointers, and the callback already scans nodes linearly. */
 static struct render_state *render_states;
 
+/* The retained node that drew a scene node: the hit node is the retained
+ * node itself (rect, buffer) or a descendant of it (a square border's side
+ * rect under its tree). */
+static struct rnode *rnode_for_scene_node(struct render_state *rs,
+		struct wlr_scene_node *node) {
+	if (node == NULL) {
+		return NULL;
+	}
+	for (size_t i = 0; i < rs->len; i++) {
+		struct rnode *n = &rs->nodes[i];
+		if (n->node == NULL) {
+			continue;
+		}
+		for (struct wlr_scene_node *c = node; c != NULL;
+				c = c->parent != NULL ? &c->parent->node : NULL) {
+			if (c == n->node) {
+				return n;
+			}
+			if (c == &rs->tree->node) {
+				break;
+			}
+		}
+	}
+	return NULL;
+}
+
+/* The same across every live render_state, for a scene input callback that
+ * is handed nothing but its node; owner, when asked for, is the state that
+ * holds it. */
+static struct rnode *rnode_owning(struct wlr_scene_node *node,
+		struct render_state **owner) {
+	for (struct render_state *rs = render_states; rs != NULL; rs = rs->next) {
+		struct rnode *n = rnode_for_scene_node(rs, node);
+		if (n != NULL) {
+			if (owner != NULL) {
+				*owner = rs;
+			}
+			return n;
+		}
+	}
+	return NULL;
+}
+
 struct render_state *render_create(struct wlr_scene_tree *parent) {
 	struct render_state *rs = calloc(1, sizeof(*rs));
 	rs->tree = wlr_scene_tree_create(parent);
@@ -412,7 +452,6 @@ static bool box_contains(Clay_BoundingBox outer, Clay_BoundingBox inner) {
  * rectangle, text, image): wlr_scene draws only square fills, so rounded or
  * measured content becomes a cairo buffer that is cropped to its clip. */
 
-/* The nearest rounded clip an element sits under: see struct clip_round. */
 /* Whether a realized box touches any of the four corner squares of a rounded
  * clip, which is where a box clip and the arc disagree. */
 static bool clip_round_hits(const struct clip_round *m, Clay_BoundingBox b) {
@@ -870,23 +909,10 @@ static Clay_CornerRadius inset_corner_radius(Clay_CornerRadius r,
  * read: the ring is inside the outer rounded rect and outside the inner inset
  * one, the shape the tiles fill. It runs in logical space (device scale never
  * reaches the hit path). Only corner tiles carry it; the straight edges are
- * opaque rects that never overlap the body. The retained node behind a tile is
- * found by scanning the live render_states for the one holding it in
- * border_corners, since the tile carries no back-pointer. */
+ * opaque rects that never overlap the body. */
 static bool border_point_accepts_input(struct wlr_scene_buffer *sb,
 		double *sx, double *sy) {
-	struct rnode *n = NULL;
-	for (struct render_state *rs = render_states;
-			rs != NULL && n == NULL; rs = rs->next) {
-		for (size_t i = 0; i < rs->len && n == NULL; i++) {
-			for (int c = 0; c < 4; c++) {
-				if (rs->nodes[i].border_corners[c] == sb) {
-					n = &rs->nodes[i];
-					break;
-				}
-			}
-		}
-	}
+	struct rnode *n = rnode_owning(&sb->node, NULL);
 	if (n == NULL) {
 		return false;
 	}
@@ -963,9 +989,7 @@ static struct cairo_buffer *rasterize_border_corner(Clay_RenderCommand *cmd,
  * (the ring path clamps radii against the box, so the arc must always be
  * derived from the same box the edges were inset by). */
 static int reconcile_border(struct render_state *rs, struct rnode *n,
-		Clay_RenderCommand *cmd, Clay_BoundingBox rbox,
-		const Clay_BoundingBox *clip) {
-	(void)rbox;   /* borders are not clip targets, so rbox == box. */
+		Clay_RenderCommand *cmd, const Clay_BoundingBox *clip) {
 	Clay_BorderRenderData *bd = &cmd->renderData.border;
 	float color[4];
 	clay_color_to_float(bd->color, color);
@@ -1194,7 +1218,7 @@ static int reconcile_text(struct render_state *rs, struct rnode *n,
 
 /* --- images ---
  *
- * The decode cache (ui.c) holds one native cairo surface per path. The image
+ * An image entry (render_image.h) holds one native cairo surface. The image
  * rasters per node into a box-sized buffer: cairo scales the native into the
  * solved box and rounds the corners if asked. This mirrors reconcile_text
  * (raster on change, then crop to the clip), so an image clips inside a scroll
@@ -1247,14 +1271,6 @@ static struct cairo_buffer *rasterize_image(Clay_RenderCommand *cmd,
 	return cb;
 }
 
-/* The input filter on image leaves: find the owning rnode across the live
- * render_states (same scan as border_point_accepts_input) and ask the
- * declarer's hook with the retained userData word and the node-local point.
- * This is what lets a shaped drawin's pass-through pixels fall through
- * wlr_scene_node_at to whatever draws below. */
-static struct rnode *rnode_for_scene_node(struct render_state *rs,
-		struct wlr_scene_node *node);
-
 /* Whether a node-local point is inside the arcs a node draws within: its
  * own corner radius for a rounded rect, and the rounded clip a raster was
  * cut to at a corner. The pixels outside are transparent, and a shaped
@@ -1281,34 +1297,25 @@ static bool rnode_point_in_arcs(struct rnode *n, double sx, double sy) {
 
 static bool rounded_rect_point_accepts_input(struct wlr_scene_buffer *sb,
 		double *sx, double *sy) {
-	for (struct render_state *rs = render_states; rs != NULL; rs = rs->next) {
-		struct rnode *n = rnode_for_scene_node(rs, &sb->node);
-		if (n != NULL) {
-			return rnode_point_in_arcs(n, *sx, *sy);
-		}
-	}
-	return false;
+	struct rnode *n = rnode_owning(&sb->node, NULL);
+	return n != NULL && rnode_point_in_arcs(n, *sx, *sy);
 }
 
+/* The input filter on image leaves: inside the arcs, and then whatever the
+ * declarer's hook says of the retained userData word and the node-local
+ * point. This is what lets a shaped drawin's pass-through pixels fall
+ * through wlr_scene_node_at to whatever draws below. */
 static bool image_point_accepts_input(struct wlr_scene_buffer *sb,
 		double *sx, double *sy) {
-	for (struct render_state *rs = render_states; rs != NULL; rs = rs->next) {
-		for (size_t i = 0; i < rs->len; i++) {
-			struct rnode *n = &rs->nodes[i];
-			if (n->node != &sb->node) {
-				continue;
-			}
-			if (!rnode_point_in_arcs(n, *sx, *sy)) {
-				return false;
-			}
-			if (rs->hooks == NULL || rs->hooks->accepts_input == NULL) {
-				return true;
-			}
-			return rs->hooks->accepts_input(rs->hooks->data,
-				n->user_data, *sx, *sy);
-		}
+	struct render_state *rs;
+	struct rnode *n = rnode_owning(&sb->node, &rs);
+	if (n == NULL || !rnode_point_in_arcs(n, *sx, *sy)) {
+		return false;
 	}
-	return false;
+	if (rs->hooks == NULL || rs->hooks->accepts_input == NULL) {
+		return true;
+	}
+	return rs->hooks->accepts_input(rs->hooks->data, n->user_data, *sx, *sy);
 }
 
 static bool image_data_equal(Clay_ImageRenderData *a, Clay_ImageRenderData *b) {
@@ -1334,8 +1341,8 @@ static int reconcile_image(struct render_state *rs, struct rnode *n,
 	}
 	struct wlr_scene_buffer *sb = wlr_scene_buffer_from_node(n->node);
 
-	/* A missing, failed, or not-yet-decoded entry shows nothing. */
-	bool usable = entry != NULL && !entry->failed && entry->native != NULL;
+	/* An entry with no surface shows nothing. */
+	bool usable = entry != NULL && entry->native != NULL;
 	bool raster_changed = is_new ||
 		!box_size_equal(n->box, cmd->boundingBox) ||
 		n->raster_scale != rs->scale ||
@@ -1535,53 +1542,9 @@ static void verify_order(struct render_state *rs) {
 
 /* --- the scene-node-to-Clay-id backmap --- */
 
-/* The retained node that drew a scene node: the hit node is the retained
- * node itself (rect, buffer) or a descendant of it (a square border's side
- * rect under its tree). */
-static struct rnode *rnode_for_scene_node(struct render_state *rs,
-		struct wlr_scene_node *node) {
-	if (node == NULL) {
-		return NULL;
-	}
-	for (size_t i = 0; i < rs->len; i++) {
-		struct rnode *n = &rs->nodes[i];
-		if (n->node == NULL) {
-			continue;
-		}
-		for (struct wlr_scene_node *c = node; c != NULL;
-				c = c->parent != NULL ? &c->parent->node : NULL) {
-			if (c == n->node) {
-				return n;
-			}
-			if (c == &rs->tree->node) {
-				break;
-			}
-		}
-	}
-	return NULL;
-}
-
 void *render_hit_userdata(struct render_state *rs, struct wlr_scene_node *node) {
 	struct rnode *n = rnode_for_scene_node(rs, node);
 	return n != NULL ? n->user_data : NULL;
-}
-
-uint32_t render_hit_id(struct render_state *rs, struct wlr_scene_node *node) {
-	struct rnode *n = rnode_for_scene_node(rs, node);
-	if (n == NULL) {
-		return 0;
-	}
-	/* RECTANGLE, IMAGE, and CUSTOM commands carry the element id directly
-	 * (comparable to Clay_GetPointerOverIds). TEXT and BORDER commands
-	 * carry a Clay-derived per-line / per-side hash, not the element id,
-	 * so they are not comparable; report 0 for them (the structural checks
-	 * cover their order and clipping). */
-	uint32_t type = (uint32_t)(n->key >> 32);
-	if (type == CLAY_RENDER_COMMAND_TYPE_TEXT ||
-			type == CLAY_RENDER_COMMAND_TYPE_BORDER) {
-		return 0;
-	}
-	return (uint32_t)(n->key & 0xFFFFFFFF);
 }
 
 /* --- the reconcile pass --- */
@@ -1606,7 +1569,7 @@ static const struct clip_scope *scope_named(struct render_state *rs,
 static void scope_open(struct render_state *rs, void *word, Clay_BoundingBox rbox,
 		const struct clip_scope *under, float radius) {
 	unsigned opens = render_userdata_byte(word, RENDER_UD_OPENS_SHIFT);
-	if (opens == 0 || rs->scopes_len == CLIP_SCOPES_MAX) {
+	if (opens == 0) {
 		return;
 	}
 	if (rs->scopes_len == rs->scopes_cap) {
@@ -1715,7 +1678,7 @@ int render_reconcile(struct render_state *rs, Clay_RenderCommandArray commands,
 				cmd->renderData.rectangle.cornerRadius.topLeft);
 			break;
 		case CLAY_RENDER_COMMAND_TYPE_BORDER:
-			muts += reconcile_border(rs, n, cmd, rbox, clip_top);
+			muts += reconcile_border(rs, n, cmd, clip_top);
 			break;
 		case CLAY_RENDER_COMMAND_TYPE_TEXT:
 			muts += reconcile_text(rs, n, cmd, rbox, mask);

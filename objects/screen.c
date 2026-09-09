@@ -1116,123 +1116,7 @@ luaA_screen_get_managed(lua_State *L)
 
 /* ========== SCREEN CONTENT (SCREENSHOT) SUPPORT ========== */
 
-/** Composite a Cairo surface onto the screenshot at the given position */
-static void
-screen_composite_cairo_surface(cairo_t *cr, cairo_surface_t *surface,
-                               int x, int y, int width, int height)
-{
-	if (!surface || cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS)
-		return;
-
-	cairo_save(cr);
-	cairo_set_source_surface(cr, surface, x, y);
-	cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
-	cairo_rectangle(cr, x, y, width, height);
-	cairo_fill(cr);
-	cairo_restore(cr);
-}
-
-/** Check if a box intersects with the screen bounds */
-static bool
-box_intersects_screen(int x, int y, int w, int h,
-                      int sx, int sy, int sw, int sh)
-{
-	return !(x + w <= sx || x >= sx + sw || y + h <= sy || y >= sy + sh);
-}
-
-/** Composite widgets within the screen bounds, filtered by ontop state */
-static void
-screen_composite_widgets(cairo_t *cr, int sx, int sy, int sw, int sh, bool ontop_only)
-{
-	int i, bar;
-	drawin_t *drawin;
-	client_t *c;
-	bool is_ontop;
-
-	/* Composite visible drawins filtered by ontop state */
-	for (i = 0; i < globalconf.drawins.len; i++) {
-		drawin = globalconf.drawins.tab[i];
-		if (!drawin || !drawin->visible || !drawin->drawable)
-			continue;
-
-		/* Filter by ontop to ensure correct z-order in screenshots */
-		if (drawin->ontop != ontop_only)
-			continue;
-
-		if (!box_intersects_screen(drawin->x, drawin->y, drawin->width, drawin->height,
-		                           sx, sy, sw, sh))
-			continue;
-
-		if (drawin->drawable->surface &&
-		    cairo_surface_status(drawin->drawable->surface) == CAIRO_STATUS_SUCCESS) {
-			screen_composite_cairo_surface(cr, drawin->drawable->surface,
-			                               drawin->x - sx, drawin->y - sy,
-			                               drawin->width, drawin->height);
-		}
-	}
-
-	/* Composite client titlebars filtered by ontop/fullscreen state */
-	for (i = 0; i < globalconf.clients.len; i++) {
-		c = globalconf.clients.tab[i];
-		if (!c)
-			continue;
-
-		/* Filter by ontop/fullscreen to ensure correct z-order */
-		is_ontop = c->ontop || c->fullscreen;
-		if (is_ontop != ontop_only)
-			continue;
-
-		for (bar = 0; bar < CLIENT_TITLEBAR_COUNT; bar++) {
-			drawable_t *d = c->titlebar[bar].drawable;
-			int size = c->titlebar[bar].size;
-			int tb_x, tb_y, tb_w, tb_h;
-
-			if (!d || !d->surface || size <= 0)
-				continue;
-
-			/* Calculate titlebar position */
-			switch (bar) {
-			case CLIENT_TITLEBAR_TOP:
-				tb_x = c->geometry.x;
-				tb_y = c->geometry.y;
-				tb_w = c->geometry.width;
-				tb_h = size;
-				break;
-			case CLIENT_TITLEBAR_BOTTOM:
-				tb_x = c->geometry.x;
-				tb_y = c->geometry.y + c->geometry.height - size;
-				tb_w = c->geometry.width;
-				tb_h = size;
-				break;
-			case CLIENT_TITLEBAR_LEFT:
-				tb_x = c->geometry.x;
-				tb_y = c->geometry.y + c->titlebar[CLIENT_TITLEBAR_TOP].size;
-				tb_w = size;
-				tb_h = c->geometry.height - c->titlebar[CLIENT_TITLEBAR_TOP].size
-				       - c->titlebar[CLIENT_TITLEBAR_BOTTOM].size;
-				break;
-			case CLIENT_TITLEBAR_RIGHT:
-				tb_x = c->geometry.x + c->geometry.width - size;
-				tb_y = c->geometry.y + c->titlebar[CLIENT_TITLEBAR_TOP].size;
-				tb_w = size;
-				tb_h = c->geometry.height - c->titlebar[CLIENT_TITLEBAR_TOP].size
-				       - c->titlebar[CLIENT_TITLEBAR_BOTTOM].size;
-				break;
-			default:
-				continue;
-			}
-
-			if (!box_intersects_screen(tb_x, tb_y, tb_w, tb_h, sx, sy, sw, sh))
-				continue;
-
-			screen_composite_cairo_surface(cr, d->surface,
-			                               tb_x - sx, tb_y - sy,
-			                               tb_w, tb_h);
-		}
-	}
-}
-
-/** Get screenshot of this screen
+/** Get screenshot of this screen, composited on the CPU from the scene.
  * \param L Lua state
  * \param s Screen object
  * \return 1 (cairo surface lightuserdata on stack)
@@ -1275,20 +1159,9 @@ luaA_screen_get_content(lua_State *L, screen_t *s)
 	rdata.bound_w = width;
 	rdata.bound_h = height;
 
-	/* First, composite wallpaper (cropped to screen area) */
-	if (globalconf.wallpaper) {
-		screen_composite_cairo_surface(cr, globalconf.wallpaper,
-		                               -s->geometry.x, -s->geometry.y,
-		                               cairo_image_surface_get_width(globalconf.wallpaper),
-		                               cairo_image_surface_get_height(globalconf.wallpaper));
-	}
-
-	/* Then walk the scene for client content and drawn chrome */
+	/* The scene is the reconciled tree: the wallpaper leaf, the chrome the
+	 * renderer drew, and the client surfaces it borrowed, in draw order. */
 	composite_scene_node_to_cairo(&scene->tree.node, &rdata);
-
-	/* Composite widgets in z-order: normal first, then ontop */
-	screen_composite_widgets(cr, s->geometry.x, s->geometry.y, width, height, false);
-	screen_composite_widgets(cr, s->geometry.x, s->geometry.y, width, height, true);
 
 	cairo_destroy(cr);
 

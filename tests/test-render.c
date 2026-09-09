@@ -785,15 +785,11 @@ static void test_text_crops_to_its_clip(void) {
 	fixture_finish(&f, &no_hooks);
 }
 
-/* A decoded entry built by hand, so the image path is testable without going
- * through a file. The cache produces exactly this shape. */
 static void fake_image_entry(struct image_entry *e, int w, int h) {
 	memset(e, 0, sizeof(*e));
-	e->path = NULL;
 	e->native = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
 	e->width = w;
 	e->height = h;
-	e->decoded = true;
 	e->gen = 1;
 }
 
@@ -819,8 +815,8 @@ static void test_image_rerasters_on_generation_bump(void) {
 	fixture_finish(&f, &no_hooks);
 	cairo_surface_destroy(entry.native);
 
-	/* An entry that never decoded draws nothing at all. */
-	struct image_entry failed = { .decoded = true, .failed = true };
+	/* An entry with no surface draws nothing at all. */
+	struct image_entry failed = { 0 };
 	Clay_RenderCommand miss[] = { cmd_image(2, 0, 0, 32, 32, &failed) };
 	struct fixture g;
 	fixture_init(&g);
@@ -829,59 +825,6 @@ static void test_image_rerasters_on_generation_bump(void) {
 	CHECK_EQ(render_buffers_created(g.rs), 0);
 	CHECK_EQ(render_raster_bytes(g.rs), 0);
 	fixture_finish(&g, &no_hooks);
-}
-
-static void test_image_cache_rejects_bad_messages(void) {
-	struct image_cache *ic = image_cache_create();
-	uint8_t pixels[4 * 4 * 4] = { 0 };
-
-	/* A message whose own numbers do not describe the buffer it sent. */
-	CHECK(!image_cache_put(ic, "k", 4, 4, 16, true, 8, 4, pixels, 16));
-	CHECK(!image_cache_put(ic, "k", 4, 4, 16, true, 8, 3, pixels, sizeof(pixels)));
-	CHECK(!image_cache_put(ic, "k", 4, 4, 4, true, 8, 4, pixels, sizeof(pixels)));
-	CHECK(!image_cache_put(ic, "k", 0, 4, 16, true, 8, 4, pixels, sizeof(pixels)));
-	CHECK(!image_cache_put(ic, "k", 4, 4, 16, true, 16, 4, pixels, sizeof(pixels)));
-	/* width * channels overflows int to a negative here, so a rowstride far too
-	 * short for the claimed row passes a 32-bit comparison. */
-	CHECK(!image_cache_put(ic, "k", 1 << 29, 4, 16, true, 8, 4, pixels,
-		sizeof(pixels)));
-	CHECK(!image_cache_put(ic, "k", 4, 4, -1, true, 8, 4, pixels, sizeof(pixels)));
-	CHECK_EQ(image_cache_bytes(ic), 0);
-
-	CHECK(image_cache_put(ic, "k", 4, 4, 16, true, 8, 4, pixels, sizeof(pixels)));
-	CHECK(image_cache_bytes(ic) > 0);
-
-	image_cache_destroy(ic);
-}
-
-static void test_image_cache_evicts_least_recently_declared(void) {
-	setenv("SOMEWM_IMAGE_BUDGET_MB", "1", 1);
-	struct image_cache *ic = image_cache_create();
-	unsetenv("SOMEWM_IMAGE_BUDGET_MB");
-
-	/* Over a megabyte each, so two of them do not fit the budget. */
-	const int side = 600;
-	uint8_t *pixels = calloc((size_t)side * side, 4);
-
-	image_cache_begin_declare(ic);
-	CHECK(image_cache_put(ic, "a", side, side, side * 4, true, 8, 4,
-		pixels, (size_t)side * side * 4));
-	size_t one = image_cache_bytes(ic);
-	CHECK(one > (size_t)1 << 20);
-
-	/* The budget yields to the live set: everything resident was declared by
-	 * this solve, so there is nothing evictable. */
-	image_cache_sweep(ic);
-	CHECK_EQ(image_cache_bytes(ic), one);
-
-	/* Next solve: "a" was not declared again, so it is the one that goes. */
-	image_cache_begin_declare(ic);
-	CHECK(image_cache_put(ic, "b", side, side, side * 4, true, 8, 4,
-		pixels, (size_t)side * side * 4));
-	CHECK_EQ(image_cache_bytes(ic), one);
-
-	free(pixels);
-	image_cache_destroy(ic);
 }
 
 static void test_font_interning(void) {
@@ -1062,8 +1005,6 @@ int main(void) {
 		{ "text rasters once per change", test_text_rasters_once_per_change },
 		{ "text crops to its clip", test_text_crops_to_its_clip },
 		{ "image rerasters on generation bump", test_image_rerasters_on_generation_bump },
-		{ "image cache rejects bad messages", test_image_cache_rejects_bad_messages },
-		{ "image cache evicts least recently declared", test_image_cache_evicts_least_recently_declared },
 		{ "font interning", test_font_interning },
 		{ "measure is monotonic", test_measure_is_monotonic },
 		{ "border ring has no gap or overlap", test_border_ring_has_no_gap_or_overlap },

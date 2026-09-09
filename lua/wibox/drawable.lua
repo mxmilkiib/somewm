@@ -289,6 +289,14 @@ local function refit_leaves(leaves, context)
     return changed
 end
 
+-- The tree did not convert: nothing of it stays on this drawable.
+local function unconvert(self)
+    drop_leaves(self, 0)
+    wire_widgets(self, {})
+    self._clay_tree = nil
+    return false
+end
+
 -- Draw a converted tree: Clay solved every box, the leaves paint their own
 -- surfaces at theirs, and the renderer draws the rest. Returns false when
 -- the tree did not convert, in which case nothing here ran.
@@ -299,10 +307,7 @@ local function draw_converted(self, context, width, height, dirty)
     local scale, boxes = self.drawable:_clay_nodes(tree)
 
     if not scale then
-        drop_leaves(self, 0)
-        wire_widgets(self, {})
-        self._clay_tree = nil
-        return false
+        return unconvert(self)
     end
 
     local widgets, index = {}, {}
@@ -311,10 +316,7 @@ local function draw_converted(self, context, width, height, dirty)
     if refit_leaves(leaves, context) then
         scale, boxes = self.drawable:_clay_nodes(tree)
         if not scale then
-            drop_leaves(self, 0)
-            wire_widgets(self, {})
-            self._clay_tree = nil
-            return false
+            return unconvert(self)
         end
         widgets, index = {}, {}
         place_nodes(tree, boxes, widgets, nil, 0, nil, index)
@@ -851,7 +853,6 @@ function drawable.new(d, widget_context_skeleton, drawable_name)
         -- mean-time, the layout does not matter much.
         if ret._visible then
             ret:draw()
-        else
         end
     end
 
@@ -902,11 +903,11 @@ screen.connect_signal("property::geometry", draw_all)
 screen.connect_signal("added", draw_all)
 screen.connect_signal("removed", draw_all)
 
--- When screen scale changes, force all visible drawables to recreate their
--- surfaces at the new scale. This is done by re-setting their geometry,
--- which triggers the C-side scale detection and surface recreation.
-screen.connect_signal("property::scale", function(s)
-    -- Method 1: Iterate visible_drawables
+-- When a screen's scale changes, every drawable recreates its surface at
+-- the new scale: setting its geometry again is what makes the C side do so.
+-- The visible drawables cover titlebars; root.drawins() covers every drawin,
+-- shown or not.
+screen.connect_signal("property::scale", function()
     for d in pairs(visible_drawables) do
         local cd = d.drawable
         if cd and cd.surface then
@@ -916,28 +917,11 @@ screen.connect_signal("property::scale", function(s)
             end
         end
     end
-
-    -- Method 2: Also check screen's mywibox (wibar) if it exists
-    if s.mywibox then
-        local w = s.mywibox
-        if w._drawable and w._drawable.drawable then
-            local cd = w._drawable.drawable
-            local geo = cd:geometry()
+    for _, d in ipairs(root.drawins and root.drawins() or {}) do
+        if d.drawable then
+            local geo = d.drawable:geometry()
             if geo.width > 0 and geo.height > 0 then
-                cd:geometry(geo)
-            end
-        end
-    end
-
-    -- Method 3: Check all drawins via root.drawins()
-    local drawins = root.drawins and root.drawins()
-    if drawins then
-        for _, d in ipairs(drawins) do
-            if d.drawable then
-                local geo = d.drawable:geometry()
-                if geo.width > 0 and geo.height > 0 then
-                    d.drawable:geometry(geo)
-                end
+                d.drawable:geometry(geo)
             end
         end
     end

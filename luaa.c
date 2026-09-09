@@ -30,7 +30,6 @@
 /* objects/awesome.h merged into this file */
 #include "animation.h"
 #include "ewmh.h"
-#include "objects/wibox.h"
 #include "objects/ipc.h"
 #include "objects/root.h"
 #include "objects/button.h"
@@ -66,7 +65,6 @@ static lua_State *luaA_create_fresh_state(void);
 #include <dlfcn.h>
 
 /* Includes merged from objects/awesome.c */
-#include "systray.h"
 #include "somewm_api.h"
 #include "somewm_internal.h"
 #include "protocols.h"
@@ -2451,7 +2449,6 @@ const luaL_Reg awesome_methods[] = {
 	{ "xrdb_get_value", luaA_awesome_xrdb_get_value },
 	{ "register_xproperty", luaA_awesome_register_xproperty },
 	{ "pixbuf_to_surface", luaA_pixbuf_to_surface },
-	{ "systray", luaA_systray },
 	{ "sync", luaA_awesome_sync },
 	{ "_set_input_setting", luaA_awesome_set_input_setting },
 	{ "_set_input_rules", luaA_awesome_set_input_rules },
@@ -3324,7 +3321,6 @@ luaA_register_state(lua_State *L)
 	selection_setup(L); /* Creates "selection" global from class globals */
 
 	luaA_mouse_setup(L);
-	luaA_wibox_setup(L);
 	luaA_ipc_setup(L);
 	systray_item_class_setup(L);  /* SNI systray item class */
 
@@ -5118,14 +5114,12 @@ luaA_state_drop_object_pointers(void)
 	foreach(d, globalconf.drawins) {
 		drawin_t *w = *d;
 		declare_handle_drop(w);
-		drawin_entry_set(&w->content_entry, NULL);
-		drawin_entry_set(&w->border_entry, NULL);
-		drawin_entry_set(&w->shadow_entry, NULL);
+		image_entry_set(&w->content_entry, NULL);
+		image_entry_set(&w->border_entry, NULL);
+		image_entry_set(&w->shadow_entry, NULL);
 	}
 	globalconf.drawins.len = 0;
 	declare_mark_all_dirty();
-
-	globalconf.systray.parent = NULL;
 
 	/* Reset screen_refs before closing (entries become invalid) */
 	luaA_screen_refs_reset();
@@ -6392,10 +6386,6 @@ globalconf_wipe(void)
 	if (globalconf.wallpaper) {
 		cairo_surface_destroy(globalconf.wallpaper);
 		globalconf.wallpaper = NULL;
-	}
-	if (globalconf.wallpaper_buffer_node) {
-		wlr_scene_node_destroy(&globalconf.wallpaper_buffer_node->node);
-		globalconf.wallpaper_buffer_node = NULL;
 	}
 
 	/* Zero out the structure */

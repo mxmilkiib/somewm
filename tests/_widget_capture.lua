@@ -62,6 +62,23 @@ function capture.step_until(get_bar, converted, setup, what)
     end
 end
 
+-- R, G, B, A of one pixel of a content surface (screen.content,
+-- root.content), at surface coordinates.
+function capture.read(surface, x, y)
+    assert(surface, "no content surface")
+
+    -- An lgi record carries the pointer in _native; a bare one is the pointer.
+    local ok, native = pcall(function() return surface._native end)
+    local raw = ok and native or surface
+
+    ffi.C.cairo_surface_flush(raw)
+
+    local data = ffi.C.cairo_image_surface_get_data(raw)
+    local off = y * ffi.C.cairo_image_surface_get_stride(raw) + x * 4
+
+    return data[off + 2], data[off + 1], data[off], data[off + 3]
+end
+
 -- A capture of the box (x, y, width, height) of screen s.
 function capture.new(s, x, y, width, height)
     local self = { screen = s, x = x, y = y, width = width, height = height }

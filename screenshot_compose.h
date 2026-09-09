@@ -11,6 +11,7 @@
 #define SOMEWM_SCREENSHOT_COMPOSE_H
 
 #include <cairo/cairo.h>
+#include <stdbool.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_scene.h>
 
@@ -27,6 +28,8 @@ struct screenshot_render_data {
 	struct wlr_renderer *renderer;
 	int offset_x, offset_y;
 	int bound_x, bound_y, bound_w, bound_h;
+	/* Leave the wallpaper leaf out, for a capture that keeps its alpha. */
+	bool skip_wallpaper;
 };
 
 void composite_scene_buffer_to_cairo(struct wlr_scene_buffer *scene_buffer,

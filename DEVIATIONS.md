@@ -157,6 +157,7 @@ A client's `zIndex` follows `ontop`, `above`, `below` and `fullscreen`. A transi
 
 | zIndex | draws |
 |--------|-------|
+| 0 | the wallpaper |
 | 10 | layer-shell background |
 | 20 | desktop clients |
 | 30 | desktop and splash drawins |
@@ -207,7 +208,7 @@ A widget stays on the cairo path, with its whole subtree, when it carries someth
 - `systray_icon`: a hovered, urgent (`NeedsAttention`) or overlaid icon, an item with no pixmap and no icon file, or any `beautiful.systray_icon_style`
 - `textbox`: markup that is more than one run of one font and one color (two colors, `<b>` beside plain text, an underline), `justify`, an `indent`, a `line_spacing_factor`, an `ellipsize` of `"start"` or `"middle"`, a foreground that is not a solid color, a font with no size, or a `:draw` override; an empty textbox converts whatever its settings, since it draws nothing
 
-The whole drawable stays on the cairo path when its own background is not a solid color, when it has a background image, when the drawin is shaped with anything but a rounded rectangle (`shape_bounding` or `shape_clip` that is not `gears.shape.rounded_rect` at the drawin's own size, a shape together with a `border_width`, or a `shape_input`), when the drawin's `opacity` is below 1, or when the drawin hosts the legacy `awesome.systray`. Shapes, opacity and the tray composite apply to the drawable's own pixels as one layer, which a converted tree no longer is.
+The whole drawable stays on the cairo path when its own background is not a solid color, when it has a background image, when the drawin is shaped with anything but a rounded rectangle (`shape_bounding` or `shape_clip` that is not `gears.shape.rounded_rect` at the drawin's own size, a shape together with a `border_width`, or a `shape_input`), or when the drawin's `opacity` is below 1. Shapes and opacity apply to the drawable's own pixels as one layer, which a converted tree no longer is.
 
 **A transparent wibox converts.** A drawable whose own background is a transparent color (an `awful.tooltip`, a popup that draws its background in a container inside) converts like any other: its root draws nothing and still takes pointer input over its whole box, as a wibox does.
 
@@ -240,7 +241,7 @@ The whole drawable stays on the cairo path when its own background is not a soli
 
 **`find_widgets` asks Clay which widgets are under a point.** The widgets of a converted tree under a point are the elements Clay's own pointer query names against the output's last solve, in the tree's order: parents before children, a stack's children bottom to top. A result's `.hierarchy` is the `wibox.hierarchy` node that placed the widget, and nothing placed a converted one: the field is nil for it, and `.x`, `.y`, `.width` and `.height` are Clay's box. A widget inside a subtree that draws itself still has its hierarchy, sitting on the drawable at the subtree's box, so transforms inside it (a `rotate` container) still resolve. `emit_signal_recursive` climbs converted parents from a converted widget, and climbs to the top of its own subtree from a widget inside one that draws itself.
 
-**Screenshots include what the renderer draws as a flat color.** `root.content()` and `screen.content` now walk the scene for rectangles as well as buffers, so a converted container's background is in the capture. The same walk replaced `screen.content`'s own buffer pass, which ignored a scene buffer's destination size and scaled HiDPI captures wrong.
+**Screenshots read the scene and nothing else.** `root.content()` and `screen.content` walk the scene for rectangles as well as buffers, so a converted container's background is in the capture, and they no longer paint a drawin's own drawable surface over it, which showed a wibox's stale pixels once it had converted. The wallpaper comes from its own leaf in the tree, `root.content(true)` leaves that leaf out, and a translucent drawin captures at its opacity. The scene walk also replaced `screen.content`'s own buffer pass, which ignored a scene buffer's destination size and scaled HiDPI captures wrong.
 
 ---
 
@@ -377,6 +378,8 @@ These modifications to AwesomeWM's Lua libraries were necessary for Wayland comp
 | `gears.wallpaper` | `awful.wallpaper` | Deprecated upstream; somewmrc already uses `awful.wallpaper`. Removing it also deletes the somewm-side machinery that existed only to serve it: the `require()` hook that recorded wallpaper globals and the per-screen wallpaper cache in `root.c` (`root.wallpaper_cache_show`/`_has`/`_clear`/`_preload`), which `awful.wallpaper` never populated. An rc.lua calling `gears.wallpaper.*` errors. release/1.4 keeps it, matching AwesomeWM master. |
 | `awesome.api_level` | none | 2.0 is a hard reset and does not promise behavior across versions, so there is nothing for a config to select. Reading it now returns `nil`, so an rc.lua that compares it to a number errors. Three library behaviors that used to branch on it are now fixed at what level 4 did: `awful.autofocus` loads without a warning, `awful.permissions` does not wire `mouse::enter` to `request::autoactivate` (rc.lua does that), and `wibox.widget.base.make_widget` still defaults `enable_properties` to `false`. |
 | `gears.debug.deprecate_class` | none | Existed only to proxy a class that moved between API levels. No callers in the tree. |
+| `_wibox` | `wibox` | An undocumented C module that put a layer-shell surface on screen and showed a buffer Lua drew into it, from before drawins rendered through the scene. No callers in the tree. |
+| `awesome.systray` | `wibox.widget.systray` | The X11 tray's C entry point, kept as a host that painted StatusNotifierItem icons into a wibox's pixels. Nothing in the tree called it: the systray widget draws every icon itself, and a wibox hosting it could not convert to Clay. Calling it now errors with a nil field. |
 | `awful.util` | `gears.*` | 34 of its 38 functions already redirected to `gears.*` with a deprecation warning, so those move to the function that warning named (`awful.util.table.join` is `gears.table.join`, `awful.util.get_cache_dir` is `gears.filesystem.get_cache_dir`, and so on). Most are a straight module swap; the six that need more are listed under the table. The remaining four had no `gears` equivalent: `checkfile` was inlined into its only consumer, and `eval`, `restart` and `geticonpath` are gone, as is the `shell` field. An rc.lua touching any `awful.util` field errors, since the module itself no longer exists. |
 
 The `awful.util` redirects whose `gears` name differs, plus the two whose

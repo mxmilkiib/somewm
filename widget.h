@@ -111,14 +111,12 @@ struct widget_node {
  * radius; shape_input's pass-through would be swallowed by a
  * converted node's scene rect, which takes input everywhere it draws; a
  * translucent drawin blends once as one layer, where a tree of nodes each
- * carrying the opacity would blend every overlap twice; and the legacy tray
- * (awesome.systray) composites into the drawable's pixels. */
+ * carrying the opacity would blend every overlap twice. */
 enum {
 	WIDGET_REFUSED_SHAPE_BOUNDING = 1 << 0,
 	WIDGET_REFUSED_SHAPE_CLIP     = 1 << 1,
 	WIDGET_REFUSED_SHAPE_INPUT    = 1 << 2,
 	WIDGET_REFUSED_OPACITY        = 1 << 3,
-	WIDGET_REFUSED_SYSTRAY        = 1 << 4,
 };
 unsigned widget_nodes_refused(drawin_t *d);
 
@@ -140,8 +138,7 @@ enum widget_nodes_state {
 /* For the setters that change that answer: when it flips, drop the tree and
  * ask Lua for a complete repaint (property::surface on the drawable), so the
  * drawable moves between painting whole and converting without a widget
- * having to redraw first. udx is the drawin's stack index, or 0 for a caller
- * that does not have it on the stack. */
+ * having to redraw first. udx is the drawin's stack index. */
 void widget_nodes_gate(lua_State *L, drawin_t *d, int udx);
 
 /* Read a tree from the table at absolute stack index idx (what

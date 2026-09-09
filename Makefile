@@ -9,7 +9,7 @@
 
 -include .local.mk
 
-.PHONY: all install uninstall clean setup setup-test reconfigure test test-unit test-render test-lua-compat test-check test-signal test-integration test-orchestrator test-restart test-one-restart test-asan test-one test-visual test-one-visual test-ci test-fast build-test build-bench bench-run bench-run-live bench-json bench-baseline bench-compare bench-check bench-memory bench-flamegraph bench-diff bench-heaptrack profile profile-lua profile-save profile-diff
+.PHONY: all install uninstall clean setup setup-test reconfigure test test-unit test-render test-lua-compat test-check test-signal test-ipc-socket test-integration test-orchestrator test-restart test-one-restart test-asan test-one test-visual test-one-visual test-ci test-fast build-test build-bench bench-run bench-run-live bench-json bench-baseline bench-compare bench-check bench-memory bench-flamegraph bench-diff bench-heaptrack profile profile-lua profile-save profile-diff
 
 # Default build: optimized release, no sanitizers
 all:
@@ -52,7 +52,7 @@ reconfigure:
 # =============================================================================
 
 # Run all tests (fast, no ASAN)
-test: test-unit test-check test-signal test-orchestrator test-restart test-integration
+test: test-unit test-check test-signal test-ipc-socket test-orchestrator test-restart test-integration
 
 # Parse lua/ with every installed Lua version (no compositor needed)
 test-lua-compat:
@@ -76,6 +76,10 @@ test-check: build-test
 # SIGTERM regression test (issue 613): a headless somewm must exit on SIGTERM
 test-signal: build-test
 	@./tests/test-signal-term.sh ./build-test/somewm
+
+# An exiting somewm leaves a newer instance's IPC socket alone
+test-ipc-socket: build-test
+	@./tests/test-ipc-socket-handoff.sh ./build-test/somewm ./build-test/somewm-client
 
 # Test orchestrator (somewm-client test ...): spawns headless nested compositor
 test-orchestrator: build-test
@@ -108,7 +112,7 @@ test-asan: asan
 	@SOMEWM=./build-asan/somewm SOMEWM_CLIENT=./build-asan/somewm-client ./tests/run-integration.sh
 
 # CI mode: headless (for automated testing environments)
-test-ci: build-test test-unit test-signal test-restart
+test-ci: build-test test-unit test-signal test-ipc-socket test-restart
 	@HEADLESS=1 \
 	 SOMEWM=./build-test/somewm \
 	 SOMEWM_CLIENT=./build-test/somewm-client \
