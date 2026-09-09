@@ -3388,8 +3388,7 @@ local function register_builtin_commands()
         },
         valign = "center",
         halign = "center",
-        tiled  = false,
-        widget = wibox.container.tile,
+        widget = wibox.container.place,
       }
     }
     return string.format("Set wallpaper to %s on screen %d", path, s.index)

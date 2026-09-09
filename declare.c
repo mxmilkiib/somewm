@@ -28,6 +28,7 @@
 #include "clay.h"
 #include "clay_impl.h"
 #include "declare.h"
+#include "objects/drawable.h"
 #include "render.h"
 #include "render_text.h"
 #include "somewm.h"
@@ -143,8 +144,8 @@ handle_pack(enum declare_kind kind, uint32_t id)
 }
 
 /* Chrome scale is tens of objects; linear scans are fine. */
-static uint64_t
-handle_for(void *object, enum declare_kind kind)
+uint64_t
+declare_handle_for(void *object, enum declare_kind kind)
 {
 	for (size_t i = 0; i < handles_len; i++)
 		if (handles[i].object == object)
@@ -328,60 +329,140 @@ clay_color(const float rgba[4])
 	};
 }
 
-/* The frame box: awful.layout's geometry plus the border ring drawn around
- * the content, positioned output-local (the render band sits at the output's
- * layout position). One BORDER element and one CUSTOM element at the same
- * box, border first so the borrowed tree, popups included, stacks above it,
- * matching the popup raise in client_configure_to_box(). */
+static void
+declare_shadow(struct shadow_leaves *s, const shadow_config_t *config,
+	Clay_String label, uint32_t id, int16_t z, int x, int y, int w, int h)
+{
+	struct wlr_box boxes[SHADOW_SLICE_COUNT + SHADOW_FILL_COUNT];
+
+	shadow_leaves_update(s, config);
+	if (!s->ready || !shadow_layout(config, w, h, boxes))
+		return;
+	float rgba[4] = { config->color[0], config->color[1],
+		config->color[2], shadow_paint(config) };
+	/* The index participates in the hash (third_party/clay.h:1376).
+	 * Sixteen slots per object keep its eleven parts distinct. */
+	for (int i = 0; i < SHADOW_SLICE_COUNT + SHADOW_FILL_COUNT; i++) {
+		struct wlr_box b = boxes[i];
+
+		if (b.width <= 0 || b.height <= 0)
+			continue;
+		Clay_ElementDeclaration leaf = leaf_at(label, id * 16 + i, z,
+			x + b.x, y + b.y, b.width, b.height);
+		if (i < SHADOW_SLICE_COUNT) {
+			if (!s->tex[i].native)
+				continue;
+			leaf.image.imageData = &s->tex[i];
+		} else {
+			leaf.backgroundColor = clay_color(rgba);
+		}
+		declare_leaf(&leaf);
+	}
+}
+
+static void declare_widget_tree(const struct widget_host *host, int16_t z,
+	void *userdata);
+
+static void
+declare_titlebar(Client *c, client_titlebar_t bar, uint32_t id, int16_t z)
+{
+	struct widget_host host;
+	int size = c->titlebar[bar].size;
+
+	if (size == 0 || !client_titlebar_host(c, c->titlebar[bar].drawable, &host))
+		return;
+	bool horizontal = bar == CLIENT_TITLEBAR_TOP || bar == CLIENT_TITLEBAR_BOTTOM;
+	uint64_t handle = declare_handle_for(c->titlebar[bar].drawable, DECLARE_KIND_TITLEBAR);
+	Clay_ElementDeclaration e = {
+		.id = Clay__HashString(CLAY_STRING("client.titlebar"), id * 4 + bar, 0),
+		.layout.sizing = {
+			horizontal ? CLAY_SIZING_GROW(0) : CLAY_SIZING_FIXED(size),
+			horizontal ? CLAY_SIZING_FIXED(size) : CLAY_SIZING_GROW(0),
+		},
+	};
+
+	Clay__OpenElement();
+	Clay__ConfigureOpenElementPtr(&e);
+	if (host.tree->nodes_len > 0)
+		declare_widget_tree(&host, z, leaf_userdata(handle, 1.0f));
+	else if (c->titlebar[bar].content.native) {
+		Clay_ElementDeclaration content = {
+			.id = Clay__HashString(CLAY_STRING("titlebar.image"), host.id, 0),
+			.layout.sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0) },
+			.image.imageData = &c->titlebar[bar].content,
+			.userData = leaf_userdata(handle, 1.0f),
+		};
+		declare_leaf(&content);
+	}
+	Clay__CloseElement();
+}
+
+/* Padding starts the children inside the border (third_party/clay.h:2704).
+ * Fixed bars leave the growing surface the remaining space
+ * (third_party/clay.h:2349-2392, 2409-2411). */
 static void
 declare_client(Client *c, Monitor *m, int16_t z)
 {
-	uint64_t handle = handle_for(c, DECLARE_KIND_CLIENT);
+	uint64_t handle = declare_handle_for(c, DECLARE_KIND_CLIENT);
 	uint32_t id = (uint32_t)handle;
-	int bw = c->bw;
+	int bw = c->fullscreen ? 0 : c->bw;
 	int fw = c->geometry.width + 2 * bw;
 	int fh = c->geometry.height + 2 * bw;
 	int x = c->geometry.x - m->m.x;
 	int y = c->geometry.y - m->m.y;
 	bool clamp = client_clamps_to_monitor(c);
 
-	/* Under a clip-offscreen layout, a fully offscreen client declares
-	 * nothing: the sweep releases its tree disabled, which is today's
-	 * visible=false hide. The test uses the geometry box, matching the
-	 * content-box test in client_configure_to_box(). */
 	if (clamp && (x + bw + c->geometry.width <= 0
 			|| y + bw + c->geometry.height <= 0
 			|| x + bw >= m->m.width
 			|| y + bw >= m->m.height))
 		return;
 
+	declare_shadow(&c->shadow,
+		shadow_get_effective_config(c->shadow_config, false),
+		CLAY_STRING("client.shadow"), id, z, x, y, fw, fh);
+	Clay_ElementDeclaration frame = leaf_at(
+		CLAY_STRING("client"), id, z, x, y, fw, fh);
+	frame.layout.layoutDirection = CLAY_TOP_TO_BOTTOM;
+	frame.layout.padding = (Clay_Padding) { bw, bw, bw, bw };
+	frame.userData = leaf_userdata(handle, 1.0f);
+	if (clamp)
+		frame.userData = userdata_clip(frame.userData, 0, RENDER_CLIP_BOUNDS);
 	if (bw > 0) {
-		Clay_ElementDeclaration b = leaf_at(
-			CLAY_STRING("client.border"), id, z, x, y, fw, fh);
 		float rgba[4];
 
 		client_border_rgba(c, rgba);
-		b.border.color = clay_color(rgba);
-		b.border.width = (Clay_BorderWidth) {
-			bw, bw, bw, bw, 0 };
-		/* The monitor scissor: the border's word names the output's
-		 * bounds as its clip (render.h RENDER_CLIP_BOUNDS), so a
-		 * partially offscreen border clips at the output edge instead
-		 * of bleeding onto the neighbor. The surface leaf is not
-		 * clipped: CUSTOM never is, and the surface's own clamp lives
-		 * in client_configure_to_box(). */
-		b.userData = leaf_userdata(handle, 1.0f);
-		if (clamp)
-			b.userData = userdata_clip(b.userData, 0,
-				RENDER_CLIP_BOUNDS);
-		declare_leaf(&b);
+		frame.border.color = clay_color(rgba);
+		frame.border.width = (Clay_BorderWidth) { bw, bw, bw, bw, 0 };
 	}
-
-	Clay_ElementDeclaration s = leaf_at(
-		CLAY_STRING("client.surface"), id, z, x, y, fw, fh);
-	s.custom.customData = (void *)(uintptr_t)handle;
-	s.userData = leaf_userdata(handle, 1.0f);
-	declare_leaf(&s);
+	Clay__OpenElement();
+	Clay__ConfigureOpenElementPtr(&frame);
+	if (!c->fullscreen)
+		declare_titlebar(c, CLIENT_TITLEBAR_TOP, id, z);
+	Clay_ElementDeclaration row = {
+		.id = Clay__HashString(CLAY_STRING("client.row"), id, 0),
+		.layout = {
+			.sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0) },
+			.layoutDirection = CLAY_LEFT_TO_RIGHT,
+		},
+	};
+	Clay__OpenElement();
+	Clay__ConfigureOpenElementPtr(&row);
+	if (!c->fullscreen)
+		declare_titlebar(c, CLIENT_TITLEBAR_LEFT, id, z);
+	Clay_ElementDeclaration surface = {
+		.id = Clay__HashString(CLAY_STRING("client.surface"), id, 0),
+		.layout.sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0) },
+		.custom.customData = (void *)(uintptr_t)handle,
+		.userData = leaf_userdata(handle, 1.0f),
+	};
+	declare_leaf(&surface);
+	if (!c->fullscreen)
+		declare_titlebar(c, CLIENT_TITLEBAR_RIGHT, id, z);
+	Clay__CloseElement();
+	if (!c->fullscreen)
+		declare_titlebar(c, CLIENT_TITLEBAR_BOTTOM, id, z);
+	Clay__CloseElement();
 }
 
 static bool
@@ -514,7 +595,7 @@ declare_unmanaged_clients(Monitor *m)
 static void
 declare_layer_surface(LayerSurface *l, Monitor *m, int16_t z)
 {
-	uint64_t handle = handle_for(l, DECLARE_KIND_LAYER);
+	uint64_t handle = declare_handle_for(l, DECLARE_KIND_LAYER);
 	struct wlr_layer_surface_v1 *ls = l->layer_surface;
 	/* l->geom is output-local, captured by arrangelayer() from the
 	 * layer-shell solve; the scene node's own position belongs to the
@@ -603,10 +684,10 @@ clay_hash_number(uint32_t offset, uint32_t seed)
 /* Child k's id. A text element's id is Clay's own, hashed from its index
  * among the parent's children (Clay__OpenTextElement), which is k. */
 static Clay_ElementId
-widget_child_id(drawin_t *d, size_t child, Clay_ElementId parent,
+widget_child_id(struct widget_tree *d, size_t child, Clay_ElementId parent,
 	uint16_t index)
 {
-	if (d->widget_nodes[child].text)
+	if (d->nodes[child].text)
 		return (Clay_ElementId) { .id = clay_hash_number(index, parent.id) };
 	return Clay__HashString(CLAY_STRING("drawin.widget"), index, parent.id);
 }
@@ -682,10 +763,11 @@ widget_node_decl(const struct widget_node *n, Clay_ElementId id, int16_t z,
 }
 
 static size_t
-declare_widget_subtree(drawin_t *d, size_t i, Clay_ElementId id, int16_t z,
-	int x, int y, void *userdata, size_t *leaf)
+declare_widget_subtree(const struct widget_host *host, size_t i, Clay_ElementId id, int16_t z,
+	void *userdata, size_t *leaf)
 {
-	const struct widget_node *n = &d->widget_nodes[i];
+	struct widget_tree *d = host->tree;
+	const struct widget_node *n = &d->nodes[i];
 	void *word = userdata_clip(userdata, n->clip_opens, n->clip_by);
 	Clay_ElementDeclaration e;
 	size_t next = i + 1;
@@ -706,83 +788,80 @@ declare_widget_subtree(drawin_t *d, size_t i, Clay_ElementId id, int16_t z,
 		};
 		Clay__OpenTextElement((Clay_String) {
 			.length = (int32_t)n->text_len,
-			.chars = d->widget_text + n->text_off,
+			.chars = d->text + n->text_off,
 		}, Clay__StoreTextElementConfig(cfg));
 		return next;
 	}
 
 	e = widget_node_decl(n, id, z, word);
 	if (i == 0) {
-		/* The drawin's own box, floating at its output-local origin, at
-		 * the drawin's live size when the tree tells one. A tree that
-		 * sizes its drawin (an awful.popup) says fit within its limits
-		 * instead, and Lua gives the drawin the box the solve answers. */
-		e.floating.offset = (Clay_Vector2) { x, y };
-		e.floating.attachTo = CLAY_ATTACH_TO_ROOT;
+		/* A titlebar root attaches at its parent's origin; a drawin
+		 * uses an output-local offset (third_party/clay.h:2074-2080,
+		 * 2625-2677). Fixed axes use the host box, while an awful.popup
+		 * fits within its tree's limits. */
+		e.floating.offset = host->in_parent ? (Clay_Vector2) { 0, 0 }
+			: (Clay_Vector2) { host->x, host->y };
+		e.floating.attachTo = host->in_parent
+			? CLAY_ATTACH_TO_PARENT : CLAY_ATTACH_TO_ROOT;
 		e.floating.zIndex = z;
 		e.layout.sizing = (Clay_Sizing) {
 			n->sizing[0] == WIDGET_SIZING_FIXED
-				? CLAY_SIZING_FIXED(d->width) : widget_sizing(n, 0),
+				? CLAY_SIZING_FIXED(host->w) : widget_sizing(n, 0),
 			n->sizing[1] == WIDGET_SIZING_FIXED
-				? CLAY_SIZING_FIXED(d->height) : widget_sizing(n, 1),
+				? CLAY_SIZING_FIXED(host->h) : widget_sizing(n, 1),
 		};
 		/* A shaped drawin's masks, as the root's corners (drawin.h
 		 * shape_radius), which the root's clip scope carries to every
 		 * node under it. */
-		if (d->shape_radius > 0)
-			e.cornerRadius = (Clay_CornerRadius) { d->shape_radius,
-				d->shape_radius, d->shape_radius, d->shape_radius };
+		if (host->radius > 0)
+			e.cornerRadius = (Clay_CornerRadius) { host->radius,
+				host->radius, host->radius, host->radius };
 	}
-	if (n->raster && *leaf < d->widget_leaves_len)
-		e.image.imageData = &d->widget_leaves[(*leaf)++];
+	if (n->raster && *leaf < d->leaves_len)
+		e.image.imageData = &d->leaves[(*leaf)++];
 	if (n->shape)
-		e.custom.customData = render_shape_tag(&d->widget_shapes[n->shape - 1].shape);
+		e.custom.customData = render_shape_tag(&d->shapes[n->shape - 1].shape);
 
 	Clay__OpenElement();
 	Clay__ConfigureOpenElementPtr(&e);
 	for (uint16_t k = 0; k < n->children; k++)
-		next = declare_widget_subtree(d, next,
-			widget_child_id(d, next, id, k), z, x, y, userdata, leaf);
+		next = declare_widget_subtree(host, next,
+			widget_child_id(d, next, id, k), z, userdata, leaf);
 	Clay__CloseElement();
 	return next;
 }
 
 static void
-declare_widget_tree(drawin_t *d, uint32_t id, int16_t z, int x, int y,
+declare_widget_tree(const struct widget_host *host, int16_t z,
 	void *userdata)
 {
+	struct widget_tree *d = host->tree;
 	size_t leaf = 0;
 
-	d->widget_nodes_declared = true;
-	declare_widget_subtree(d, 0, widget_root_id(id), z, x, y, userdata,
+	d->declared = true;
+	declare_widget_subtree(host, 0, widget_root_id(host->id), z, userdata,
 		&leaf);
 }
 
-/* --- drawins as whole-buffer image leaves ---
+/* --- drawins ---
  *
- * Shadow below border below content, all riding the drawin's own image
- * entries (objects/drawin.c fills them; gen bumps on content change).
+ * Shadow leaves below border below content. The drawin owns their image
+ * entries; gen bumps on content change.
  * Opacity applies to the content leaf only, matching the old scene-buffer
  * path, which never set opacity on the border or shadow. */
 static void
 declare_drawin(drawin_t *d, Monitor *m, int16_t z)
 {
-	uint64_t handle = handle_for(d, DECLARE_KIND_DRAWIN);
+	uint64_t handle = declare_handle_for(d, DECLARE_KIND_DRAWIN);
 	uint32_t id = (uint32_t)handle;
 	int bw = d->border_width;
 	int x = d->x - m->m.x;
 	int y = d->y - m->m.y;
 	float opacity = d->opacity >= 0 ? (float)d->opacity : 1.0f;
 
-	if (d->shadow_entry.native) {
-		int sx, sy, sw, sh;
-		shadow_box(&d->shadow_entry_config, d->width, d->height,
-			&sx, &sy, &sw, &sh);
-		Clay_ElementDeclaration s = leaf_at(CLAY_STRING("drawin.shadow"),
-			id, z, x + sx, y + sy, sw, sh);
-		s.image.imageData = &d->shadow_entry;
-		declare_leaf(&s);
-	}
+	declare_shadow(&d->shadow,
+		shadow_get_effective_config(d->shadow_config, true),
+		CLAY_STRING("drawin.shadow"), id, z, x, y, d->width, d->height);
 	if (bw > 0 && d->border_entry.native) {
 		/* No userData: the input filter (window.c hook_accepts_input)
 		 * reads a bare word as "never accepts input", which is what the
@@ -798,8 +877,11 @@ declare_drawin(drawin_t *d, Monitor *m, int16_t z)
 	/* A converted widget tree declares its own leaves, each carrying the
 	 * pixels of one subtree lua/wibox/clay.lua could not express, at the
 	 * box Clay solves for it. */
-	if (d->widget_nodes_len > 0) {
-		declare_widget_tree(d, id, z, x, y, leaf_userdata(handle, opacity));
+	if (d->widgets.nodes_len > 0) {
+		struct widget_host host;
+
+		if (drawin_widget_host(d, &host))
+			declare_widget_tree(&host, z, leaf_userdata(handle, opacity));
 		return;
 	}
 
@@ -912,7 +994,7 @@ declare_wallpaper(Monitor *m)
 		dout->wallpaper_y = m->m.y;
 	}
 
-	handle = handle_for(m, DECLARE_KIND_WALLPAPER);
+	handle = declare_handle_for(m, DECLARE_KIND_WALLPAPER);
 	w = leaf_at(CLAY_STRING("wallpaper"), (uint32_t)handle, Z_WALLPAPER,
 		0, 0, m->m.width, m->m.height);
 	w.image.imageData = e;
@@ -941,10 +1023,10 @@ declare_scene(Monitor *m)
  * same box, so the surface Lua draws into is the size the renderer shows it
  * at and is never resampled. */
 static size_t
-widget_boxes_walk(drawin_t *d, size_t i, Clay_ElementId id, int (*boxes)[4],
+widget_boxes_walk(struct widget_tree *d, size_t i, Clay_ElementId id, int (*boxes)[4],
 	int *n, Clay_BoundingBox root, int (*dev)[2], int *nleaf, float scale)
 {
-	const struct widget_node *node = &d->widget_nodes[i];
+	const struct widget_node *node = &d->nodes[i];
 	Clay_ElementData data = Clay_GetElementData(id);
 	size_t next = i + 1;
 
@@ -987,10 +1069,10 @@ pointer_over(Clay_ElementIdArray ids, Clay_ElementId id)
  * preorder: parents before children, a stack's children bottom to top,
  * which is the order find_widgets has always answered in. */
 static size_t
-widget_hits_walk(drawin_t *d, size_t i, Clay_ElementId id,
+widget_hits_walk(struct widget_tree *d, size_t i, Clay_ElementId id,
 	Clay_ElementIdArray ids, int *out, int *n, int cap)
 {
-	const struct widget_node *node = &d->widget_nodes[i];
+	const struct widget_node *node = &d->nodes[i];
 	size_t next = i + 1;
 
 	if (node->widget && *n < cap && pointer_over(ids, id))
@@ -1002,9 +1084,10 @@ widget_hits_walk(drawin_t *d, size_t i, Clay_ElementId id,
 }
 
 int
-declare_widget_hits(drawin_t *d, double x, double y, int *out, int cap)
+declare_widget_hits(const struct widget_host *host, double x, double y, int *out, int cap)
 {
-	Monitor *m = d->screen ? d->screen->monitor : NULL;
+	struct widget_tree *d = host->tree;
+	Monitor *m = host->m;
 	struct declare_output *dout = m ? m->declare : NULL;
 	struct declare_band *band;
 	Clay_Context *previous;
@@ -1012,9 +1095,10 @@ declare_widget_hits(drawin_t *d, double x, double y, int *out, int cap)
 	Clay_ElementIdArray ids;
 	int n = 0;
 
-	if (!dout || !d->widget_nodes_declared)
+	if (!dout || !d->declared)
 		return 0;
-	band = session_is_locked() && some_is_lock_drawin(d)
+	band = session_is_locked() && some_is_lock_drawin(declare_handle_get(
+			handle_pack(DECLARE_KIND_DRAWIN, host->id), NULL))
 		? &dout->lock : &dout->desktop;
 	if (!band->clay)
 		return 0;
@@ -1024,17 +1108,17 @@ declare_widget_hits(drawin_t *d, double x, double y, int *out, int cap)
 	previous = Clay_GetCurrentContext();
 	Clay_SetCurrentContext(band->clay);
 	Clay_SetPointerState((Clay_Vector2) {
-		(float)(d->x - m->m.x + x), (float)(d->y - m->m.y + y) }, false);
+		(float)(host->x + x), (float)(host->y + y) }, false);
 	ids = Clay_GetPointerOverIds();
-	root_id = widget_root_id((uint32_t)handle_for(d, DECLARE_KIND_DRAWIN));
+	root_id = widget_root_id(host->id);
 #ifdef SOMEWM_RENDER_VERIFY
-	/* The scene named this drawin at the point (input.c), so Clay's tree
-	 * must hold the point inside the drawin's root: the two disagreeing
+	/* The scene named this drawable at the point (input.c), so the query
+	 * (third_party/clay.h:3900-3967) must reach its root: the two disagreeing
 	 * is the divergence the tree==scene verifier exists to catch. */
 	if (!pointer_over(ids, root_id)) {
-		wlr_log(WLR_ERROR, "scene==clay: the scene hit drawin %dx%d+%d+%d "
+		wlr_log(WLR_ERROR, "scene==clay: the scene hit drawable %dx%d+%d+%d "
 			"at %g,%g but Clay's query does not reach its root",
-			d->width, d->height, d->x, d->y, x, y);
+			host->w, host->h, host->x + m->m.x, host->y + m->m.y, x, y);
 		abort();
 	}
 #endif
@@ -1044,9 +1128,10 @@ declare_widget_hits(drawin_t *d, double x, double y, int *out, int cap)
 }
 
 int
-declare_widget_boxes(drawin_t *d, int (*boxes)[4])
+declare_widget_boxes(const struct widget_host *host, int (*boxes)[4])
 {
-	Monitor *m = d->screen ? d->screen->monitor : NULL;
+	struct widget_tree *d = host->tree;
+	Monitor *m = host->m;
 	struct declare_output *dout = m ? m->declare : NULL;
 	Clay_Context *previous;
 	Clay_ElementId root_id;
@@ -1056,7 +1141,7 @@ declare_widget_boxes(drawin_t *d, int (*boxes)[4])
 	/* Clay's hashmap answers with the last box an id ever had, so a tree
 	 * the declare pass has not reached yet would read back the boxes of
 	 * the one it replaced. Report nothing until it has. */
-	if (!dout || !d->widget_nodes_declared)
+	if (!dout || !d->declared)
 		return 0;
 
 	/* What the last frame solved, not a second solve of its own: Clay
@@ -1064,7 +1149,7 @@ declare_widget_boxes(drawin_t *d, int (*boxes)[4])
 	 * is one lookup per node against the boxes the output drew. */
 	previous = Clay_GetCurrentContext();
 	Clay_SetCurrentContext(dout->desktop.clay);
-	root_id = widget_root_id((uint32_t)handle_for(d, DECLARE_KIND_DRAWIN));
+	root_id = widget_root_id(host->id);
 	root = Clay_GetElementData(root_id);
 	if (root.found)
 		widget_boxes_walk(d, 0, root_id, boxes, &n, root.boundingBox,
@@ -1085,17 +1170,18 @@ static void handle_clay_error(Clay_ErrorData error);
  * at the drawin's output-local origin, so the device rounding matches the
  * renderer's to the pixel. */
 int
-declare_widget_solve(drawin_t *d, int (*boxes)[4], int (*dev)[2])
+declare_widget_solve(const struct widget_host *host, int (*boxes)[4], int (*dev)[2])
 {
+	struct widget_tree *d = host->tree;
 	static Clay_Context *ctx;
-	Monitor *m = d->screen ? d->screen->monitor : NULL;
+	Monitor *m = host->m;
 	Clay_Context *previous;
 	Clay_ElementId root_id;
 	Clay_ElementData root;
 	int n = 0, nleaf = 0;
 	size_t leaf = 0;
 
-	if (!m || d->widget_nodes_len == 0)
+	if (!m || d->nodes_len == 0)
 		return 0;
 	in_frame = true;
 	if (!ctx) {
@@ -1114,9 +1200,10 @@ declare_widget_solve(drawin_t *d, int (*boxes)[4], int (*dev)[2])
 	render_text_set_measure_scale(m->wlr_output->scale);
 	clay_scroll_records_clear();
 	Clay_BeginLayout();
-	root_id = widget_root_id((uint32_t)handle_for(d, DECLARE_KIND_DRAWIN));
-	declare_widget_subtree(d, 0, root_id, 0, d->x - m->m.x, d->y - m->m.y,
-		NULL, &leaf);
+	root_id = widget_root_id(host->id);
+	struct widget_host isolated = *host;
+	isolated.in_parent = false;
+	declare_widget_subtree(&isolated, 0, root_id, 0, NULL, &leaf);
 	Clay_EndLayout();
 	root = Clay_GetElementData(root_id);
 	if (root.found)
@@ -1426,9 +1513,9 @@ command_name(uint32_t type)
  * declare pass used. The walk visits every node so the preorder index keeps
  * up with the id path; NULL when the id names no node in this tree. */
 static const struct widget_node *
-widget_node_for_id(drawin_t *d, size_t *i, Clay_ElementId id, uint32_t want)
+widget_node_for_id(struct widget_tree *d, size_t *i, Clay_ElementId id, uint32_t want)
 {
-	const struct widget_node *n = &d->widget_nodes[(*i)++];
+	const struct widget_node *n = &d->nodes[(*i)++];
 	const struct widget_node *hit = id.id == want ? n : NULL;
 
 	for (uint16_t k = 0; k < n->children; k++) {
@@ -1470,6 +1557,12 @@ dump_what(buffer_t *buf, uint32_t id, void *userdata)
 		buffer_addf(buf, "wallpaper %s",
 			((Monitor *)object)->wlr_output->name);
 		break;
+	case DECLARE_KIND_TITLEBAR: {
+		drawable_t *d = object;
+
+		buffer_addf(buf, "titlebar %s", client_get_appid(d->owner.client));
+		break;
+	}
 	case DECLARE_KIND_DRAWIN: {
 		drawin_t *d = object;
 		const struct widget_node *n = NULL;
@@ -1479,11 +1572,11 @@ dump_what(buffer_t *buf, uint32_t id, void *userdata)
 		 * node carrying its handle is a widget node. The tree's root
 		 * is the drawin's own box, and naming it as the drawin is what
 		 * keeps a converted drawin in the dump under its own name. */
-		if (d->widget_nodes_len > 0)
-			n = widget_node_for_id(d, &i, widget_root_id(
-				(uint32_t)handle_for(d, DECLARE_KIND_DRAWIN)),
+		if (d->widgets.nodes_len > 0)
+			n = widget_node_for_id(&d->widgets, &i, widget_root_id(
+				(uint32_t)declare_handle_for(d, DECLARE_KIND_DRAWIN)),
 				id);
-		if (n && n != d->widget_nodes)
+		if (n && n != d->widgets.nodes)
 			buffer_addf(buf, "widget %s%s", n->cls ? n->cls : "-",
 				n->raster ? " raster" : "");
 		else
@@ -1564,10 +1657,11 @@ dump_sizing(buffer_t *buf, const struct widget_node *n, int axis)
  * placed but appears in no command. The command list below can never show
  * those, and they are most of a widget tree. */
 static size_t
-dump_widget_node(buffer_t *buf, drawin_t *d, size_t i, Clay_ElementId id,
+dump_widget_node(buffer_t *buf, const struct widget_host *host, size_t i, Clay_ElementId id,
 	int depth)
 {
-	const struct widget_node *n = &d->widget_nodes[i];
+	struct widget_tree *d = host->tree;
+	const struct widget_node *n = &d->nodes[i];
 	Clay_ElementData data = Clay_GetElementData(id);
 	size_t next = i + 1;
 
@@ -1599,10 +1693,10 @@ dump_widget_node(buffer_t *buf, drawin_t *d, size_t i, Clay_ElementId id,
 		buffer_addf(buf, " scrolled=%g", n->scrolled);
 	if (n->text) {
 		buffer_addf(buf, " \"%.*s\" font=%u", (int)n->text_len,
-			d->widget_text + n->text_off, n->font);
+			d->text + n->text_off, n->font);
 	} else if (i == 0 && n->sizing[0] == WIDGET_SIZING_FIXED
 			&& n->sizing[1] == WIDGET_SIZING_FIXED) {
-		buffer_addf(buf, " w=%d h=%d", d->width, d->height);
+		buffer_addf(buf, " w=%d h=%d", host->w, host->h);
 	} else {
 		buffer_adds(buf, " w=");
 		dump_sizing(buf, n, 0);
@@ -1619,7 +1713,7 @@ dump_widget_node(buffer_t *buf, drawin_t *d, size_t i, Clay_ElementId id,
 	buffer_adds(buf, "\n");
 
 	for (uint16_t k = 0; k < n->children; k++)
-		next = dump_widget_node(buf, d, next,
+		next = dump_widget_node(buf, host, next,
 			widget_child_id(d, next, id, k), depth + 1);
 	return next;
 }
@@ -1630,24 +1724,7 @@ dump_widget_node(buffer_t *buf, drawin_t *d, size_t i, Clay_ElementId id,
 static void
 dump_whole(buffer_t *buf, drawin_t *d)
 {
-	static const struct {
-		unsigned bit;
-		const char *name;
-	} reasons[] = {
-		{ WIDGET_REFUSED_SHAPE_BOUNDING, "shape_bounding" },
-		{ WIDGET_REFUSED_SHAPE_CLIP, "shape_clip" },
-		{ WIDGET_REFUSED_SHAPE_INPUT, "shape_input" },
-		{ WIDGET_REFUSED_OPACITY, "opacity" },
-	};
-	unsigned mask;
-
-	switch (d->widget_nodes_state) {
-	case WIDGET_NODES_REFUSED:
-		mask = widget_nodes_refused(d);
-		for (size_t i = 0; i < LENGTH(reasons); i++)
-			if (mask & reasons[i].bit)
-				buffer_addf(buf, " %s", reasons[i].name);
-		break;
+	switch (d->widgets.state) {
 	case WIDGET_NODES_NONE:
 		buffer_adds(buf, " nothing converted");
 		break;
@@ -1670,31 +1747,36 @@ dump_drawin(buffer_t *buf, drawin_t *d)
 	buffer_addf(buf, "  drawin screen %d %dx%d+%d+%d ",
 		d->screen ? d->screen->index : 0, d->width, d->height,
 		d->x, d->y);
-	if (d->widget_nodes_len == 0) {
-		buffer_adds(buf, "whole:");
+	if (d->widgets.nodes_len == 0) {
+		buffer_adds(buf, d->widgets.state == WIDGET_NODES_OVER_BUDGET
+			|| d->widgets.state == WIDGET_NODES_MALFORMED ? "nothing:" : "whole:");
 		dump_whole(buf, d);
 		return;
 	}
 	buffer_addf(buf, "converted: %zu nodes, %zu raster",
-		d->widget_nodes_len, d->widget_leaves_len);
+		d->widgets.nodes_len, d->widgets.leaves_len);
 	if (d->shape_radius > 0)
 		buffer_addf(buf, ", radius %g", d->shape_radius);
 	buffer_adds(buf, "\n");
 	/* Clay's hashmap answers with the last box an id ever had, so a tree
 	 * the declare pass has not reached yet would read back the boxes of
 	 * the one it replaced (declare_widget_boxes says the same). */
-	if (!d->widget_nodes_declared) {
+	if (!d->widgets.declared) {
 		buffer_adds(buf, "    not declared yet\n");
 		return;
 	}
-	dump_widget_node(buf, d, 0, widget_root_id(
-		(uint32_t)handle_for(d, DECLARE_KIND_DRAWIN)), 0);
+	struct widget_host host;
+
+	if (drawin_widget_host(d, &host))
+		dump_widget_node(buf, &host, 0, widget_root_id(host.id), 0);
 }
 
 /* The drawins the band draws, converted or whole, on the same filters the
- * band's own declare pass applies. The lock band solves only while the
- * session is locked; before that its drawins are the desktop band's, and
- * listing them here too would name them twice. */
+ * band's own declare pass applies, plus a drawin whose tree is over budget
+ * or malformed: it shows nothing and has no content entry, and is listed so
+ * the dump can say why. The lock band solves only while the session is
+ * locked; before that its drawins are the desktop band's, and listing them
+ * here too would name them twice. */
 static void
 dump_drawins(buffer_t *buf, Monitor *m, bool lock)
 {
@@ -1707,9 +1789,46 @@ dump_drawins(buffer_t *buf, Monitor *m, bool lock)
 				: (session_is_locked()
 					&& some_is_lock_drawin(d)))
 			continue;
-		if (!declarable_drawin(d, m))
+		if (!d->visible || !d->screen || d->screen->monitor != m
+				|| (!d->content_entry.native
+					&& d->widgets.state != WIDGET_NODES_OVER_BUDGET
+					&& d->widgets.state != WIDGET_NODES_MALFORMED))
 			continue;
 		dump_drawin(buf, d);
+	}
+}
+
+static void
+dump_titlebars(buffer_t *buf, Monitor *m)
+{
+	static const char *const names[] = { "top", "right", "bottom", "left" };
+
+	foreach(item, globalconf.clients) {
+		Client *c = *item;
+
+		if (c->mon != m || c->fullscreen || !declarable_client(c))
+			continue;
+		for (int bar = 0; bar < CLIENT_TITLEBAR_COUNT; bar++) {
+			struct widget_host host;
+			struct widget_tree *tree = &c->titlebar[bar].widgets;
+
+			if (!c->titlebar[bar].size || (!tree->nodes_len && !c->titlebar[bar].content.native)
+					|| !client_titlebar_host(c, c->titlebar[bar].drawable, &host))
+				continue;
+			buffer_addf(buf, "  titlebar %s %s %dx%d+%d+%d ",
+				client_get_appid(c), names[bar], host.w, host.h,
+				host.x + m->m.x, host.y + m->m.y);
+			if (!tree->nodes_len) {
+				buffer_adds(buf, "whole:\n");
+				continue;
+			}
+			buffer_addf(buf, "converted: %zu nodes, %zu raster\n",
+				tree->nodes_len, tree->leaves_len);
+			if (tree->declared)
+				dump_widget_node(buf, &host, 0, widget_root_id(host.id), 0);
+			else
+				buffer_adds(buf, "    not declared yet\n");
+		}
 	}
 }
 
@@ -1738,6 +1857,8 @@ dump_band(buffer_t *buf, struct declare_band *band, Monitor *m,
 	previous = Clay_GetCurrentContext();
 	Clay_SetCurrentContext(band->clay);
 	dump_drawins(buf, m, lock);
+	if (!lock)
+		dump_titlebars(buf, m);
 	Clay_SetCurrentContext(previous);
 }
 

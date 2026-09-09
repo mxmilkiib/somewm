@@ -6,6 +6,7 @@
 
 #include "render.h"
 
+struct widget_host;
 struct wlr_output;
 struct Monitor;
 struct render_client_hooks;
@@ -62,10 +63,12 @@ enum declare_kind {
 	DECLARE_KIND_CLIENT = 1,
 	DECLARE_KIND_LAYER,
 	DECLARE_KIND_DRAWIN,
+	DECLARE_KIND_TITLEBAR,
 	/* The object is the Monitor whose wallpaper crop the leaf shows. */
 	DECLARE_KIND_WALLPAPER,
 };
 
+uint64_t declare_handle_for(void *object, enum declare_kind kind);
 void *declare_handle_get(uint64_t handle, enum declare_kind *kind);
 void declare_handle_drop(void *object);
 
@@ -76,20 +79,20 @@ void declare_handle_drop(void *object);
  * of its own, and reports nothing until the declare pass has put the current
  * tree in front of Clay. Writes at most WIDGET_NODES_MAX entries and returns
  * how many. */
-int declare_widget_boxes(drawin_t *d, int (*boxes)[4]);
+int declare_widget_boxes(const struct widget_host *host, int (*boxes)[4]);
 
 /* The widget nodes of d's converted tree under a drawin-local point, as
  * Clay's pointer query answers it against the output's last solve
  * (Clay_SetPointerState, Clay_GetPointerOverIds): preorder indices of the
  * nodes that stand for a widget, outermost first, up to cap. 0 until the
  * tree has been declared. */
-int declare_widget_hits(drawin_t *d, double x, double y, int *out, int cap);
+int declare_widget_hits(const struct widget_host *host, double x, double y, int *out, int cap);
 
 /* Solve d's stored widget tree on its own, now, and read back the box of
  * every widget node in preorder (as declare_widget_boxes) plus each raster
  * leaf's device size in leaf order. Returns the box count, 0 for a drawin
  * with no tree or no output. */
-int declare_widget_solve(drawin_t *d, int (*boxes)[4], int (*dev)[2]);
+int declare_widget_solve(const struct widget_host *host, int (*boxes)[4], int (*dev)[2]);
 
 /* Test hook (awesome._test_declare_order): the desktop band's draw order for
  * m, bottom to top, one entry per declared object. A fresh solve of the

@@ -48,6 +48,16 @@ function only_on_screen:fit(context, ...)
     return base.fit_widget(self, context, self._private.widget, ...)
 end
 
+only_on_screen._clay = { fit = only_on_screen.fit, describe = function(w, _, st)
+    if w.layout ~= only_on_screen.layout then
+        return nil
+    end
+    if not should_display_on(w, st.context.screen) then
+        return { w = 0, h = 0 }
+    end
+    return { specs = require("wibox.clay").whole_box(w._private.widget) }
+end }
+
 --- The widget to be displayed
 -- @property widget
 -- @tparam[opt=nil] widget|nil widget

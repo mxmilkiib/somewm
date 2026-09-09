@@ -1,8 +1,7 @@
 /* Unit tests for the Clay reconciler: hand-built command arrays in, wlr_scene
  * out. No compositor and no output; wlr_scene is a plain data structure until
  * something drives an output from it, so the whole reconcile path runs in
- * process. Nothing in the compositor calls the renderer yet, so this is the
- * only thing exercising it. */
+ * process. */
 
 #include <assert.h>
 #include <stdio.h>
@@ -481,6 +480,37 @@ static void test_clip_axes(void) {
 		CHECK_EQ(r->height, cases[i].want_h);
 		fixture_finish(&f, &no_hooks);
 	}
+}
+
+static void test_opacity_from_the_word(void) {
+	struct fixture f;
+	fixture_init(&f);
+	Clay_RenderCommand cmds[] = {
+		cmd_rect(1, 0, 0, 20, 20, 0),
+		cmd_rect(2, 20, 0, 20, 20, 4),
+		cmd_border(3, 40, 0, 20, 20, 2, 0),
+		cmd_text(4, 60, 0, 20, 20, "hi", false),
+	};
+	for (unsigned byte = 128; byte <= 255; byte += 127) {
+		for (int i = 0; i < 4; i++)
+			cmds[i].userData = (void *)((uintptr_t)word(7, 0, 0)
+				| (uint64_t)byte << RENDER_UD_OPACITY_SHIFT);
+		CHECK(render_reconcile(f.rs, commands_of(cmds, 4), &no_hooks, no_bounds) > 0);
+		float opacity = byte == 128 ? 0.5f : 1.0f;
+		struct wlr_scene_tree *tree = render_tree(f.parent);
+		struct wlr_scene_rect *rect = wlr_scene_rect_from_node(child_at(tree, 0));
+		float color[] = { opacity, 0, 0, opacity };
+		CHECK(memcmp(rect->color, color, sizeof(color)) == 0);
+		CHECK(wlr_scene_buffer_from_node(child_at(tree, 1))->opacity == opacity);
+		CHECK(wlr_scene_buffer_from_node(child_at(tree, 3))->opacity == opacity);
+		struct wlr_scene_tree *border = wlr_scene_tree_from_node(child_at(tree, 2));
+		for (int i = 0; i < 4; i++) {
+			CHECK(wlr_scene_rect_from_node(child_at(border, i))->color[3] == opacity);
+			CHECK(wlr_scene_buffer_from_node(child_at(border, i + 4))->opacity == opacity);
+		}
+		CHECK_EQ(render_reconcile(f.rs, commands_of(cmds, 4), &no_hooks, no_bounds), 0);
+	}
+	fixture_finish(&f, &no_hooks);
 }
 
 static void test_scopes_from_the_word(void) {
@@ -991,6 +1021,15 @@ static void test_shape_leaf(void) {
 	shape.gen++;
 	CHECK_EQ(render_reconcile(f.rs, commands_of(&cmd, 1), &hooks, no_bounds), 1);
 	CHECK_EQ(render_buffers_created(f.rs), 1);
+	shape.gradient = (struct render_gradient) {
+		.kind = 1, .points = { 0, 0, 40, 40 }, .count = 2,
+		.stops = { { 0, 1, 0, 0, 1 }, { 1, 0, 0, 1, 1 } },
+	};
+	CHECK(render_reconcile(f.rs, commands_of(&cmd, 1), &hooks, no_bounds) > 0);
+	CHECK_EQ(child_at(render_tree(f.parent), 0)->type, WLR_SCENE_NODE_BUFFER);
+	CHECK_EQ(render_reconcile(f.rs, commands_of(&cmd, 1), &hooks, no_bounds), 0);
+	shape.gradient.stops[0][2] = 1;
+	CHECK(render_reconcile(f.rs, commands_of(&cmd, 1), &hooks, no_bounds) > 0);
 	fixture_finish(&f, &hooks);
 
 	fixture_init(&f);
@@ -1040,6 +1079,7 @@ int main(void) {
 		{ "restack only when order changed", test_restack_only_when_order_changed },
 		{ "clip stack", test_clip_stack },
 		{ "clip axes", test_clip_axes },
+		{ "opacity from the word", test_opacity_from_the_word },
 		{ "scopes from the word", test_scopes_from_the_word },
 		{ "border clips to the bounds", test_border_clips_to_the_bounds },
 		{ "client surface hooks", test_client_surface_hooks },

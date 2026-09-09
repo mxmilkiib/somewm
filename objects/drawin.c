@@ -296,34 +296,30 @@ drawin_paint_pixels(cairo_t *cr, cairo_surface_t *src)
 	cairo_paint(cr);
 }
 
-/* Rebuild the shadow composite entry when its inputs changed; the memo
- * (entry size vs drawin size plus radius, and the stored config) makes
- * redundant calls free. */
-static void
-drawin_update_shadow_entry(drawin_t *d, const shadow_config_t *config)
-{
-	if (!config || !config->enabled) {
-		image_entry_set(&d->shadow_entry, NULL);
-		return;
-	}
-	int bx, by, bw, bh;
-	shadow_box(config, d->width, d->height, &bx, &by, &bw, &bh);
-	if (d->shadow_entry.native
-			&& d->shadow_entry.width == bw && d->shadow_entry.height == bh
-			&& memcmp(&d->shadow_entry_config, config, sizeof(*config)) == 0)
-		return;
-
-	image_entry_set(&d->shadow_entry,
-		shadow_render_composite(config, d->width, d->height));
-	d->shadow_entry_config = *config;
-}
-
 void
 drawin_mark_dirty(drawin_t *drawin)
 {
 	if (drawin->screen && drawin->screen->monitor
 			&& drawin->screen->monitor->declare)
 		declare_output_mark_dirty(drawin->screen->monitor->declare);
+}
+
+bool
+drawin_widget_host(drawin_t *d, struct widget_host *out)
+{
+	if (!d->screen || !d->screen->monitor)
+		return false;
+	Monitor *m = d->screen->monitor;
+
+	*out = (struct widget_host) {
+		.tree = &d->widgets,
+		.m = m,
+		.id = (uint32_t)declare_handle_for(d, DECLARE_KIND_DRAWIN),
+		.x = d->x - m->m.x, .y = d->y - m->m.y,
+		.w = d->width, .h = d->height,
+		.radius = d->shape_radius,
+	};
+	return true;
 }
 
 void
@@ -350,7 +346,7 @@ drawin_refresh_drawable(drawin_t *drawin)
 	 * surface holds nothing for the renderer, and the entry only has to
 	 * exist for the declare filter. The frame path is woken by whichever
 	 * of the tree and the leaves changed, not from here. */
-	if (drawin->widget_nodes_len > 0 && drawin->content_entry.native)
+	if (drawin->widgets.nodes_len > 0 && drawin->content_entry.native)
 		return;
 
 	work_surface = d->surface;
@@ -548,10 +544,10 @@ drawin_wipe(drawin_t *w)
 	/* Retire the renderer's view: the handle so a later resolve answers
 	 * NULL, and the entry surfaces the declare pass hands out. */
 	declare_handle_drop(w);
-	widget_nodes_clear(w);
+	widget_nodes_clear(&w->widgets);
 	image_entry_set(&w->content_entry, NULL);
 	image_entry_set(&w->border_entry, NULL);
-	image_entry_set(&w->shadow_entry, NULL);
+	shadow_leaves_clear(&w->shadow);
 
 	/* Note: drawable reference cleanup handled by class system */
 	w->drawable = NULL;
@@ -1045,7 +1041,7 @@ drawin_moveresize(lua_State *L, int udx, int x, int y, int width, int height)
 		screen_update_workarea(drawin->screen);
 	}
 
-	/* Size change requires border + shadow entry refresh */
+	/* Size change requires border entry refresh */
 	if (old_width != drawin->width || old_height != drawin->height)
 		drawin->border_need_update = true;
 
@@ -1211,10 +1207,8 @@ luaA_drawin_apply_geometry(drawin_t *drawin)
 	drawin->geometry_dirty = false;
 }
 
-/** Refresh a single drawin's border and shadow entries.
- * Rebuilds the image entries the declare pass hands the renderer; the leaf
- * boxes (border outside the content area, shadow around it) are declared in
- * declare.c. */
+/** Refresh a single drawin's border entry.
+ * Rebuilds the border image the declare pass hands the renderer. */
 static void
 drawin_border_refresh_single(drawin_t *d)
 {
@@ -1227,9 +1221,6 @@ drawin_border_refresh_single(drawin_t *d)
 
 	d->border_need_update = false;
 
-	drawin_update_shadow_entry(d,
-		shadow_get_effective_config(d->shadow_config, true));
-
 	/* border_surface's ownership moves to the renderer's border entry;
 	 * without a border there is no entry and no leaf. */
 	border_surface = d->border_width > 0 ? drawin_render_border(d) : NULL;
@@ -1241,7 +1232,7 @@ drawin_border_refresh_single(drawin_t *d)
 /** Refresh all visible drawins (AwesomeWM compatibility)
  * Called from some_refresh() main loop. Geometry was already recorded by
  * drawin_moveresize() (the declare pass reads it per frame); what applies
- * here is the pending border and shadow entry rebuild.
+ * here is the pending border entry rebuild.
  */
 void
 drawin_refresh(void)
@@ -1343,10 +1334,10 @@ luaA_drawin_gc(lua_State *L)
 		/* Retire the renderer's view and drop the retained leaves at the
 		 * next frame */
 		declare_handle_drop(drawin);
-		widget_nodes_clear(drawin);
+		widget_nodes_clear(&drawin->widgets);
 		image_entry_set(&drawin->content_entry, NULL);
 		image_entry_set(&drawin->border_entry, NULL);
-		image_entry_set(&drawin->shadow_entry, NULL);
+		shadow_leaves_clear(&drawin->shadow);
 		declare_mark_all_dirty();
 	}
 	return 0;
@@ -1510,10 +1501,11 @@ luaA_drawin_set_opacity(lua_State *L, drawin_t *drawin)
 
 	if(drawin->opacity != opacity)
 	{
+		if (declare_in_frame())
+			return luaL_error(L, "widget tree changed from inside a frame");
 		drawin->opacity = opacity;
 		/* Opacity rides the content leaf's userData word (declare.c) */
 		declare_mark_all_dirty();
-		widget_nodes_gate(L, drawin, -3);
 		luaA_object_emit_signal(L, -3, "property::opacity", 0);
 	}
 	return 0;
@@ -1527,7 +1519,7 @@ luaA_drawin_get_shadow(lua_State *L, drawin_t *drawin)
 		shadow_config_to_lua(L, drawin->shadow_config);
 	} else {
 		const shadow_config_t *eff = shadow_get_effective_config(NULL, true);
-		if (eff->enabled && drawin->shadow_entry.native) {
+		if (eff->enabled) {
 			shadow_config_to_lua(L, eff);
 		} else {
 			lua_pushboolean(L, false);
@@ -1554,8 +1546,7 @@ luaA_drawin_set_shadow(lua_State *L, drawin_t *drawin)
 	}
 	*drawin->shadow_config = new_config;
 
-	/* The shadow entry rebuilds on the next refresh cycle */
-	drawin->border_need_update = true;
+	declare_mark_all_dirty();
 
 	luaA_object_emit_signal(L, -3, "property::shadow", 0);
 	return 0;
@@ -1654,29 +1645,56 @@ mask_rounded_radius(cairo_surface_t *mask, int w, int h, float scale)
 	return -1;
 }
 
-/* Recompute shape_radius (drawin.h) from the masks: both have to be the
- * same rounded rectangle at the drawin's own size, which is what
- * wibox:_apply_shape draws for a shape with no border. A bordered shape
- * draws its ring into the drawable's pixels, so it stays whole. */
+/* Whether a mask is at the size the drawin's own dimensions give it.
+ * wibox:_apply_shape sets the masks one at a time, so the first setter after
+ * a resize sees the other mask at the old size. */
+static bool
+mask_fits(cairo_surface_t *mask, int w, int h, float scale)
+{
+	return cairo_image_surface_get_width(mask) == (int)ceilf(w * scale)
+		&& cairo_image_surface_get_height(mask) == (int)ceilf(h * scale);
+}
+
+/* Recompute shape_radius (drawin.h) from the masks: the bounding mask a
+ * rounded rectangle at the drawin's size plus its border, the clip mask the
+ * same shape at the drawin's size with the border's inner edge as its
+ * corner (a stroke of twice the border on a rounded rectangle of radius r
+ * has an inner edge of radius r - bw, square when r <= bw), which is what
+ * wibox:_apply_shape draws. The content's corner is the radius the root
+ * element takes. A missing mask agrees with the one present. Masks that say
+ * anything else leave -1, and one that is no rounded rectangle is named
+ * once the pair is at the drawin's size; a stale mask mid-update says
+ * nothing. */
 static void
 drawin_shape_update(drawin_t *d)
 {
 	float scale = drawin_get_effective_scale(d);
+	int bw = d->border_width;
 	float rb, rc;
 
 	d->shape_radius = -1;
-	if (d->border_width > 0 || (!d->shape_bounding && !d->shape_clip))
+	if (!d->shape_bounding && !d->shape_clip)
 		return;
 	rb = d->shape_bounding
-		? mask_rounded_radius(d->shape_bounding, d->width, d->height, scale)
-		: -2;
+		? mask_rounded_radius(d->shape_bounding,
+			d->width + 2 * bw, d->height + 2 * bw, scale) : -2;
 	rc = d->shape_clip
 		? mask_rounded_radius(d->shape_clip, d->width, d->height, scale)
-		: rb;
+		: rb >= 0 ? fmaxf(rb - bw, 0) : -1;
 	if (rb == -2)
-		rb = rc;
-	if (rb >= 0 && fabsf(rb - rc) < 0.01f)
-		d->shape_radius = rb;
+		rb = rc + bw;
+	if (rb >= 0 && rc >= 0 && fabsf(fmaxf(rb - bw, 0) - rc) < 0.01f) {
+		d->shape_radius = rc;
+		return;
+	}
+	/* Two rounded rectangles whose radii disagree are a border change in
+	 * progress; a mask that is no rounded rectangle at all is the shape. */
+	if ((rb < 0 || rc < 0)
+			&& (!d->shape_bounding || mask_fits(d->shape_bounding,
+				d->width + 2 * bw, d->height + 2 * bw, scale))
+			&& (!d->shape_clip
+				|| mask_fits(d->shape_clip, d->width, d->height, scale)))
+		warn("drawin: shape is not a rounded rectangle, drawing it unshaped");
 }
 
 /** drawin.shape_bounding - Get visual bounding shape (AwesomeWM signature) */
@@ -1711,10 +1729,7 @@ drawin_copy_surface(cairo_surface_t *src)
 	width = cairo_image_surface_get_width(src);
 	height = cairo_image_surface_get_height(src);
 
-	if (width <= 0 || height <= 0)
-		return NULL;
-
-	/* Create new surface with same format and dimensions */
+	/* Create a surface with the same dimensions, including the 0x0 input flag. */
 	dst = cairo_image_surface_create(
 		cairo_image_surface_get_format(src), width, height);
 
@@ -1759,7 +1774,6 @@ luaA_drawin_set_shape_bounding(lua_State *L, drawin_t *drawin)
 
 	drawin->shape_bounding = copy;
 	drawin_shape_update(drawin);
-	widget_nodes_gate(L, drawin, -3);
 
 	/* Trigger redraw to apply shape (Wayland equivalent of xwindow_set_shape) */
 	if (drawin->visible)
@@ -1811,7 +1825,6 @@ luaA_drawin_set_shape_clip(lua_State *L, drawin_t *drawin)
 
 	drawin->shape_clip = copy;
 	drawin_shape_update(drawin);
-	widget_nodes_gate(L, drawin, -3);
 
 	/* Trigger redraw to apply shape (Wayland equivalent of xwindow_set_shape) */
 	if (drawin->visible)
@@ -1859,10 +1872,11 @@ luaA_drawin_set_shape_input(lua_State *L, drawin_t *drawin)
 		cairo_surface_destroy(drawin->shape_input);
 
 	drawin->shape_input = copy;
-	widget_nodes_gate(L, drawin, -3);
+	if (copy && (cairo_image_surface_get_width(copy) != 0
+			|| cairo_image_surface_get_height(copy) != 0))
+		warn("drawin: shape_input masks are ignored, input follows the box");
 
-	/* Note: No redraw needed for input shape - it's checked at input time.
-	 * A 0x0 surface means pass through ALL input (AwesomeWM convention). */
+	/* A 0x0 surface passes all input through; every other mask is ignored. */
 
 	luaA_object_emit_signal(L, -3, "property::shape_input", 0);
 	return 0;

@@ -87,6 +87,7 @@ local function new_bar(args)
         x = 0, y = y, width = 400, height = 24, screen = s,
         bg = args.bg or "#101010", visible = true,
         opacity = args.opacity,
+        border_width = args.border_width, border_color = args.border_color,
     }
 
     bars[#bars + 1] = bar
@@ -119,6 +120,7 @@ local function new_bar(args)
     if args.shape then
         bar.shape = args.shape
     end
+    if args.input_passthrough then bar.input_passthrough = true end
     return bar
 end
 
@@ -258,6 +260,20 @@ local steps = {
         return true
     end,
 
+    bar_step({
+        what = "a pass-through bar converts and takes no input",
+        bg = "#00000000", input_passthrough = true,
+        widget = { leaf_widget(40, nil, "#ff0000"), left = 16,
+            widget = wibox.container.margin },
+    }, function(head, _, bar)
+        assert(head:find("converted", 1, true), head)
+        mouse.coords({ x = bar.x + 4, y = bar.y + 4 })
+        mouse.coords({ x = bar.x + 4, y = bar.y + 4 })
+        assert(mouse.object_under_pointer() ~= bar.drawin,
+            "the pass-through bar took input")
+        mouse.coords({ x = 100, y = 100 })
+    end),
+
     -- The shape every bundled theme sets through beautiful.wibar_shape: a
     -- rounded rectangle, which the root element says as its corner radius.
     -- The corner pixel outside the arc is not the bar's.
@@ -278,6 +294,29 @@ local steps = {
         assert(not (r == 0x10 and g == 0x10 and b == 0x10),
             "the corner outside the arc shows the bar")
         cap:assert_pixel(shot, 12, 12, "#101010", "inside the arc")
+    end),
+
+    bar_step({
+        what = "a bordered rounded bar converts with its content radius",
+        border_width = 2, border_color = "#ff8800",
+        shape = function(cr, w, h) gshape.rounded_rect(cr, w, h, 8) end,
+        widget = { leaf_widget(40, nil, "#ff0000"), left = 16,
+            widget = wibox.container.margin },
+    }, function(head, _, bar)
+        assert(head:find("converted", 1, true) and head:find("radius 6", 1, true), head)
+        local cap = capture.new(s, bar.x, bar.y, bar.width, bar.height)
+        local shot = cap:shot()
+        cap:assert_pixel(shot, 12, 12, "#101010", "inside the arc")
+        local r, g, b = cap:pixel(shot, 1, 1)
+        assert(not (r == 0x10 and g == 0x10 and b == 0x10), "the corner shows the bar")
+        for _, offset in ipairs { 1, 12 } do
+            mouse.coords({ x = bar.x + offset, y = bar.y + offset })
+            mouse.coords({ x = bar.x + offset, y = bar.y + offset })
+            assert((mouse.object_under_pointer() == bar.drawin) == (offset == 12),
+                offset == 12 and "inside the arc is not the bar"
+                    or "the corner outside the arc takes the bar's input")
+        end
+        mouse.coords({ x = 100, y = 100 })
     end),
 
     -- A raster leaf drawn into the corner is cut to the arc, as the mask
@@ -310,31 +349,21 @@ local steps = {
         mouse.coords({ x = 100, y = 100 })
     end),
 
-    -- A mask that is not a rounded rectangle applies to the drawable's own
-    -- pixels, so the whole drawin paints itself, and the dump says why.
-    bar_step({
-        what = "a bar of another shape paints whole, and says which masks",
-        shape = gshape.hexagon,
-    }, function(head)
-        assert(head:find("whole:", 1, true), "the hexagonal bar converted")
-        assert(head:find("shape_bounding", 1, true)
-            and head:find("shape_clip", 1, true),
-            "the masks are not named: " .. head)
-    end),
-
-    -- A translucent drawin blends once as one layer.
-    bar_step({ what = "a translucent bar paints whole", opacity = 0.5 },
+    bar_step({ what = "a bar of another shape converts unshaped", shape = gshape.hexagon },
         function(head)
-            assert(head:find("whole:", 1, true),
-                "the translucent bar converted")
-            assert(head:find("opacity", 1, true),
-                "the opacity is not named: " .. head)
+            assert(head:find("converted", 1, true) and not head:find("whole:", 1, true), head)
         end),
 
-    -- A tree past the per-drawin node cap is refused, not truncated, and
-    -- not fatal: Clay's own capacity is what the budget is protecting.
+    bar_step({ what = "a translucent bar converts", opacity = 0.5 },
+        function(head, _, bar)
+            assert(head:find("converted", 1, true), "the translucent bar painted whole: " .. head)
+            local cap = capture.new(s, bar.x, bar.y, bar.width, bar.height)
+            local r = cap:pixel(cap:shot(), 20, 12)
+            assert(r < 0xd0, "the translucent leaf did not blend")
+        end),
+
     bar_step({
-        what = "a tree past the node cap paints whole",
+        what = "a tree past the node cap shows nothing", bg = "#123456",
         widget = (function()
             local w = leaf_widget(10, 10, "#ff0000")
             for _ = 1, 1100 do
@@ -342,15 +371,14 @@ local steps = {
             end
             return w
         end)(),
-    }, function(head)
-        assert(head:find("whole:", 1, true), "the oversized tree converted")
+    }, function(head, _, bar)
+        assert(head:find("nothing:", 1, true), "the oversized tree converted")
         assert(head:find("budget", 1, true),
             "the size is not named: " .. head)
+        local cap = capture.new(s, bar.x, bar.y, bar.width, bar.height)
+        local r, g, b = cap:pixel(cap:shot(), 5, 5)
+        assert(not (r == 0x12 and g == 0x34 and b == 0x56), "stale bar pixels remain")
     end),
-    -- The budget is shared: one output's Clay context holds every drawin's
-    -- tree, so enough bars that each fit on their own still spend it, and
-    -- the one that would cross the line paints whole instead of taking the
-    -- context past a capacity Clay treats as fatal.
     function(count)
         if count == 1 then
             for i = 1, 8 do
@@ -390,7 +418,7 @@ local steps = {
         assert(refused > 0, "no bar was held back by the shared budget")
         assert(converted > 0, "the shared budget refused every bar")
         io.stderr:write(string.format(
-            "[PASS] the shared budget holds: %d bars converted, %d paint whole\n",
+            "[PASS] the shared budget holds: %d bars converted, %d show nothing\n",
             converted, refused))
         for _, bar in ipairs(budget_bars) do
             bar.visible = false

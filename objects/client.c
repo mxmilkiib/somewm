@@ -1605,17 +1605,13 @@ client_wipe(client_t *c)
         c->icons.len = c->icons.size = 0;
     }
 
-    /* Cleanup titlebar scene buffers.
-     * NOTE: Don't manually destroy - they're children of c->scene and are
-     * automatically destroyed when the parent scene tree is destroyed.
-     * Manually destroying them here causes double-free crashes. */
     for (int i = 0; i < CLIENT_TITLEBAR_COUNT; i++) {
-        c->titlebar[i].scene_buffer = NULL;
+        declare_handle_drop(c->titlebar[i].drawable);
+        widget_nodes_clear(&c->titlebar[i].widgets);
+        image_entry_set(&c->titlebar[i].content, NULL);
     }
 
-    /* Shadow scene nodes are children of c->scene and destroyed with it.
-     * We own the texture buffers though and must free them. */
-    shadow_release(&c->shadow);
+    shadow_leaves_clear(&c->shadow);
     if (c->shadow_config) {
         free(c->shadow_config);
         c->shadow_config = NULL;
@@ -2973,6 +2969,10 @@ client_unmanage(client_t *c, client_unmanage_t reason)
             lua_pop(L, 1);
         }
 
+        declare_handle_drop(c->titlebar[bar].drawable);
+        widget_nodes_clear(&c->titlebar[bar].widgets);
+        image_entry_set(&c->titlebar[bar].content, NULL);
+
         /* Forget about the drawable */
         luaA_object_push(L, c);
         luaA_object_unref_item(L, -1, c->titlebar[bar].drawable);
@@ -3572,6 +3572,40 @@ titlebar_get_area(client_t *c, client_titlebar_t bar)
     return result;
 }
 
+struct image_entry *
+client_titlebar_content(client_t *c, drawable_t *d)
+{
+    for (client_titlebar_t bar = CLIENT_TITLEBAR_TOP; bar < CLIENT_TITLEBAR_COUNT; bar++)
+        if (c->titlebar[bar].drawable == d)
+            return &c->titlebar[bar].content;
+    return NULL;
+}
+
+bool
+client_titlebar_host(client_t *c, drawable_t *d, struct widget_host *out)
+{
+    if (!c->mon || !d)
+        return false;
+    for (client_titlebar_t bar = CLIENT_TITLEBAR_TOP; bar < CLIENT_TITLEBAR_COUNT; bar++) {
+        if (c->titlebar[bar].drawable != d)
+            continue;
+        area_t area = titlebar_get_area(c, bar);
+
+        *out = (struct widget_host) {
+            .tree = &c->titlebar[bar].widgets,
+            .m = c->mon,
+            .id = (uint32_t)declare_handle_for(d, DECLARE_KIND_TITLEBAR),
+            .x = area.x + c->geometry.x - c->mon->m.x,
+            .y = area.y + c->geometry.y - c->mon->m.y,
+            .w = area.width, .h = area.height,
+            .radius = 0,
+            .in_parent = true,
+        };
+        return true;
+    }
+    return false;
+}
+
 drawable_t *
 client_get_drawable_offset(client_t *c, int *x, int *y)
 {
@@ -3600,27 +3634,18 @@ static void
 client_refresh_titlebar_partial(client_t *c, client_titlebar_t bar, int16_t x, int16_t y, uint16_t width, uint16_t height)
 {
     drawable_t *d = c->titlebar[bar].drawable;
-    struct wlr_buffer *buffer;
-    area_t area;
+    struct image_entry *entry = &c->titlebar[bar].content;
 
-    if (!d || !d->refreshed || !c->titlebar[bar].scene_buffer)
+    if (!d || !d->refreshed)
         return;
-
-    /* Get titlebar geometry */
-    area = titlebar_get_area(c, bar);
-
-    /* Create buffer from drawable's Cairo surface */
-    buffer = drawable_create_buffer(d);
-    if (!buffer)
-        return;
-
-    /* Update scene buffer - same pattern as drawin */
-    wlr_scene_buffer_set_buffer_with_damage(
-        c->titlebar[bar].scene_buffer, buffer, NULL);
-    wlr_scene_buffer_set_dest_size(
-        c->titlebar[bar].scene_buffer, area.width, area.height);
-
-    wlr_buffer_drop(buffer);
+    if (c->titlebar[bar].widgets.nodes_len > 0)
+        image_entry_set(entry, NULL);
+    else if (d->surface) {
+        cairo_surface_flush(d->surface);
+        image_entry_set(entry, cairo_surface_reference(d->surface));
+    }
+    if (c->mon && c->mon->declare)
+        declare_output_mark_dirty(c->mon->declare);
 }
 
 #define HANDLE_TITLEBAR_REFRESH(name, index)                                                \
@@ -3670,21 +3695,8 @@ titlebar_get_drawable(lua_State *L, client_t *c, int cl_idx, client_titlebar_t b
         }
         c->titlebar[bar].drawable = luaA_object_ref_item(L, cl_idx, -1);
 
-        /* Create scene buffer for rendering (Wayland-specific) */
-        if (!c->titlebar[bar].scene_buffer && c->scene) {
-            area_t area;
-            c->titlebar[bar].scene_buffer = wlr_scene_buffer_create(c->scene, NULL);
-
-            /* Store drawable pointer (not client!) and set owner (AwesomeWM pattern) */
-            c->titlebar[bar].scene_buffer->node.data = c->titlebar[bar].drawable;
-            c->titlebar[bar].drawable->owner_type = DRAWABLE_OWNER_CLIENT;
-            c->titlebar[bar].drawable->owner.client = c;
-
-            /* Position relative to client geometry (titlebars occupy space inside geometry) */
-            area = titlebar_get_area(c, bar);
-            wlr_scene_node_set_position(&c->titlebar[bar].scene_buffer->node,
-                                          area.x, area.y);
-        }
+        c->titlebar[bar].drawable->owner_type = DRAWABLE_OWNER_CLIENT;
+        c->titlebar[bar].drawable->owner.client = c;
     }
 
     return c->titlebar[bar].drawable;
@@ -3744,38 +3756,7 @@ titlebar_resize(lua_State *L, int cidx, client_t *c, client_titlebar_t bar, int 
     c->titlebar[bar].size = size;
     client_resize_do(c, geometry, false);
 
-    /* Update scene buffer visibility and position (Wayland-specific) */
-    if (c->titlebar[bar].scene_buffer) {
-        wlr_scene_node_set_enabled(&c->titlebar[bar].scene_buffer->node, size > 0);
-        if (size > 0) {
-            area_t area = titlebar_get_area(c, bar);
-            wlr_scene_node_set_position(&c->titlebar[bar].scene_buffer->node,
-                                        area.x, area.y);
-        }
-    }
-
     luaA_object_emit_signal(L, cidx, property_name, 0);
-}
-
-/** Update all titlebar scene buffer positions based on current geometry.
- * Called from client_configure_to_box() when client geometry changes.
- * In X11, drawable_set_geometry() implicitly repositions windows.
- * In Wayland, we must explicitly update scene_buffer positions.
- */
-void
-client_update_titlebar_positions(client_t *c)
-{
-    for (client_titlebar_t bar = CLIENT_TITLEBAR_TOP; bar < CLIENT_TITLEBAR_COUNT; bar++) {
-        if (c->titlebar[bar].scene_buffer) {
-            bool visible = c->titlebar[bar].size > 0 && !c->fullscreen;
-            wlr_scene_node_set_enabled(&c->titlebar[bar].scene_buffer->node, visible);
-            if (visible) {
-                area_t area = titlebar_get_area(c, bar);
-                wlr_scene_node_set_position(&c->titlebar[bar].scene_buffer->node,
-                                            area.x, area.y);
-            }
-        }
-    }
 }
 
 #define HANDLE_TITLEBAR(name, index)                              \
@@ -4074,22 +4055,13 @@ apply_opacity_to_tree(struct wlr_scene_node *node, float opacity)
 }
 
 /** Apply opacity to all buffers in the client's scene tree.
- * This includes titlebars and the XDG surface content.
+ * This includes the XDG surface content.
  * Native Wayland compositing - no picom needed.
  * Non-static so it can be called from somewm.c on surface commits.
  */
 void
 client_apply_opacity_to_scene(client_t *c, float opacity)
 {
-    int i;
-
-    /* Apply to titlebars (scene buffers we control) */
-    for (i = 0; i < CLIENT_TITLEBAR_COUNT; i++) {
-        if (c->titlebar[i].scene_buffer) {
-            wlr_scene_buffer_set_opacity(c->titlebar[i].scene_buffer, opacity);
-        }
-    }
-
     /* Apply to XDG surface subtree - recursively traverse all nodes.
      * wlr_scene_xdg_surface_create() creates a nested tree structure,
      * so we need to recurse to find all buffer nodes. */
@@ -4172,7 +4144,7 @@ luaA_client_get_shadow(lua_State *L, client_t *c)
         shadow_config_to_lua(L, c->shadow_config);
     } else {
         const shadow_config_t *eff = shadow_get_effective_config(NULL, false);
-        if (eff->enabled && c->shadow.tree) {
+        if (eff->enabled) {
             shadow_config_to_lua(L, eff);
         } else {
             lua_pushboolean(L, false);
@@ -4203,11 +4175,7 @@ luaA_client_set_shadow(lua_State *L, client_t *c)
     }
     *c->shadow_config = new_config;
 
-    /* Update shadow if client is mapped */
-    if (c->scene) {
-        shadow_update_config(&c->shadow, c->scene, &new_config,
-            c->geometry.width + 2 * c->bw, c->geometry.height + 2 * c->bw);
-    }
+    declare_mark_all_dirty();
 
     luaA_object_emit_signal(L, -3, "property::shadow", 0);
     return 0;

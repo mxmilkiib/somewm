@@ -873,8 +873,7 @@ mapnotify(struct wl_listener *listener, void *data)
 
 	/* Popups (context menus, dropdowns) are parented via this surface's
 	 * data pointer (see commitpopup()). Point it at popups, not
-	 * scene_surface: scene_surface is offset by (bw + titlebar) from
-	 * scene same as popups is, but scene_surface also carries the
+	 * scene_surface: both trees sit at the surface box, but scene_surface carries the
 	 * client's content clip, which would crop any popup parented there. */
 	client_surface(c)->data = c->popups;
 
@@ -1358,24 +1357,6 @@ window_parked_tree(void)
 	return render_parked;
 }
 
-/* The client shadow is parented inside c->scene and rides the borrowed
- * tree; its geometry update lives on the configure leg. */
-static void
-client_update_shadow(Client *c)
-{
-	const shadow_config_t *config = shadow_get_effective_config(
-		c->shadow_config, false);
-	int frame_w = c->geometry.width + 2 * c->bw;
-	int frame_h = c->geometry.height + 2 * c->bw;
-
-	if (!config || !config->enabled)
-		return;
-	if (c->shadow.tree)
-		shadow_update_geometry(&c->shadow, config, frame_w, frame_h);
-	else
-		shadow_create(c->scene, &c->shadow, config, frame_w, frame_h);
-}
-
 /* The scene tree, popups tree, and owner slot behind a handle. Clients and
  * layer surfaces both borrow; anything else (a dead handle, a drawin) has
  * no borrowed tree and returns false. */
@@ -1436,7 +1417,6 @@ hook_configure(void *data, uint64_t handle, int width, int height)
 	if (!c)
 		return;
 	client_configure_to_box(c);
-	client_update_shadow(c);
 }
 
 static void
@@ -1485,20 +1465,19 @@ hook_has_popup(void *data, uint64_t handle)
 	return ptree && !wl_list_empty(&ptree->children);
 }
 
-/* The input filter for image leaves (render.h). Only a drawin's content
- * leaf carries a handle; its shape_input decides per pixel, and node-local
- * coordinates are drawin-local because the leaf sits exactly at the drawin
- * box. The border and shadow leaves carry no userData word and never take
- * input, matching the old border_buffer's point_accepts_input. */
+/* Titlebars take input throughout their box. Drawin images and converted
+ * nodes use the radius and pass-through flag; unowned leaves take no input. */
 static bool
 hook_accepts_input(void *data, void *userdata, double x, double y)
 {
 	enum declare_kind kind;
 	void *obj = declare_handle_get(declare_userdata_handle(userdata), &kind);
 
-	if (!obj || kind != DECLARE_KIND_DRAWIN)
+	if (!obj)
 		return false;
-	return drawin_accepts_input_at(obj, x, y);
+	if (kind == DECLARE_KIND_TITLEBAR)
+		return true;
+	return kind == DECLARE_KIND_DRAWIN && drawin_accepts_input_at(obj, x, y);
 }
 
 void
@@ -1557,17 +1536,14 @@ client_configure_to_box(Client *c)
 	titlebar_left = c->fullscreen ? 0 : c->titlebar[CLIENT_TITLEBAR_LEFT].size;
 	titlebar_top = c->fullscreen ? 0 : c->titlebar[CLIENT_TITLEBAR_TOP].size;
 
-	/* Offset scene_surface by titlebar sizes (titlebars occupy space in geometry) */
-	wlr_scene_node_set_position(&c->scene_surface->node, c->bw + titlebar_left, c->bw + titlebar_top);
+	/* The reconciler places c->scene at the solved surface box. */
+	wlr_scene_node_set_position(&c->scene_surface->node, 0, 0);
 	/* popups tracks scene_surface's offset exactly, so popups stay correctly
 	 * positioned, but (unlike scene_surface) is never clipped. Also keep it
 	 * raised above borders/shadow: later-created siblings in c->scene stack
 	 * on top by default, which would otherwise paint over open popups. */
-	wlr_scene_node_set_position(&c->popups->node, c->bw + titlebar_left, c->bw + titlebar_top);
+	wlr_scene_node_set_position(&c->popups->node, 0, 0);
 	wlr_scene_node_raise_to_top(&c->popups->node);
-
-	/* Update titlebar positions - they depend on current geometry */
-	client_update_titlebar_positions(c);
 
 	/* Request size change from client (subtract borders AND titlebars from geometry)
 	 * CRITICAL: Only send configure if there's no pending resize waiting for client commit.
@@ -1611,8 +1587,7 @@ client_configure_to_box(Client *c)
 	 * clients (e.g. carousel scrolling layout) don't render on adjacent
 	 * monitors. For fully-inside clients this is just a bounds check.
 	 *
-	 * We toggle individual child scene nodes (surface, titlebars) rather
-	 * than c->scene->node, which the banning system controls. */
+	 * Only the surface child is toggled here; the reconciler owns c->scene. */
 	if (clamp_to_mon) {
 		struct wlr_box mon = c->mon->m;
 		bool fully_inside =
@@ -1622,9 +1597,7 @@ client_configure_to_box(Client *c)
 			c->geometry.y + c->geometry.height <= mon.y + mon.height;
 
 		if (fully_inside) {
-			/* Common case: everything visible, no clipping needed.
-			 * Re-enable the surface if it was hidden. Titlebars are
-			 * managed by client_update_titlebar_positions(). */
+			/* Re-enable the surface when it is fully inside the monitor. */
 			wlr_scene_node_set_enabled(&c->scene_surface->node, true);
 		} else {
 			/* Client extends past monitor. Clip the surface to the
@@ -1648,26 +1621,13 @@ client_configure_to_box(Client *c)
 			}
 
 			wlr_scene_node_set_enabled(&c->scene_surface->node, visible);
-
-			/* Titlebar buffers: client_update_titlebar_positions()
-			 * already enables them based on size/fullscreen. Only
-			 * forcibly disable when fully offscreen. */
-			if (!visible) {
-				for (client_titlebar_t bar = CLIENT_TITLEBAR_TOP;
-						bar < CLIENT_TITLEBAR_COUNT; bar++) {
-					if (c->titlebar[bar].scene_buffer)
-						wlr_scene_node_set_enabled(
-							&c->titlebar[bar].scene_buffer->node, false);
-				}
-			}
 		}
 	} else {
 		/* Not under a clip-offscreen layout: let the scene graph render
 		 * the surface on whichever outputs its geometry intersects.
 		 * Mirror the fully_inside branch so a transition out of a
 		 * clip-offscreen layout recovers nodes that were previously
-		 * disabled. Titlebars stay idempotently managed by
-		 * client_update_titlebar_positions() above. */
+		 * disabled. */
 		wlr_scene_node_set_enabled(&c->scene_surface->node, true);
 	}
 
@@ -2045,12 +2005,6 @@ unmapnotify(struct wl_listener *listener, void *data)
 	}
 
 	client_scene_node_destroy(c);
-
-	/* Clear titlebar scene buffer pointers - they were children of c->scene
-	 * and are now freed. Prevents use-after-free in refresh callbacks. */
-	for (client_titlebar_t bar = CLIENT_TITLEBAR_TOP; bar < CLIENT_TITLEBAR_COUNT; bar++) {
-		c->titlebar[bar].scene_buffer = NULL;
-	}
 
 	printstatus();
 	motionnotify(0, NULL, 0, 0, 0, 0);

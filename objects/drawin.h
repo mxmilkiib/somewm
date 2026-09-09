@@ -10,8 +10,9 @@
 #include "signal.h"
 #include "common/luaclass.h"  /* For lua_class_t */
 #include "common/luaobject.h"  /* For LUA_OBJECT_FUNCS macro */
-#include "shadow.h"           /* For shadow_config_t, shadow_nodes_t */
+#include "shadow.h"           /* Shadow configuration and textures */
 #include "../render.h"
+#include "../widget.h"
 #include "../render_image.h"  /* For struct image_entry */
 
 struct widget_shape {
@@ -79,51 +80,26 @@ typedef struct drawin_t {
 	cairo_surface_t *shape_clip;            /* Drawing clip region */
 	cairo_surface_t *shape_input;           /* Input hit-test region (click-through) */
 	cairo_surface_t *shape_border;          /* Pre-rendered anti-aliased border (ARGB32) */
-	/* What shape_bounding and shape_clip together say, when they say one
-	 * rounded rectangle (gears.shape.rounded_rect at this drawin's size,
-	 * both masks alike, no border): its corner radius in logical pixels,
-	 * 0 for a plain rectangle. -1 for masks that say anything else, which
-	 * keeps the drawable painting whole through them (widget.c). Set by
-	 * drawin_shape_update at every mask change. */
+	/* Content corner radius of rounded bounding and clip masks, including
+	 * bordered shapes. -1 means the masks are not one rounded rectangle
+	 * and the converted drawin draws unshaped. Set at every mask change. */
 	float shape_radius;
 
 	/* Renderer leaves (the Clay flip): stable image entries the declare
 	 * pass hands to the renderer as imageData. Each native surface is a
 	 * drawin-owned copy (masks applied), so a drawable resize can never
-	 * dangle the renderer's source; gen bumps whenever content changes.
-	 * shadow_entry_config is the memoized config the composite was built
-	 * from; the leaf's origin and the memo's size derive from it. */
+	 * dangle the renderer's source; gen bumps whenever content changes. */
 	struct image_entry content_entry;
 	struct image_entry border_entry;
-	struct image_entry shadow_entry;
-	shadow_config_t shadow_entry_config;
+	struct shadow_leaves shadow;
 
 	/* The converted widget tree (widget.h), in preorder, and its raster
 	 * leaves, in preorder too. NULL while the drawable paints itself whole,
 	 * which is every drawin lua/wibox/clay.lua finds nothing to convert in. */
-	struct widget_node *widget_nodes;
-	size_t widget_nodes_len;
-	size_t widget_scrolls;
-	struct image_entry *widget_leaves;
-	size_t widget_leaves_len;
-	struct widget_shape *widget_shapes;
-	size_t widget_shapes_len;
-	char *widget_text;
-	size_t widget_text_len;
-	/* Whether widget_nodes_refused() named any reason, so a setter that
-	 * changes that can ask for the repaint that moves the drawable
-	 * across. */
-	bool widget_nodes_refused;
-	/* What the last compile answered (enum widget_nodes_state, widget.h),
-	 * for the tree dump. A uint8_t because drawin.h names no widget
-	 * type. */
-	uint8_t widget_nodes_state;
-	/* Whether the declare pass has put this tree in front of Clay yet.
-	 * Clay's element hashmap is persistent and answers a lookup with the
-	 * last box an id ever had, so without this a tree that changed since
-	 * the last frame would read back the boxes of the one it replaced. */
-	bool widget_nodes_declared;
+	struct widget_tree widgets;
 } drawin_t;
+
+bool drawin_widget_host(drawin_t *d, struct widget_host *out);
 
 /* Metatable name for drawin userdata */
 #define DRAWIN_MT "drawin"

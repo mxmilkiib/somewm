@@ -218,17 +218,25 @@ local steps = {
         assert(count < 20, "dropping the shape did not convert the background again")
     end,
 
-    -- The same tree painted whole. A shape that is not a rounded rectangle
-    -- puts the drawable back on the path where cairo paints every pixel,
-    -- because the mask applies to those pixels.
-    step_until(false, function() bar.shape = gshape.hexagon end,
-        "a shape did not put the drawable back on cairo"),
+    -- A hexagon draws unshaped: the tree stays converted and its pixels
+    -- match the unshaped bar.
+    function(count)
+        if count == 1 then
+            bar.shape = gshape.hexagon
+            return nil
+        end
+        assert(#awesome._test_widget_boxes(bar.drawin) == 5,
+            "a hexagon put the drawable back on cairo")
+        return cap:compare(count, captured, "a hexagon drawn unshaped")
+    end,
 
-    -- And a background image, the other thing the chain cannot carry; a
+    function()
+        bar.shape = nil
+        return true
+    end,
+
+    -- A background image keeps the drawable painting whole; a
     -- transparent one masks nothing away, so the pixels have to agree.
-    step_until(true, function() bar.shape = nil end,
-        "dropping the shape did not convert the tree again"),
-
     step_until(false, function()
         bar.bgimage = cairo.ImageSurface(cairo.Format.ARGB32, 1, 1)
     end, "a background image did not put the drawable back"),

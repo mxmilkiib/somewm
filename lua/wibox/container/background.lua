@@ -712,7 +712,12 @@ local function describe_background(w)
     if p.background then
         node.bg = clay.solid_rgba(p.background)
         if not node.bg then
-            return nil
+            local fill = clay.fill(p.background)
+            if not fill or radius > 0 or bw > 0 then return nil end
+            node.fill = fill
+            node.shape = function(width, height)
+                return clay.shape_ops(gshape.rectangle, width, height)
+            end
         end
     end
 

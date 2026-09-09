@@ -267,8 +267,7 @@ screen.connect_signal("request::wallpaper", function(s)
                 },
                 valign = "center",
                 halign = "center",
-                tiled  = false,
-                widget = wibox.container.tile,
+                widget = wibox.container.place,
             }
         }
     else

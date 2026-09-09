@@ -240,14 +240,15 @@ end
 -- the tree did not convert, in which case nothing here ran.
 local function draw_converted(self, context, width, height, dirty)
     local tree, leaves = wclay.compile(self, self._widget, context, width, height)
-    -- nil is not a tree: the renderer drops whatever it held and answers
-    -- false, which is the whole of "paint it yourself".
-    local scale, boxes = self.drawable:_clay_nodes(tree)
+    -- False with a reason shows nothing; false alone paints the drawable whole.
+    local scale, why = self.drawable:_clay_nodes(tree)
 
     if not scale then
-        return unconvert(self)
+        unconvert(self)
+        return why ~= nil
     end
 
+    local boxes = why
     local widgets, index = {}, {}
 
     place_nodes(tree, boxes, widgets, nil, 0, index)
@@ -556,7 +557,10 @@ end
 -- as arguments. Any other arguments passed to this method will be appended.
 -- @param image A background image or a function
 function drawable:set_bgimage(image, ...)
-    if type(image) ~= "function" then
+    -- Unset stays unset: gears.surface(nil) answers an empty default
+    -- surface, which would keep the drawable a painter to the compile step
+    -- (wibox.clay). awful.titlebar sets nil on every bar without an image.
+    if image ~= nil and type(image) ~= "function" then
         image = surface(image)
     end
 

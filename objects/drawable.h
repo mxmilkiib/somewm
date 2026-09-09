@@ -69,8 +69,9 @@ void drawable_class_setup(lua_State *L);
 /* somewm setup helper (called from luaa.c) */
 void luaA_drawable_setup(lua_State *L);
 
-/* Buffer creation from drawable's Cairo surface */
-struct wlr_buffer *drawable_create_buffer(drawable_t *d);
+/* The converted tree and its box, resolved through the drawable owner. */
+struct widget_host;
+bool drawable_widget_host(drawable_t *d, struct widget_host *out);
 
 /* Buffer creation from raw Cairo pixel data (for non-drawable Cairo surfaces) */
 struct wlr_buffer *drawable_create_buffer_from_data(int width, int height, const void *cairo_data, size_t cairo_stride);

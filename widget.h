@@ -8,7 +8,41 @@
 #include <cairo.h>
 #include <lua.h>
 
+#include "render.h"
+
 typedef struct drawin_t drawin_t;
+typedef struct Monitor Monitor;
+
+struct widget_tree {
+	struct widget_node *nodes;
+	size_t nodes_len;
+	size_t scrolls;
+	struct image_entry *leaves;
+	size_t leaves_len;
+	struct widget_shape *shapes;
+	size_t shapes_len;
+	char *text;
+	size_t text_len;
+	/* What the last compile answered (enum widget_nodes_state),
+	 * for the tree dump. */
+	uint8_t state;
+	/* Whether the declare pass has put this tree in front of Clay yet.
+	 * Clay's element hashmap is persistent and answers a lookup with the
+	 * last box an id ever had (third_party/clay.h:1740-1754, 4283-4292),
+	 * so without this a tree that changed since
+	 * the last frame would read back the boxes of the one it replaced. */
+	bool declared;
+};
+
+/* A converted widget tree at a box on an output. */
+struct widget_host {
+	struct widget_tree *tree;
+	Monitor *m;
+	uint32_t id;          /* The owner's declare handle id. */
+	int x, y, w, h;       /* Output-local box. */
+	float radius;        /* Shaped drawin corners, 0 for titlebars. */
+	bool in_parent;
+};
 
 /* One axis of a node's sizing, Clay's own types by name (Clay__SizingType,
  * clay.h): fit wraps the content, grow fills the parent, fixed is told. Fit
@@ -65,6 +99,7 @@ struct widget_node {
 	float scrolled;
 	uint16_t shape;
 	float fill[4];
+	struct render_gradient gradient;
 	float stroke[4];
 	float stroke_width;
 	bool widget;         /* stands for a widget, so has a box Lua reads back */
@@ -97,40 +132,22 @@ struct widget_node {
 /* Clip scopes a tree may open: a byte of the word numbers them (render.h). */
 #define WIDGET_CLIPS_MAX 255
 
-/* A tree with more nodes than this is refused rather than truncated. A busy
- * bar (taglist plus tasklist) is a few hundred nodes; Clay's default context
- * holds 8192 elements (clay.h:1019), shared by every drawin on the output. */
+/* A tree with more nodes than this shows nothing. A busy bar (taglist plus
+ * tasklist) is a few hundred nodes; Clay's default context holds 8192
+ * elements (clay.h:1019), shared by every drawin on the output. */
 #define WIDGET_NODES_MAX 1024
 
 /* Elements every converted tree on one output may take together. Clay's
  * context holds 8192 (clay.h:1019, allocated at 2151-2168) and every drawin
  * on the output declares into that one context, alongside its clients, layer
  * surfaces and leaves; the rest is the reserve for those, at up to three
- * elements per client. A tree that would take its output past this is refused
- * and the drawable paints itself whole, because exceeding Clay's own capacity
+ * elements per client. A tree past this budget shows nothing. Exceeding capacity
  * raises CLAY_ERROR_TYPE_ELEMENTS_CAPACITY_EXCEEDED (clay.h:780), which the
  * error handler treats as the bug it is and aborts on. */
 #define WIDGET_NODES_OUTPUT_MAX 6144
 
 /* Scroll records per context (third_party/clay.h:2194). */
 #define WIDGET_SCROLLS_OUTPUT_MAX 10
-
-/* Why d has to paint itself whole, as a mask of reasons, or 0 for a drawin
- * that can convert: shape_bounding and shape_clip are applied to the
- * drawable's own pixels (objects/drawin.c), which a converted node is no
- * longer part of, unless the two masks are one rounded rectangle
- * (drawin.h shape_radius), which the root element says as its corner
- * radius; shape_input's pass-through would be swallowed by a
- * converted node's scene rect, which takes input everywhere it draws; a
- * translucent drawin blends once as one layer, where a tree of nodes each
- * carrying the opacity would blend every overlap twice. */
-enum {
-	WIDGET_REFUSED_SHAPE_BOUNDING = 1 << 0,
-	WIDGET_REFUSED_SHAPE_CLIP     = 1 << 1,
-	WIDGET_REFUSED_SHAPE_INPUT    = 1 << 2,
-	WIDGET_REFUSED_OPACITY        = 1 << 3,
-};
-unsigned widget_nodes_refused(drawin_t *d);
 
 /* What the last widget_nodes_set() answered, kept so the tree dump can say
  * why a drawin paints itself whole rather than only that it does. Zero is a
@@ -141,25 +158,14 @@ enum widget_nodes_state {
 	WIDGET_NODES_CONVERTED,
 	/* The compile step (lua/wibox/clay.lua) returned no tree at all. */
 	WIDGET_NODES_NONE,
-	/* widget_nodes_refused(), which names which reasons. */
-	WIDGET_NODES_REFUSED,
 	WIDGET_NODES_MALFORMED,
 	WIDGET_NODES_OVER_BUDGET,
 };
 
-/* For the setters that change that answer: when it flips, drop the tree and
- * ask Lua for a complete repaint (property::surface on the drawable), so the
- * drawable moves between painting whole and converting without a widget
- * having to redraw first. udx is the drawin's stack index. */
-void widget_nodes_gate(lua_State *L, drawin_t *d, int udx);
-
-/* Read a tree from the table at absolute stack index idx (what
- * lua/wibox/clay.lua returns) and store it on d, replacing whatever was
- * there. Returns false and stores nothing when the tree is malformed or the
- * drawin is refused, which is Lua's signal to paint the whole drawable
- * itself. */
-bool widget_nodes_set(lua_State *L, drawin_t *d, int idx);
-void widget_nodes_clear(drawin_t *d);
+/* Replace the stored tree with the compiled table at idx. False with NONE
+ * paints whole; MALFORMED or OVER_BUDGET shows nothing. */
+bool widget_nodes_set(lua_State *L, struct widget_tree *d, Monitor *m, int idx);
+void widget_nodes_clear(struct widget_tree *d);
 
 /* Size each painted leaf's surface to the device size the solve gave it
  * (declare_widget_solve, in the order of the leaves that are not images),
@@ -167,16 +173,16 @@ void widget_nodes_clear(drawin_t *d);
  * hold device pixels with no device scale set, like every other image
  * entry; a kept surface keeps its pixels, so Lua repaints only what its
  * dirty region says. */
-void widget_leaves_size(drawin_t *d, int (*dev)[2]);
+void widget_leaves_size(struct widget_tree *d, int (*dev)[2]);
 
 /* A new reference to leaf i's surface, for Lua to draw into and own the
  * reference of (the drawable.surface convention); NULL past the last leaf.
  * fresh says whether the surface is new since it was last handed out, so
  * holds no pixels yet. */
-cairo_surface_t *widget_leaf_surface(drawin_t *d, size_t i, bool *fresh);
+cairo_surface_t *widget_leaf_surface(struct widget_tree *d, size_t i, bool *fresh);
 
 /* Bump the generation of every leaf whose index is a key in the table at
  * idx, so the renderer re-rasters exactly the leaves Lua redrew. */
-void widget_leaves_drawn(lua_State *L, drawin_t *d, int idx);
+bool widget_leaves_drawn(lua_State *L, struct widget_tree *d, int idx);
 
 #endif

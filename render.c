@@ -169,7 +169,7 @@ struct rnode {
 	uint64_t handle;
 	uint64_t gen;
 	/* The command's userData word (render.h), retained for the input
-	 * backmap; and the opacity last applied to an IMAGE node's buffer. */
+	 * backmap; and the opacity applied to buffers or folded into rect color. */
 	void *user_data;
 	float opacity;
 };
@@ -701,6 +701,9 @@ static int reconcile_square_rect(struct render_state *rs, struct rnode *n,
 	Clay_RectangleRenderData *rd = &cmd->renderData.rectangle;
 	float color[4];
 	clay_color_to_float(rd->backgroundColor, color);
+	float opacity = render_userdata_opacity(cmd->userData);
+	for (int i = 0; i < 4; i++)
+		color[i] *= opacity;
 	int muts = 0;
 
 	/* A solid rect crops to its clip by shrinking; the color is uniform, so
@@ -709,6 +712,7 @@ static int reconcile_square_rect(struct render_state *rs, struct rnode *n,
 		struct wlr_scene_rect *rect = wlr_scene_rect_create(rs->tree,
 			(int)rbox.width, (int)rbox.height, color);
 		n->node = &rect->node;
+		n->opacity = opacity;
 		/* A radius toggle can create this rect mid-frame, when the common
 		 * placement pass no longer sees the node as new; place it now. */
 		wlr_scene_node_set_position(n->node, (int)rbox.x, (int)rbox.y);
@@ -721,8 +725,9 @@ static int reconcile_square_rect(struct render_state *rs, struct rnode *n,
 		muts++;
 	}
 	if (memcmp(&n->data.rectangle.backgroundColor, &rd->backgroundColor,
-			sizeof(rd->backgroundColor)) != 0) {
+			sizeof(rd->backgroundColor)) != 0 || opacity != n->opacity) {
 		wlr_scene_rect_set_color(rect, color);
+		n->opacity = opacity;
 		muts++;
 	}
 	return muts;
@@ -777,6 +782,14 @@ static int reconcile_rounded_rect(struct render_state *rs, struct rnode *n,
 		n->raster_scale = rs->scale;
 		clip_round_keep(&n->mask, mask);
 		muts++;
+	}
+
+	float opacity = render_userdata_opacity(cmd->userData);
+	if (is_new || opacity != n->opacity) {
+		wlr_scene_buffer_set_opacity(sb, opacity);
+		n->opacity = opacity;
+		if (!is_new)
+			muts++;
 	}
 
 	muts += rnode_apply_clip(n, sb, cmd, rbox, rs->scale, raster_changed);
@@ -998,6 +1011,9 @@ static int reconcile_border(struct render_state *rs, struct rnode *n,
 	Clay_BorderRenderData *bd = &cmd->renderData.border;
 	float color[4];
 	clay_color_to_float(bd->color, color);
+	float opacity = render_userdata_opacity(cmd->userData);
+	for (int i = 0; i < 4; i++)
+		color[i] *= opacity;
 	int ext[4];
 	border_corner_extents(cmd, ext);
 	int edges[4][4];
@@ -1055,8 +1071,8 @@ static int reconcile_border(struct render_state *rs, struct rnode *n,
 	}
 
 	/* Edges: diff realized boxes (box move, resize, width, clip) and recolor. */
-	bool color_changed = !is_new && memcmp(&n->data.border.color, &bd->color,
-		sizeof(bd->color)) != 0;
+	bool color_changed = !is_new && (memcmp(&n->data.border.color, &bd->color,
+		sizeof(bd->color)) != 0 || opacity != n->opacity);
 	for (int i = 0; i < 4; i++) {
 		/* The rect itself is the record of its last realized box, so there is
 		 * no shadow copy to keep in step with what was written. */
@@ -1078,6 +1094,11 @@ static int reconcile_border(struct render_state *rs, struct rnode *n,
 	 * raster exist and the corner is not fully clipped out. */
 	for (int c = 0; c < 4; c++) {
 		struct wlr_scene_buffer *sb = n->border_corners[c];
+		if (opacity != n->opacity) {
+			wlr_scene_buffer_set_opacity(sb, opacity);
+			if (!is_new)
+				muts++;
+		}
 		bool show = ext[c] >= 1 && n->border_tile[c];
 		if (show && clip != NULL) {
 			Clay_BoundingBox cb = { cmd->boundingBox.x + cpos[c][0],
@@ -1096,6 +1117,7 @@ static int reconcile_border(struct render_state *rs, struct rnode *n,
 			}
 		}
 	}
+	n->opacity = opacity;
 	return muts;
 }
 
@@ -1210,6 +1232,14 @@ static int reconcile_text(struct render_state *rs, struct rnode *n,
 		muts++;
 	}
 
+	float opacity = render_userdata_opacity(cmd->userData);
+	if (opacity != n->opacity) {
+		wlr_scene_buffer_set_opacity(sb, opacity);
+		n->opacity = opacity;
+		if (!is_new)
+			muts++;
+	}
+
 	muts += rnode_apply_clip(n, sb, cmd, rbox, rs->scale, raster_changed);
 
 	if (content_changed) {
@@ -1239,8 +1269,10 @@ static int reconcile_text(struct render_state *rs, struct rnode *n,
 
 static struct cairo_buffer *rasterize_image(Clay_RenderCommand *cmd,
 		struct image_entry *entry, float scale, const struct clip_round *mask) {
-	int w = device_len((int)cmd->boundingBox.x, (int)cmd->boundingBox.width, scale);
-	int h = device_len((int)cmd->boundingBox.y, (int)cmd->boundingBox.height, scale);
+	int w = entry->stretch ? (int)ceilf(entry->width * scale)
+		: device_len((int)cmd->boundingBox.x, (int)cmd->boundingBox.width, scale);
+	int h = entry->stretch ? (int)ceilf(entry->height * scale)
+		: device_len((int)cmd->boundingBox.y, (int)cmd->boundingBox.height, scale);
 	if (w < 1 || h < 1 || entry->width < 1 || entry->height < 1) {
 		return NULL;
 	}
@@ -1260,7 +1292,7 @@ static struct cairo_buffer *rasterize_image(Clay_RenderCommand *cmd,
 		rounded_rect_path(cr, 0, 0, w, h, radius);
 		cairo_clip(cr);
 	}
-	if (entry->natural)
+	if (entry->natural || entry->stretch)
 		cairo_scale(cr, scale, scale);
 	else
 		cairo_scale(cr, (double)w / entry->width, (double)h / entry->height);
@@ -1356,7 +1388,8 @@ static int reconcile_image(struct render_state *rs, struct rnode *n,
 	/* An entry with no surface shows nothing. */
 	bool usable = entry != NULL && entry->native != NULL;
 	bool raster_changed = is_new ||
-		!box_size_equal(n->box, cmd->boundingBox) ||
+		((!entry || !entry->stretch)
+			&& !box_size_equal(n->box, cmd->boundingBox)) ||
 		n->raster_scale != rs->scale ||
 		!image_data_equal(&n->data.image, &cmd->renderData.image) ||
 		(usable && entry->gen != n->img_gen) ||
@@ -1447,7 +1480,20 @@ static struct cairo_buffer *rasterize_shape(Clay_RenderCommand *cmd,
 	apply_clip_round(cr, cmd->boundingBox, mask, scale);
 	cairo_scale(cr, scale, scale);
 	shape_path(cr, ops, len);
-	if (shape->fill[3] > 0) {
+	if (shape->gradient.kind) {
+		const struct render_gradient *g = &shape->gradient;
+		const float *p = g->points;
+		cairo_pattern_t *pattern = g->kind == 1
+			? cairo_pattern_create_linear(p[0], p[1], p[2], p[3])
+			: cairo_pattern_create_radial(p[0], p[1], p[2], p[3], p[4], p[5]);
+		for (int i = 0; i < g->count; i++) {
+			const float *c = g->stops[i];
+			cairo_pattern_add_color_stop_rgba(pattern, c[0], c[1], c[2], c[3], c[4]);
+		}
+		cairo_set_source(cr, pattern);
+		cairo_fill_preserve(cr);
+		cairo_pattern_destroy(pattern);
+	} else if (shape->fill[3] > 0) {
 		const float *c = shape->fill;
 		cairo_set_source_rgba(cr, c[0], c[1], c[2], c[3]);
 		cairo_fill_preserve(cr);
@@ -1485,6 +1531,7 @@ static int reconcile_shape(struct render_state *rs, struct rnode *n,
 		n->raster_scale != rs->scale ||
 		n->data.custom.customData != cmd->renderData.custom.customData ||
 		n->shape.gen != value.gen ||
+		memcmp(&n->shape.gradient, &value.gradient, sizeof(value.gradient)) != 0 ||
 		memcmp(n->shape.fill, value.fill, sizeof(value.fill)) != 0 ||
 		memcmp(n->shape.stroke, value.stroke, sizeof(value.stroke)) != 0 ||
 		memcmp(&n->shape.stroke_width, &value.stroke_width, sizeof(value.stroke_width)) != 0 ||

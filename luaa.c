@@ -1546,9 +1546,12 @@ luaA_awesome_test_declare_order(lua_State *L)
 static int
 luaA_awesome_test_widget_boxes(lua_State *L)
 {
-	drawin_t *d = luaA_checkdrawin(L, 1);
+	drawin_t *d = luaA_todrawin(L, 1);
 	int boxes[WIDGET_NODES_MAX][4];
-	int n = declare_widget_boxes(d, boxes);
+	struct widget_host host;
+	bool found = d ? drawin_widget_host(d, &host)
+		: drawable_widget_host(luaA_checkudata(L, 1, &drawable_class), &host);
+	int n = found ? declare_widget_boxes(&host, boxes) : 0;
 
 	lua_createtable(L, n, 0);
 	for (int i = 0; i < n; i++) {
@@ -1621,19 +1624,7 @@ luaA_awesome_shadow_reload(lua_State *L)
 	/* Reload config from beautiful */
 	shadow_load_beautiful_defaults(L);
 
-	/* Update all existing client shadows */
-	foreach(c, globalconf.clients) {
-		const shadow_config_t *config = shadow_get_effective_config(
-			(*c)->shadow_config, false);
-		shadow_update_config(&(*c)->shadow, (*c)->scene, config,
-			(*c)->geometry.width + 2 * (*c)->bw,
-			(*c)->geometry.height + 2 * (*c)->bw);
-	}
-
-	/* Drawin shadow entries rebuild through the refresh cycle */
-	foreach(d, globalconf.drawins) {
-		(*d)->border_need_update = true;
-	}
+	declare_mark_all_dirty();
 
 	return 0;
 }
@@ -5116,7 +5107,7 @@ luaA_state_drop_object_pointers(void)
 		declare_handle_drop(w);
 		image_entry_set(&w->content_entry, NULL);
 		image_entry_set(&w->border_entry, NULL);
-		image_entry_set(&w->shadow_entry, NULL);
+		shadow_leaves_clear(&w->shadow);
 	}
 	globalconf.drawins.len = 0;
 	declare_mark_all_dirty();
@@ -5178,6 +5169,12 @@ clients_detach(client_snapshot_t **out, int *out_count)
 		/* Remove all wlroots listeners */
 		client_remove_all_listeners(c);
 
+		for (j = 0; j < CLIENT_TITLEBAR_COUNT; j++) {
+			declare_handle_drop(c->titlebar[j].drawable);
+			widget_nodes_clear(&c->titlebar[j].widgets);
+			image_entry_set(&c->titlebar[j].content, NULL);
+		}
+
 		/* Copy entire client_t via memcpy */
 		memcpy(&snap->data, c, sizeof(client_t));
 		snap->was_mapped = (c->scene != NULL);
@@ -5230,9 +5227,8 @@ clients_detach(client_snapshot_t **out, int *out_count)
 		c->icons.tab = NULL; c->icons.len = c->icons.size = 0;
 		c->buttons.tab = NULL; c->buttons.len = c->buttons.size = 0;
 		c->protocols.atoms = NULL; c->protocols.atoms_len = 0;
-		/* Don't let GC touch shadow textures - snapshot owns them */
-		for (j = 0; j < SHADOW_TEXTURE_COUNT; j++)
-			c->shadow.textures[j] = NULL;
+		/* The snapshot owns the shadow surfaces. */
+		memset(&c->shadow, 0, sizeof(c->shadow));
 		c->shadow_config = NULL;
 		/* Don't let GC destroy the scene tree */
 		c->scene = NULL;
@@ -5291,10 +5287,6 @@ clients_restore(lua_State *L, client_snapshot_t *snaps, int num_clients)
 		for (j = 0; j < CLIENT_TITLEBAR_COUNT; j++) {
 			c->titlebar[j].drawable = NULL;
 			c->titlebar[j].size = 0;
-			if (c->titlebar[j].scene_buffer) {
-				wlr_scene_node_destroy(&c->titlebar[j].scene_buffer->node);
-				c->titlebar[j].scene_buffer = NULL;
-			}
 		}
 
 		/* Re-register wlroots listeners */

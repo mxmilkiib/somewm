@@ -109,19 +109,16 @@ local steps = {
         return true
     end,
 
-    -- A translucent wibox paints whole at its opacity: blue over the green
-    -- wallpaper at one half.
+    -- A translucent drawin blends each node at its opacity, so the two blue
+    -- fills at one half compound over green to blue 192 and green 63.
     function(count)
         if count == 1 then
             w.opacity = 0.5
             return nil
         end
-        if converted() then
-            return nil
-        end
         local r, g, b = screen_pixel(cx, cy)
 
-        if near(r, 0) and near(g, 128) and near(b, 128) then
+        if near(r, 0) and near(g, 63) and near(b, 192) then
             io.stderr:write("[PASS] a translucent wibox captures at its opacity\n")
             return true
         end

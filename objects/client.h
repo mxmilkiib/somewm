@@ -35,6 +35,7 @@
 #include "color.h"
 #include "objects/window.h"
 #include "shadow.h"
+#include "widget.h"
 
 /* Forward declarations */
 typedef struct screen_t screen_t;
@@ -170,8 +171,8 @@ struct client_t
     bool border_rgba_set;
     /** Shadow configuration (NULL = use defaults) */
     shadow_config_t *shadow_config;
-    /** Shadow scene nodes */
-    shadow_nodes_t shadow;
+    /** Shadow textures */
+    struct shadow_leaves shadow;
     /** Wayland listeners */
     struct wl_listener initial_commit; /* For initial XDG commit before scene surface exists */
     struct wl_listener commit;         /* For subsequent commits after scene surface exists */
@@ -341,8 +342,8 @@ struct client_t
         uint16_t size;
         /** The drawable for this bar. */
         drawable_t *drawable;
-        /** Scene buffer for rendering (Wayland-specific) */
-        struct wlr_scene_buffer *scene_buffer;
+        struct widget_tree widgets;
+        struct image_entry content;
     } titlebar[CLIENT_TITLEBAR_COUNT];
     /** Motif WM hints, with an additional MWM_HINTS_AWESOME_SET bit */
     motif_wm_hints_t motif_wm_hints;
@@ -425,7 +426,8 @@ drawable_t *client_get_drawable(client_t *, int, int);
 drawable_t *client_get_drawable_offset(client_t *, int *, int *);
 area_t client_get_undecorated_geometry(client_t *);
 void client_apply_opacity_to_scene(client_t *, float);
-void client_update_titlebar_positions(client_t *);
+struct image_entry *client_titlebar_content(client_t *c, drawable_t *d);
+bool client_titlebar_host(client_t *c, drawable_t *d, struct widget_host *out);
 
 /* Forward declarations for inline functions
  * Note: luaA_object_emit_signal() is declared in awm_luaobject.h (included above) */

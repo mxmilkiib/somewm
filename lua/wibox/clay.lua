@@ -161,6 +161,28 @@ local function solid_rgba(col)
     return { r, g, b, a }
 end
 
+--- A solid fill or a linear or radial gradient in logical pixels.
+function clay.fill(col)
+    if not col then return nil end
+    local pattern = gcolor(col)
+    local kind = pattern:get_type()
+    if kind == "SOLID" then return solid_rgba(col) end
+    if kind ~= "LINEAR" and kind ~= "RADIAL" then return nil end
+    local status, count = pattern:get_color_stop_count()
+    if status ~= "SUCCESS" or count > 16 then return nil end
+    local points = kind == "LINEAR" and { pattern:get_linear_points() }
+        or { pattern:get_radial_circles() }
+    if table.remove(points, 1) ~= "SUCCESS" then return nil end
+    local fill = { stops = {} }
+    fill[kind == "LINEAR" and "linear" or "radial"] = points
+    for i = 0, count - 1 do
+        local stop = { pattern:get_color_stop_rgba(i) }
+        if table.remove(stop, 1) ~= "SUCCESS" then return nil end
+        fill.stops[#fill.stops + 1] = stop
+    end
+    return fill
+end
+
 --- Clay pads, gaps and border widths are whole uint16 pixels
 -- (clay.h:330-335 padding, 344 childGap, 533-541 border widths).
 local function whole(v)

@@ -24,6 +24,7 @@
 #include "render_text.h"
 #include "objects/drawable.h"
 #include "objects/drawin.h"
+#include "objects/client.h"
 #include "objects/screen.h"
 
 /* A four-number array field (pad, bw, bg, border), left at zero when the
@@ -222,6 +223,55 @@ read_text(lua_State *L, int idx, struct widget_node *n)
 }
 
 static bool
+read_fill(lua_State *L, int idx, struct widget_node *n)
+{
+	struct render_gradient *g = &n->gradient;
+	memset(g, 0, sizeof(*g));
+	lua_getfield(L, idx, "fill");
+	if (!lua_istable(L, -1)) {
+		lua_pop(L, 1);
+		return read_quad(L, idx, "fill", n->fill);
+	}
+	lua_getfield(L, -1, "stops");
+	if (lua_isnil(L, -1)) {
+		lua_pop(L, 2);
+		return read_quad(L, idx, "fill", n->fill);
+	}
+	bool ok = lua_istable(L, -1);
+	size_t count = ok ? luaA_rawlen(L, -1) : 0;
+	ok = ok && count <= 16;
+	g->count = (int)count;
+	for (size_t i = 0; ok && i < count; i++) {
+		lua_rawgeti(L, -1, i + 1);
+		ok = lua_istable(L, -1);
+		for (int j = 0; ok && j < 5; j++) {
+			lua_rawgeti(L, -1, j + 1);
+			ok = lua_type(L, -1) == LUA_TNUMBER;
+			g->stops[i][j] = (float)lua_tonumber(L, -1);
+			lua_pop(L, 1);
+		}
+		lua_pop(L, 1);
+	}
+	lua_pop(L, 1);
+	lua_getfield(L, -1, "linear");
+	g->kind = 1;
+	if (lua_isnil(L, -1)) {
+		lua_pop(L, 1);
+		lua_getfield(L, -1, "radial");
+		g->kind = 2;
+	}
+	ok = ok && lua_istable(L, -1);
+	for (int i = 0; ok && i < (g->kind == 1 ? 4 : 6); i++) {
+		lua_rawgeti(L, -1, i + 1);
+		ok = lua_type(L, -1) == LUA_TNUMBER;
+		g->points[i] = (float)lua_tonumber(L, -1);
+		lua_pop(L, 1);
+	}
+	lua_pop(L, 2);
+	return ok;
+}
+
+static bool
 read_node(lua_State *L, int idx, struct widget_node *n)
 {
 	float pad[4] = { 0 }, bw[4] = { 0 }, gap = 0;
@@ -245,7 +295,7 @@ read_node(lua_State *L, int idx, struct widget_node *n)
 	lua_pop(L, 1);
 	if (!ok)
 		return !n->shape && read_text(L, idx, n);
-	if (!read_quad(L, idx, "fill", n->fill)
+	if (!read_fill(L, idx, n)
 			|| !read_quad(L, idx, "stroke", n->stroke)
 			|| !read_number(L, idx, "stroke_width", 0, 1e6, &n->stroke_width))
 		return false;
@@ -371,7 +421,7 @@ read_tree(lua_State *L, int idx, struct widget_node *nodes, size_t *len,
 	n->clip_by = (uint8_t)clip_by;
 
 	lua_getfield(L, idx, "children");
-	ok = lua_isnil(L, -1) || (lua_istable(L, -1) && (!n->raster || n->image) && !n->text && !n->shape);
+	ok = lua_isnil(L, -1) || (lua_istable(L, -1) && (!n->raster || n->image) && !n->text);
 	count = ok ? luaA_rawlen(L, -1) : 0;
 	n->children = (uint16_t)count;
 	if (ok && (*len == 1 || (n->radius > 0 && count > 0))) {
@@ -380,6 +430,8 @@ read_tree(lua_State *L, int idx, struct widget_node *nodes, size_t *len,
 		n->clip_opens = (uint8_t)++*clips;
 		clip_by = n->clip_opens;
 	}
+	if (n->shape && count > 0 && n->clip_opens)
+		ok = false;
 	for (size_t i = 0; ok && i < count; i++) {
 		lua_rawgeti(L, -1, (int)i + 1);
 		ok = read_tree(L, lua_gettop(L), nodes, len, leaves, clip_by, clips, shapes);
@@ -393,32 +445,32 @@ read_tree(lua_State *L, int idx, struct widget_node *nodes, size_t *len,
  * survives: a leaf keeps its surface by its index in the tree, and
  * widget_leaves_size resizes the ones whose box changed. */
 static void
-leaves_count(drawin_t *d, size_t count)
+leaves_count(struct widget_tree *d, size_t count)
 {
-	if (count == d->widget_leaves_len)
+	if (count == d->leaves_len)
 		return;
-	for (size_t i = count; i < d->widget_leaves_len; i++)
-		image_entry_set(&d->widget_leaves[i], NULL);
-	p_realloc(&d->widget_leaves, count);
-	if (count > d->widget_leaves_len)
-		memset(&d->widget_leaves[d->widget_leaves_len], 0,
-			(count - d->widget_leaves_len) * sizeof(*d->widget_leaves));
-	d->widget_leaves_len = count;
+	for (size_t i = count; i < d->leaves_len; i++)
+		image_entry_set(&d->leaves[i], NULL);
+	p_realloc(&d->leaves, count);
+	if (count > d->leaves_len)
+		memset(&d->leaves[d->leaves_len], 0,
+			(count - d->leaves_len) * sizeof(*d->leaves));
+	d->leaves_len = count;
 }
 
 void
-widget_leaves_size(drawin_t *d, int (*dev)[2])
+widget_leaves_size(struct widget_tree *d, int (*dev)[2])
 {
 	size_t leaf = 0, sized = 0;
 
-	for (size_t i = 0; i < d->widget_nodes_len; i++) {
-		const struct widget_node *n = &d->widget_nodes[i];
+	for (size_t i = 0; i < d->nodes_len; i++) {
+		const struct widget_node *n = &d->nodes[i];
 		struct image_entry *entry;
 		int w, h;
 
 		if (!n->raster)
 			continue;
-		entry = &d->widget_leaves[leaf++];
+		entry = &d->leaves[leaf++];
 		if (entry->filter != n->filter) {
 			entry->filter = n->filter;
 			entry->gen++;
@@ -448,68 +500,31 @@ widget_leaves_size(drawin_t *d, int (*dev)[2])
 }
 
 void
-widget_nodes_clear(drawin_t *d)
+widget_nodes_clear(struct widget_tree *d)
 {
-	for (size_t i = 0; i < d->widget_shapes_len; i++)
-		luaL_unref(globalconf.L, LUA_REGISTRYINDEX, d->widget_shapes[i].ref);
-	p_delete(&d->widget_shapes);
-	d->widget_shapes_len = 0;
-	for (size_t i = 0; i < d->widget_leaves_len; i++)
-		image_entry_set(&d->widget_leaves[i], NULL);
-	p_delete(&d->widget_leaves);
-	d->widget_leaves_len = 0;
-	p_delete(&d->widget_nodes);
-	d->widget_nodes_len = 0;
-	d->widget_scrolls = 0;
-	p_delete(&d->widget_text);
-	d->widget_text_len = 0;
-	d->widget_nodes_declared = false;
+	for (size_t i = 0; i < d->shapes_len; i++)
+		luaL_unref(globalconf.L, LUA_REGISTRYINDEX, d->shapes[i].ref);
+	p_delete(&d->shapes);
+	d->shapes_len = 0;
+	for (size_t i = 0; i < d->leaves_len; i++)
+		image_entry_set(&d->leaves[i], NULL);
+	p_delete(&d->leaves);
+	d->leaves_len = 0;
+	p_delete(&d->nodes);
+	d->nodes_len = 0;
+	d->scrolls = 0;
+	p_delete(&d->text);
+	d->text_len = 0;
+	d->declared = false;
 }
 
-unsigned
-widget_nodes_refused(drawin_t *d)
-{
-	bool masks_convert = d->shape_radius >= 0;
-
-	return (d->shape_bounding && !masks_convert
-			? WIDGET_REFUSED_SHAPE_BOUNDING : 0)
-		| (d->shape_clip && !masks_convert ? WIDGET_REFUSED_SHAPE_CLIP : 0)
-		| (d->shape_input ? WIDGET_REFUSED_SHAPE_INPUT : 0)
-		| (d->opacity >= 0 && d->opacity < 1
-			? WIDGET_REFUSED_OPACITY : 0);
-}
-
-/* Drop whatever was stored and say why, which is Lua's signal to paint the
- * whole drawable itself. The reason is the tree dump's to report; nothing
- * here branches on it. */
+/* Drop the stored tree and record the result for Lua and the tree dump. */
 static bool
-nodes_drop(drawin_t *d, enum widget_nodes_state why)
+nodes_drop(struct widget_tree *d, enum widget_nodes_state why)
 {
 	widget_nodes_clear(d);
-	d->widget_nodes_state = why;
+	d->state = why;
 	return false;
-}
-
-void
-widget_nodes_gate(lua_State *L, drawin_t *d, int udx)
-{
-	if (declare_in_frame())
-		luaL_error(L, "widget tree changed from inside a frame");
-	bool refused = widget_nodes_refused(d) != 0;
-
-	if (refused == d->widget_nodes_refused)
-		return;
-	d->widget_nodes_refused = refused;
-	if (refused)
-		nodes_drop(d, WIDGET_NODES_REFUSED);
-	/* The drawable is an item of the drawin's own env table, so reaching it
-	 * needs the drawin already on the stack. The object registry does not
-	 * hold a wibox's drawin, so looking it up there answers nil. */
-	if (d->drawable) {
-		luaA_object_push_item(L, udx, d->drawable);
-		luaA_object_emit_signal(L, -1, "property::surface", 0);
-		lua_pop(L, 1);
-	}
 }
 
 /* Whether len more nodes would take this drawin's output past the budget
@@ -523,9 +538,8 @@ widget_nodes_gate(lua_State *L, drawin_t *d, int udx)
  * room for, which costs one drawable its conversion; not counting it can
  * exhaust the context, which aborts. */
 static bool
-over_budget(drawin_t *d, size_t len, size_t scrolls)
+over_budget(struct widget_tree *d, Monitor *m, size_t len, size_t scrolls)
 {
-	Monitor *m = d->screen ? d->screen->monitor : NULL;
 	size_t total = len;
 
 	if (!m)
@@ -533,17 +547,31 @@ over_budget(drawin_t *d, size_t len, size_t scrolls)
 	foreach(item, globalconf.drawins) {
 		drawin_t *other = *item;
 
-		if (other != d && other->screen
+		if (&other->widgets != d && other->screen
 				&& other->screen->monitor == m) {
-			total += other->widget_nodes_len;
-			scrolls += other->widget_scrolls;
+			total += other->widgets.nodes_len;
+			scrolls += other->widgets.scrolls;
+		}
+	}
+	foreach(item, globalconf.clients) {
+		client_t *c = *item;
+
+		if (c->mon != m)
+			continue;
+		for (int bar = 0; bar < CLIENT_TITLEBAR_COUNT; bar++) {
+			struct widget_tree *other = &c->titlebar[bar].widgets;
+
+			if (other == d)
+				continue;
+			total += other->nodes_len;
+			scrolls += other->scrolls;
 		}
 	}
 	return total > WIDGET_NODES_OUTPUT_MAX || scrolls > WIDGET_SCROLLS_OUTPUT_MAX;
 }
 
 bool
-widget_nodes_set(lua_State *L, drawin_t *d, int idx)
+widget_nodes_set(lua_State *L, struct widget_tree *d, Monitor *m, int idx)
 {
 	if (declare_in_frame())
 		luaL_error(L, "widget tree changed from inside a frame");
@@ -554,9 +582,6 @@ widget_nodes_set(lua_State *L, drawin_t *d, int idx)
 	unsigned clips = 0;
 
 	text_len = 0;
-	d->widget_nodes_refused = widget_nodes_refused(d) != 0;
-	if (d->widget_nodes_refused)
-		return nodes_drop(d, WIDGET_NODES_REFUSED);
 	if (!lua_istable(L, idx))
 		return nodes_drop(d, WIDGET_NODES_NONE);
 	/* read_tree refuses a tree of its own cap's size before reading a node
@@ -568,28 +593,32 @@ widget_nodes_set(lua_State *L, drawin_t *d, int idx)
 	size_t scrolls = 0;
 	for (size_t i = 0; i < len; i++)
 		scrolls += nodes[i].scroll != 0;
-	if (!ok || over_budget(d, len, scrolls)) {
+	if (!ok || over_budget(d, m, len, scrolls)) {
 		lua_pop(L, 1);
-		return nodes_drop(d, ok ? WIDGET_NODES_OVER_BUDGET
+		enum widget_nodes_state why = ok ? WIDGET_NODES_OVER_BUDGET
 			: len == WIDGET_NODES_MAX || clips > WIDGET_CLIPS_MAX
-			? WIDGET_NODES_OVER_BUDGET : WIDGET_NODES_MALFORMED);
+			? WIDGET_NODES_OVER_BUDGET : WIDGET_NODES_MALFORMED;
+		if (why != d->state)
+			warn("widget tree %s, showing nothing", why == WIDGET_NODES_OVER_BUDGET
+				? "over the output's element budget" : "malformed");
+		return nodes_drop(d, why);
 	}
 	leaves_count(d, leaves);
 	size_t count = luaA_rawlen(L, shapes);
-	bool shapes_changed = count != d->widget_shapes_len;
+	bool shapes_changed = count != d->shapes_len;
 	if (shapes_changed) {
-		for (size_t i = count; i < d->widget_shapes_len; i++)
-			luaL_unref(L, LUA_REGISTRYINDEX, d->widget_shapes[i].ref);
-		p_realloc(&d->widget_shapes, count);
-		for (size_t i = d->widget_shapes_len; i < count; i++)
-			d->widget_shapes[i] = (struct widget_shape) { .ref = LUA_NOREF };
-		d->widget_shapes_len = count;
+		for (size_t i = count; i < d->shapes_len; i++)
+			luaL_unref(L, LUA_REGISTRYINDEX, d->shapes[i].ref);
+		p_realloc(&d->shapes, count);
+		for (size_t i = d->shapes_len; i < count; i++)
+			d->shapes[i] = (struct widget_shape) { .ref = LUA_NOREF };
+		d->shapes_len = count;
 	}
 	for (size_t i = 0; i < len; i++) {
 		struct widget_node *n = &nodes[i];
 		if (!n->shape)
 			continue;
-		struct widget_shape *slot = &d->widget_shapes[n->shape - 1];
+		struct widget_shape *slot = &d->shapes[n->shape - 1];
 		lua_rawgeti(L, shapes, n->shape);
 		lua_rawgeti(L, LUA_REGISTRYINDEX, slot->ref);
 		bool same = lua_rawequal(L, -1, -2);
@@ -602,62 +631,63 @@ widget_nodes_set(lua_State *L, drawin_t *d, int idx)
 			slot->shape.gen++;
 			shapes_changed = true;
 		}
+		slot->shape.gradient = n->gradient;
 		memcpy(slot->shape.fill, n->fill, sizeof(n->fill));
 		memcpy(slot->shape.stroke, n->stroke, sizeof(n->stroke));
 		slot->shape.stroke_width = n->stroke_width;
 	}
 	lua_pop(L, 1);
-	if (shapes_changed)
-		drawin_mark_dirty(d);
+	if (shapes_changed && m && m->declare)
+		declare_output_mark_dirty(m->declare);
 
-	d->widget_nodes_state = WIDGET_NODES_CONVERTED;
-	if (d->widget_nodes_len == len
-			&& memcmp(d->widget_nodes, nodes, len * sizeof(*nodes)) == 0
-			&& d->widget_text_len == text_len
+	d->state = WIDGET_NODES_CONVERTED;
+	if (d->nodes_len == len
+			&& memcmp(d->nodes, nodes, len * sizeof(*nodes)) == 0
+			&& d->text_len == text_len
 			&& (text_len == 0
-				|| memcmp(d->widget_text, text_buf, text_len) == 0))
+				|| memcmp(d->text, text_buf, text_len) == 0))
 		return true;
 
-	p_delete(&d->widget_nodes);
-	d->widget_nodes = p_new(struct widget_node, len);
-	memcpy(d->widget_nodes, nodes, len * sizeof(*nodes));
-	d->widget_nodes_len = len;
-	d->widget_scrolls = scrolls;
-	p_delete(&d->widget_text);
-	d->widget_text = text_len ? p_dup(text_buf, text_len) : NULL;
-	d->widget_text_len = text_len;
-	d->widget_nodes_declared = false;
+	p_delete(&d->nodes);
+	d->nodes = p_new(struct widget_node, len);
+	memcpy(d->nodes, nodes, len * sizeof(*nodes));
+	d->nodes_len = len;
+	d->scrolls = scrolls;
+	p_delete(&d->text);
+	d->text = text_len ? p_dup(text_buf, text_len) : NULL;
+	d->text_len = text_len;
+	d->declared = false;
 	/* A container's color or margin can change with no pixel in any leaf
 	 * changing, so the tree has to wake the frame path on its own;
 	 * drawable:refresh() only speaks for the pixels. */
-	drawin_mark_dirty(d);
+	if (m && m->declare)
+		declare_output_mark_dirty(m->declare);
 	return true;
 }
 
 cairo_surface_t *
-widget_leaf_surface(drawin_t *d, size_t i, bool *fresh)
+widget_leaf_surface(struct widget_tree *d, size_t i, bool *fresh)
 {
-	if (i >= d->widget_leaves_len)
+	if (i >= d->leaves_len)
 		return NULL;
-	*fresh = d->widget_leaves[i].fresh;
-	d->widget_leaves[i].fresh = false;
-	return cairo_surface_reference(d->widget_leaves[i].native);
+	*fresh = d->leaves[i].fresh;
+	d->leaves[i].fresh = false;
+	return cairo_surface_reference(d->leaves[i].native);
 }
 
-void
-widget_leaves_drawn(lua_State *L, drawin_t *d, int idx)
+bool
+widget_leaves_drawn(lua_State *L, struct widget_tree *d, int idx)
 {
 	bool any = false;
 
-	for (size_t i = 0; i < d->widget_leaves_len; i++) {
+	for (size_t i = 0; i < d->leaves_len; i++) {
 		lua_rawgeti(L, idx, (int)i + 1);
 		if (lua_toboolean(L, -1)) {
-			cairo_surface_flush(d->widget_leaves[i].native);
-			d->widget_leaves[i].gen++;
+			cairo_surface_flush(d->leaves[i].native);
+			d->leaves[i].gen++;
 			any = true;
 		}
 		lua_pop(L, 1);
 	}
-	if (any)
-		drawin_mark_dirty(d);
+	return any;
 }

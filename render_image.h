@@ -16,6 +16,7 @@ struct image_entry {
 	int width, height;
 	uint64_t gen;
 	uint8_t filter;      /* cairo_filter_t + 1, 0 keeps cairo's default */
+	bool stretch;       /* Rastered once at its own size, scaled to the box by the scene. */
 	bool natural;       /* Paint at logical size from the top-left corner. */
 	/* A surface made for one box and not yet painted: whoever draws into
 	 * it paints it whole once, wherever their dirty region reaches. */

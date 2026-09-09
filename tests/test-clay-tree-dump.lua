@@ -121,21 +121,24 @@ local steps = {
         end
     end,
 
-    -- The client enters as a CUSTOM leaf for its surface and a BORDER around
-    -- it, both at the frame box: the geometry plus the border ring, output
-    -- local.
+    -- The client enters as one element: a BORDER at the frame box (the
+    -- geometry plus the border ring, output local) holding the CUSTOM leaf
+    -- for its surface, inset by the border.
     function(count)
         c.border_width = 4
         local geo = c:geometry()
         local box = string.format("box %d,%d %dx%d",
             geo.x - s.geometry.x, geo.y - s.geometry.y,
             geo.width + 2 * c.border_width, geo.height + 2 * c.border_width)
+        local inner = string.format("box %d,%d %dx%d",
+            geo.x - s.geometry.x + c.border_width,
+            geo.y - s.geometry.y + c.border_width, geo.width, geo.height)
 
-        if not find("CUSTOM", box) then
-            assert(count < 20, "the client never reached the dump at " .. box)
+        if not find("CUSTOM", inner) then
+            assert(count < 20, "the client never reached the dump at " .. inner)
             return
         end
-        assert_line("the client surface leaf", "CUSTOM", box, "client ")
+        assert_line("the client surface leaf", "CUSTOM", inner, "client ")
         assert_line("the client border", "BORDER", box, "client ")
         assert_agrees()
         return true

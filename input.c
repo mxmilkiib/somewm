@@ -2850,67 +2850,23 @@ virtualpointer(struct wl_listener *listener, void *data)
 		wlr_cursor_map_input_to_output(cursor, device, event->suggested_output);
 }
 
-/** Check if a drawin accepts input at a given point (relative to drawin).
- * Returns true if input should be accepted, false if it should pass through.
- * Used for implementing click-through regions via shape_input and shape_bounding.
- *
- * In X11/AwesomeWM, shape_bounding affects both visual AND input regions.
- * shape_input takes precedence if set; otherwise shape_bounding is used.
- */
+/* Input follows the content's rounded box, unless the drawin passes it through. */
 bool
 drawin_accepts_input_at(drawin_t *d, double local_x, double local_y)
 {
-	cairo_surface_t *shape;
-	int width, height;
-	unsigned char *data;
-	int stride;
-	int px, py;
-	int byte_offset, bit_offset;
-
 	if (!d)
 		return true;
-
-	/* shape_input takes precedence over shape_bounding */
-	shape = d->shape_input;
-
-	/* If no shape_input, fall back to shape_bounding (X11 compatibility) */
-	if (!shape)
-		shape = d->shape_bounding;
-
-	/* No shape = accept all input */
-	if (!shape)
-		return true;
-
-	/* Verify surface is valid before accessing (fixes issue #197) */
-	if (cairo_surface_status(shape) != CAIRO_STATUS_SUCCESS)
-		return true;
-
-	/* Get shape dimensions */
-	width = cairo_image_surface_get_width(shape);
-	height = cairo_image_surface_get_height(shape);
-
-	/* 0x0 surface means pass through ALL input (AwesomeWM convention) */
-	if (width == 0 || height == 0)
+	if (d->shape_input && cairo_image_surface_get_width(d->shape_input) == 0
+			&& cairo_image_surface_get_height(d->shape_input) == 0)
 		return false;
-
-	/* Convert coordinates to integers */
-	px = (int)local_x;
-	py = (int)local_y;
-
-	/* Bounds check - outside shape = don't accept */
-	if (px < 0 || py < 0 || px >= width || py >= height)
-		return false;
-
-	/* Get pixel data (A1 format: 1 bit per pixel, packed) */
-	cairo_surface_flush(shape);
-	data = cairo_image_surface_get_data(shape);
-	stride = cairo_image_surface_get_stride(shape);
-
-	/* A1 format: pixels packed 8 per byte, LSB first */
-	byte_offset = (py * stride) + (px / 8);
-	bit_offset = px % 8;
-
-	return (data[byte_offset] >> bit_offset) & 1;
+	double r = d->shape_radius;
+	if (r <= 0)
+		return true;
+	double dx = local_x < r ? r - local_x
+		: local_x > d->width - r ? local_x - (d->width - r) : 0;
+	double dy = local_y < r ? r - local_y
+		: local_y > d->height - r ? local_y - (d->height - r) : 0;
+	return dx == 0 || dy == 0 || dx * dx + dy * dy <= r * r;
 }
 
 /* WAYLAND-DEVIATION: pdrawable parameter for titlebar hit-testing
@@ -2975,21 +2931,12 @@ xytonode(double x, double y, struct wlr_surface **psurface,
 
 		if (scene_surface) {
 			surface = scene_surface->surface;
-		} else if (node->data) {
-			/* A titlebar buffer inside a client's scene tree carries
-			 * its drawable (AwesomeWM pattern). */
-			drawable_t *drawable = (drawable_t *)node->data;
-
-			if (drawable->owner_type == DRAWABLE_OWNER_CLIENT) {
-				c = drawable->owner.client;
-				titlebar_drawable = drawable;
-			}
 		}
 	}
 
 	/* Renderer-drawn chrome resolves through the band backmap: a drawin
-	 * image leaf names its drawin (its shape_input pass-through pixels
-	 * were already skipped inside the scene hit test), a client border
+	 * image leaf or converted node uses its radius and pass-through flag
+	 * inside the scene hit test; a client border
 	 * rect or corner tile names its client. The lookup is by node, not by
 	 * the monitor under the pointer: chrome declared on one output can be
 	 * drawn over its neighbor. */
@@ -3003,6 +2950,10 @@ xytonode(double x, double y, struct wlr_surface **psurface,
 			c = obj;
 		else if (obj && kind == DECLARE_KIND_LAYER)
 			l = obj;
+		else if (obj && kind == DECLARE_KIND_TITLEBAR) {
+			titlebar_drawable = obj;
+			c = titlebar_drawable->owner.client;
+		}
 	}
 
 	/* Fall back to the owner walk for nodes the bands did not draw or

@@ -94,9 +94,7 @@ local steps = {
         return true
     end,
 
-    -- Step 4: The corners fall outside the rounded rect, so the mask reads 0
-    -- there. A mask whose backing data was freed and overwritten answers
-    -- these wrong (or crashes) instead.
+    -- Step 4: The stored mask is ignored; the unshaped box takes input.
     function()
         for _, corner in ipairs({
             { BOX_X + 5, BOX_Y + 5 },
@@ -105,11 +103,11 @@ local steps = {
             { BOX_X + 5, BOX_Y + BOX_H - 5 },
         }) do
             mouse.coords({ x = corner[1], y = corner[2] })
-            assert(mouse.object_under_pointer() ~= test_wibox.drawin,
-                string.format("corner (%d,%d) accepted input", corner[1],
+            assert(mouse.object_under_pointer() == test_wibox.drawin,
+                string.format("corner (%d,%d) did not accept input", corner[1],
                     corner[2]))
         end
-        io.stderr:write("[TEST] all four corners pass input through\n")
+        io.stderr:write("[TEST] all four corners accept input\n")
         return true
     end,
 

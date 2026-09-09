@@ -251,37 +251,6 @@ drawable_create_buffer_from_data(int width, int height, const void *cairo_data, 
 	return &buffer->base;
 }
 
-/**
- * Create an SHM buffer from a drawable's Cairo surface data.
- * This is a convenience wrapper around drawable_create_buffer_from_data().
- *
- * Returns a wlr_buffer that supports CPU data pointer access.
- * The caller must call wlr_buffer_drop() when done with the buffer.
- */
-struct wlr_buffer *
-drawable_create_buffer(drawable_t *d)
-{
-	const void *cairo_data;
-	size_t cairo_stride;
-
-	if (!d || !d->surface) {
-		fprintf(stderr, "drawable_create_buffer: invalid drawable or no surface\n");
-		return NULL;
-	}
-
-	/* Ensure Cairo surface is flushed */
-	cairo_surface_flush(d->surface);
-
-	/* Get Cairo surface data and actual dimensions (may be scaled for HiDPI) */
-	cairo_data = cairo_image_surface_get_data(d->surface);
-	cairo_stride = cairo_image_surface_get_stride(d->surface);
-	int surface_width = cairo_image_surface_get_width(d->surface);
-	int surface_height = cairo_image_surface_get_height(d->surface);
-
-	/* Use actual surface dimensions (includes HiDPI scaling) */
-	return drawable_create_buffer_from_data(surface_width, surface_height, cairo_data, cairo_stride);
-}
-
 /* ============================================================================
  * Object Signal Support - Per-instance signals
  * ============================================================================ */
@@ -584,36 +553,42 @@ luaA_drawable_refresh(lua_State *L)
 	return 0;
 }
 
+bool
+drawable_widget_host(drawable_t *d, struct widget_host *out)
+{
+	if (!d)
+		return false;
+	if (d->owner_type == DRAWABLE_OWNER_DRAWIN)
+		return drawin_widget_host(d->owner.drawin, out);
+	if (d->owner_type == DRAWABLE_OWNER_CLIENT)
+		return client_titlebar_host(d->owner.client, d, out);
+	return false;
+}
+
 /** Hand the renderer the converted widget tree, and solve it.
  * lua/wibox/drawable.lua calls this once per redraw with the tree
  * lua/wibox/clay.lua compiled, or with nil when nothing converted. The tree
  * is solved there and then (declare_widget_solve), which sizes every raster
  * leaf's surface, and the box of every widget node comes back for Lua to
- * draw the leaves and hit-test against. Returns false when the tree was
- * refused (this drawable has no drawin, or the drawin paints itself whole),
- * in which case the caller paints every pixel itself, which is the path
- * every drawable took before any container converted.
+ * draw the leaves and hit-test against. Returns false when nothing was
+ * stored (no tree, no host, nothing solved), in which case the caller paints
+ * every pixel itself; false with a reason ("budget" or "malformed") when the
+ * tree was dropped for its size or its shape, in which case the owner's
+ * content entry is cleared and the caller paints nothing.
  *
  * \param L The Lua VM state.
  * \param tree The node tree, or nil.
  * \return The leaf surface scale, or false.
- * \return The boxes, drawin-local, one per widget node in preorder.
+ * \return The boxes, drawin-local, one per widget node in preorder; or the
+ * reason nothing shows.
  */
-static drawin_t *
-drawable_drawin(lua_State *L)
-{
-	drawable_t *d = (drawable_t *)lua_touserdata(L, 1);
-
-	return d && d->owner_type == DRAWABLE_OWNER_DRAWIN ? d->owner.drawin : NULL;
-}
-
 static int
 luaA_drawable_clay_nodes(lua_State *L)
 {
 	static int boxes[WIDGET_NODES_MAX][4], dev[WIDGET_NODES_MAX][2];
 	static const char *keys[] = { "x", "y", "width", "height" };
 	drawable_t *d = (drawable_t *)lua_touserdata(L, 1);
-	drawin_t *drawin = drawable_drawin(L);
+	struct widget_host host = { 0 };
 	int n;
 
 	if (!d) {
@@ -621,15 +596,24 @@ luaA_drawable_clay_nodes(lua_State *L)
 			lua_typename(L, lua_type(L, 1)));
 	}
 
-	/* nil is not a tree, so widget_nodes_set drops whatever was stored
-	 * and answers false, which is the whole of "paint it yourself". A
-	 * drawin off every output solves to nothing, and paints itself too. */
-	if (!drawin || !widget_nodes_set(L, drawin, 2)
-			|| (n = declare_widget_solve(drawin, boxes, dev)) == 0) {
+	if (!drawable_widget_host(d, &host)
+			|| !widget_nodes_set(L, host.tree, host.m, 2)
+			|| (n = declare_widget_solve(&host, boxes, dev)) == 0) {
 		lua_pushboolean(L, false);
+		if (host.tree && (host.tree->state == WIDGET_NODES_OVER_BUDGET
+				|| host.tree->state == WIDGET_NODES_MALFORMED)) {
+			struct image_entry *entry = d->owner_type == DRAWABLE_OWNER_DRAWIN
+				? &d->owner.drawin->content_entry
+				: client_titlebar_content(d->owner.client, d);
+			image_entry_set(entry, NULL);
+			declare_mark_all_dirty();
+			lua_pushstring(L, host.tree->state == WIDGET_NODES_OVER_BUDGET
+				? "budget" : "malformed");
+			return 2;
+		}
 		return 1;
 	}
-	widget_leaves_size(drawin, dev);
+	widget_leaves_size(host.tree, dev);
 
 	lua_pushnumber(L, d->surface_scale > 0 ? d->surface_scale : 1.0f);
 	lua_createtable(L, n, 0);
@@ -656,9 +640,11 @@ static int
 luaA_drawable_clay_hits(lua_State *L)
 {
 	static int hits[WIDGET_NODES_MAX];
-	drawin_t *drawin = drawable_drawin(L);
+	drawable_t *drawable = (drawable_t *)lua_touserdata(L, 1);
 	double x = luaL_checknumber(L, 2), y = luaL_checknumber(L, 3);
-	int n = drawin ? declare_widget_hits(drawin, x, y, hits,
+	struct widget_host host;
+	int n = drawable_widget_host(drawable, &host)
+		? declare_widget_hits(&host, x, y, hits,
 		WIDGET_NODES_MAX) : 0;
 
 	lua_createtable(L, n, 0);
@@ -679,11 +665,12 @@ luaA_drawable_clay_hits(lua_State *L)
 static int
 luaA_drawable_clay_leaf_surface(lua_State *L)
 {
-	drawin_t *drawin = drawable_drawin(L);
+	drawable_t *drawable = (drawable_t *)lua_touserdata(L, 1);
 	lua_Integer i = luaL_checkinteger(L, 2);
 	bool fresh = false;
-	cairo_surface_t *s = drawin && i >= 1
-		? widget_leaf_surface(drawin, (size_t)i - 1, &fresh) : NULL;
+	struct widget_host host;
+	cairo_surface_t *s = i >= 1 && drawable_widget_host(drawable, &host)
+		? widget_leaf_surface(host.tree, (size_t)i - 1, &fresh) : NULL;
 
 	if (!s) {
 		lua_pushnil(L);
@@ -701,10 +688,13 @@ luaA_drawable_clay_leaf_surface(lua_State *L)
 static int
 luaA_drawable_clay_leaves_drawn(lua_State *L)
 {
-	drawin_t *drawin = drawable_drawin(L);
+	drawable_t *drawable = (drawable_t *)lua_touserdata(L, 1);
 
-	if (drawin && lua_istable(L, 2))
-		widget_leaves_drawn(L, drawin, 2);
+	struct widget_host host;
+
+	if (lua_istable(L, 2) && drawable_widget_host(drawable, &host)
+			&& widget_leaves_drawn(L, host.tree, 2) && host.m->declare)
+		declare_output_mark_dirty(host.m->declare);
 	return 0;
 }
 
