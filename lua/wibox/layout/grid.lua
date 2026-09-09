@@ -33,7 +33,6 @@ local gmath = require("gears.math")
 local gcolor = require("gears.color")
 local base = require("wibox.widget.base")
 local clay = require("wibox.clay")
-local timer = require("gears.timer")
 
 local grid = { mt = {} }
 
@@ -1033,7 +1032,7 @@ local function describe_grid(w)
         end
         if changed then
             p.told = { cols = cols, rows = heights }
-            timer.delayed_call(w.emit_signal, w, "widget::redraw_needed")
+            w:emit_signal("widget::redraw_needed")
         end
     end
     return node

@@ -379,6 +379,53 @@ describe("wibox.clay", function()
     end)
 end)
 
+describe("wibox.clay cache", function()
+    local drawable = { background_color = BG, foreground_color = BG }
+    local function recompile(root, fg)
+        drawable.foreground_color = fg or BG
+        return wclay.compile(drawable, root, context, 100, 100)
+    end
+    local function leaves(tree)
+        return tree.children[1].children[1].children
+    end
+
+    it("keeps a sibling's subtree and describes the marked widget again", function()
+        local a, b = leaf_widget(), leaf_widget()
+        local root = margin(fixed.horizontal(a, b), 1, 1, 1, 1)
+        local first = leaves(recompile(root))
+        wclay.invalidate(drawable, a)
+        local second = leaves(recompile(root))
+        assert.is_not_equal(first[1], second[1])
+        assert.is_equal(first[2], second[2])
+        assert.is_same(first[1], second[1])
+    end)
+
+    it("describes everything again when the foreground or the size changes", function()
+        local a = leaf_widget()
+        local root = margin(fixed.horizontal(a), 1, 1, 1, 1)
+        local first = leaves(recompile(root))
+        assert.is_equal(first[1], leaves(recompile(root))[1])
+        assert.is_not_equal(first[1], leaves(recompile(root, "#ff0000"))[1])
+        local second = leaves(recompile(root, "#ff0000"))
+        assert.is_not_equal(second[1], wclay.compile(drawable, root, context, 50, 50)
+            .children[1].children[1].children[1])
+    end)
+
+    it("fades a kept subtree once and keeps refused widgets wired", function()
+        local a, refused = leaf_widget(), base.make_widget()
+        local row = fixed.horizontal(a, refused)
+        local box = background(row)
+        box.opacity = 0.5
+        local root = margin(box, 1, 1, 1, 1)
+        recompile(root)
+        wclay.invalidate(drawable, box)
+        local tree = recompile(root)
+        local node = tree.children[1].children[1].children[1].children[1]
+        assert.is_equal(0.5, node.bg[4])
+        assert.is_equal(row, tree.widgets[refused])
+    end)
+end)
+
 describe("wibox.clay fixed", function()
     it("maps direction and spacing, children at their size along it, whole across", function()
         local l = fixed.horizontal(leaf_widget(10, 5),

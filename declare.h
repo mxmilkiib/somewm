@@ -23,28 +23,69 @@ void declare_output_destroy(struct declare_output *dout);
 /* Layout position and scale, re-applied on every updatemons pass. */
 void declare_output_update(struct declare_output *dout, int lx, int ly);
 
-/* Mark the output's tree stale and schedule a frame to rebuild it. */
+/* Mark the output's tree stale and schedule a frame to rebuild it. The mark
+ * also arms a short deadline: an output whose backend sends no frame event
+ * (a nested window on an unviewed tag, an asleep monitor) runs its frame
+ * when that fires, so its scene and its Lua boxes still settle. */
 void declare_output_mark_dirty(struct declare_output *dout);
 
 /* Mark every output dirty: for facts without one owning output (stacking
  * order, banning, a drawin whose screen assignment may be stale). */
 void declare_mark_all_dirty(void);
+/* Release retained nodes while their owning objects are still alive. */
+void declare_hot_reload(void);
 bool declare_in_frame(void);
 
-/* Run the declare pass for every dirty output now; called from the poll
- * function each loop iteration so input hit-testing reads a current scene
- * even when the backend delivers no frame events (a hidden nested output,
- * an asleep monitor). Returns the scene mutations that took. */
-int declare_flush(void);
-
-/* If dirty, declare the output's scene into its Clay context, solve, and
- * reconcile into wlr_scene. Returns the mutation count, or -1 when the
- * output was clean and nothing ran. While the lua lock is active
- * (lock_active), the lock scene solves instead, in a second per-output
- * context reconciling into a band in LyrBlock; the desktop band keeps its
- * last scene, occluded by locked_bg below that band. */
+/* If dirty, run the frame: the global signal clay::declare has Lua compile
+ * the drawables that changed and store their trees, the output's scene
+ * declares into its Clay context and solves, each drawable whose tree was
+ * solved for the first time since it changed hears clay::solved with its
+ * boxes, and the commands reconcile into wlr_scene. A clay::solved handler
+ * that dirties the output again gets one more declare and solve before the
+ * reconcile. Returns the mutation count, or -1 when the output was clean
+ * and nothing ran. While the lua lock is active (lock_active), the lock
+ * scene solves instead, in a second per-output context reconciling into a
+ * band in LyrBlock; the desktop band keeps its last scene, occluded by
+ * locked_bg below that band. */
 int declare_output_frame(struct declare_output *dout, struct Monitor *m,
 	bool lock_active);
+
+/* The Clay debug inspector (clay.h:897-899, Clay__RenderDebugView at
+ * clay.h:3378). Clay draws the panel inside Clay_EndLayout when the
+ * context's flag is set, so its commands reconcile through the desktop band
+ * like every other. The flag is per screen: the desktop context's own, read
+ * back rather than copied, since the panel closes itself from inside the
+ * solve. The lock context is never touched. */
+bool declare_inspector_get(struct declare_output *dout);
+void declare_inspector_set(struct declare_output *dout, bool on);
+/* The right strut the panel takes while up, for the screen's workarea
+ * (objects/screen.c): the desktop reflows into what is left, as a tree that
+ * fills Clay's root does when Clay narrows it for the panel. 0 while down. */
+int declare_inspector_strut(struct declare_output *dout);
+
+/* The panel's style is process-global (the palette and width are globals in
+ * clay.h, the font is entry 0 of the font table), so a write is addressed
+ * to no screen: every output showing the panel is marked dirty. Colors are
+ * 0-255 in the order bg, bg_alt, border, fg, bg_selected, highlight. font
+ * is a Pango description for entry 0, or NULL to leave it; the return is
+ * render_font_set_default's. */
+struct declare_inspector_style {
+	float colors[6][4];
+	float width;
+};
+int declare_inspector_style(const struct declare_inspector_style *style,
+	const char *font);
+
+/* The seat mirror the panel's own click and wheel handling reads through
+ * the frame: facts only, no policy. down is 1, 0, or -1 for unchanged
+ * (motion); press_edge latches a press onto the output under the cursor for
+ * its next solve to turn into Clay's PRESSED_THIS_FRAME. Position is read
+ * from the cursor at feed time. A no-op while no screen has the panel up. */
+void declare_inspector_pointer(int down, bool press_edge);
+void declare_inspector_scroll(double dx, double dy);
+/* True when the point lies inside the panel of an inspecting output: input
+ * there is the panel's, and input.c gives none of it to Lua or clients. */
+bool declare_inspector_covers(double lx, double ly);
 
 /* Show or hide every output's retained lock band, and dirty all outputs;
  * called on lua lock engage and disengage. Hiding keeps the retained nodes,
@@ -88,11 +129,10 @@ int declare_widget_boxes(const struct widget_host *host, int (*boxes)[4]);
  * tree has been declared. */
 int declare_widget_hits(const struct widget_host *host, double x, double y, int *out, int cap);
 
-/* Solve d's stored widget tree on its own, now, and read back the box of
- * every widget node in preorder (as declare_widget_boxes).
- * Returns the box count, 0 for a drawin
- * with no tree or no output. */
-int declare_widget_solve(const struct widget_host *host, int (*boxes)[4]);
+/* Solve host's stored tree on its own, now, and answer the size its root
+ * takes: what an awful.popup reads before any frame. False for a drawin with
+ * no tree or no output. */
+bool declare_widget_measure(const struct widget_host *host, int *w, int *h);
 
 /* Test hook (awesome._test_declare_order): the desktop band's draw order for
  * m, bottom to top, one entry per declared object. A fresh solve of the

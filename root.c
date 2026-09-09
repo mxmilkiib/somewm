@@ -451,6 +451,18 @@ luaA_root_fake_input(lua_State *L)
 			? WL_POINTER_BUTTON_STATE_PRESSED
 			: WL_POINTER_BUTTON_STATE_RELEASED;
 
+		/* A fake left button reaches the Clay inspector's panel as a real
+		 * one does (input.c buttonpress), and stops there when inside it. */
+		{
+			bool inside = declare_inspector_covers(cursor->x, cursor->y);
+			bool press = state == WL_POINTER_BUTTON_STATE_PRESSED;
+
+			declare_inspector_pointer(button == 1 ? press : -1,
+				inside && press && button == 1);
+			if (inside)
+				return 0;
+		}
+
 		/* Find what surface is under the cursor and update pointer focus
 		 * This ensures the button event goes to the correct window */
 		xytonode(cursor->x, cursor->y, &surface, NULL, NULL, NULL, NULL, &sx, &sy);

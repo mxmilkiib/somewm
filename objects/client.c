@@ -3583,6 +3583,7 @@ client_titlebar_host(client_t *c, drawable_t *d, struct widget_host *out)
         *out = (struct widget_host) {
             .tree = &c->titlebar[bar].widgets,
             .m = c->mon,
+            .drawable = d,
             .id = (uint32_t)declare_handle_for(d, DECLARE_KIND_TITLEBAR),
             .x = area.x + c->geometry.x - c->mon->m.x,
             .y = area.y + c->geometry.y - c->mon->m.y,

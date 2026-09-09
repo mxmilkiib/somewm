@@ -556,8 +556,8 @@ widget_nodes_set(lua_State *L, struct widget_tree *d, Monitor *m, int idx)
 {
 	if (declare_in_frame())
 		luaL_error(L, "widget tree changed from inside a frame");
-	/* One scratch tree for every drawin: a redraw reads into it and
-	 * usually finds the stored tree unchanged. */
+	/* One scratch tree for every drawin: a redraw reads into it before
+	 * the stored tree is replaced. */
 	static struct widget_node nodes[WIDGET_NODES_MAX];
 	size_t len = 0, leaves = 0;
 	unsigned clips = 0;
@@ -622,13 +622,6 @@ widget_nodes_set(lua_State *L, struct widget_tree *d, Monitor *m, int idx)
 		declare_output_mark_dirty(m->declare);
 
 	d->state = WIDGET_NODES_CONVERTED;
-	if (d->nodes_len == len
-			&& memcmp(d->nodes, nodes, len * sizeof(*nodes)) == 0
-			&& d->text_len == text_len
-			&& (text_len == 0
-				|| memcmp(d->text, text_buf, text_len) == 0))
-		return true;
-
 	p_delete(&d->nodes);
 	d->nodes = p_new(struct widget_node, len);
 	memcpy(d->nodes, nodes, len * sizeof(*nodes));

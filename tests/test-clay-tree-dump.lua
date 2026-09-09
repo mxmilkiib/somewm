@@ -76,7 +76,8 @@ local steps = {
         return true
     end,
 
-    -- A wibar only declares once it has drawn, so wait for its drawin.
+    -- A wibar's tree declares once a frame has compiled it, so wait for
+    -- its drawin to convert.
     function(count)
         if count == 1 then
             bar = awful.wibar({ position = "top", screen = s, height = 24 })
@@ -85,10 +86,10 @@ local steps = {
                 { widget = wibox.widget.textbox, text = "bar" },
             })
         end
-        if find("drawin screen " .. s.index) then
+        if find("drawin screen " .. s.index, "converted:") then
             return true
         end
-        assert(count < 20, "the wibar never reached the dump")
+        assert(count < 20, "the wibar never converted in the dump")
     end,
 
     function()

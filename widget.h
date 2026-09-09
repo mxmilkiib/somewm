@@ -38,6 +38,8 @@ struct widget_tree {
 struct widget_host {
 	struct widget_tree *tree;
 	Monitor *m;
+	/* The drawable the tree draws, which hears clay::solved. */
+	struct drawable_t *drawable;
 	uint32_t id;          /* The owner's declare handle id. */
 	int x, y, w, h;       /* Output-local box. */
 	float radius;        /* Shaped drawin corners, 0 for titlebars. */
@@ -143,8 +145,10 @@ struct widget_node {
  * error handler treats as the bug it is and aborts on. */
 #define WIDGET_NODES_OUTPUT_MAX 6144
 
-/* Scroll records per context (third_party/clay.h:2194). */
-#define WIDGET_SCROLLS_OUTPUT_MAX 10
+/* Scroll records per context: ten (third_party/clay.h:2194), less the two
+ * Clay's debug inspector declares for its own panes (clay.h:3437, 3767),
+ * kept free always so a toggle is never what exceeds the array. */
+#define WIDGET_SCROLLS_OUTPUT_MAX 8
 
 /* What the last widget_nodes_set() answered, kept so the tree dump can say
  * why a drawin shows nothing. Zero is a

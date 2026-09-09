@@ -167,6 +167,7 @@ drawin_widget_host(drawin_t *d, struct widget_host *out)
 	*out = (struct widget_host) {
 		.tree = &d->widgets,
 		.m = m,
+		.drawable = d->drawable,
 		.id = (uint32_t)declare_handle_for(d, DECLARE_KIND_DRAWIN),
 		.x = d->x - m->m.x, .y = d->y - m->m.y,
 		.w = d->width, .h = d->height,

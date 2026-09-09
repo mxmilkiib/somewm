@@ -17,11 +17,14 @@ local base = require("wibox.widget.base")
 local color = require("gears.color")
 local object = require("gears.object")
 local surface = require("gears.surface")
-local timer = require("gears.timer")
+local protected_call = require("gears.protected_call")
 local grect =  require("gears.geometry").rectangle
 local wclay = require("wibox.clay")
 
 local visible_drawables = {}
+
+-- The drawables whose widgets changed since the frame last compiled them.
+local pending = {}
 
 
 -- Get the widget context. This should always return the same table (if
@@ -105,34 +108,47 @@ end
 local function unconvert(self)
     wire_widgets(self, {})
     self._clay_tree = nil
+    self._clay_stored = nil
     return false
 end
 
--- Compile the tree, pair its nodes with solved boxes and connect signals.
+-- Compile the tree, hand it to the renderer and connect signals. The frame
+-- solves it and sends the boxes back as clay::solved.
 local function draw_converted(self, context, width, height)
     local tree = wclay.compile(self, self._widget, context, width, height)
-    local scale, why = self.drawable:_clay_nodes(tree)
+    local stored, why = self.drawable:_clay_nodes(tree)
 
-    if not scale then
+    if not stored then
         unconvert(self)
         return why ~= nil
     end
+    self._clay_stored = { tree = tree, width = width, height = height }
+    wire_widgets(self, tree.widgets)
+    return true
+end
 
-    local boxes = why
-    local widgets, index = tree.widgets, {}
+-- The frame solved the stored tree: pair its nodes with their boxes.
+local function place_solved(self, boxes)
+    local stored = self._clay_stored
 
-    place_nodes(tree, boxes, widgets, nil, 0, index)
+    if not stored then
+        return
+    end
+    local tree, index = stored.tree, {}
+
+    place_nodes(tree, boxes, tree.widgets, nil, 0, index)
     self._clay_tree = tree
     -- The tree's nodes in preorder, which is how the C side numbers them
     -- (widget.c read_tree), so a hit comes back as an index into this.
     self._clay_index = index
     -- A tree that sizes its drawin: the root's solved box is the size the
     -- drawin takes, as the engine applied a popup's fit after its layout.
-    if tree.fit and (tree.box.width ~= width or tree.box.height ~= height) then
-        timer.delayed_call(tree.fit, tree.box.width, tree.box.height)
+    -- The resize marks the drawable again, and the same frame compiles and
+    -- solves it at that size.
+    if tree.fit and (tree.box.width ~= stored.width
+            or tree.box.height ~= stored.height) then
+        tree.fit(tree.box.width, tree.box.height)
     end
-    wire_widgets(self, widgets)
-    return true
 end
 
 local function do_redraw(self)
@@ -147,6 +163,18 @@ local function do_redraw(self)
     if not success then return end
     draw_converted(self, get_widget_context(self), geom.width, geom.height)
 end
+
+-- The frame is about to declare: compile every drawable marked since the
+-- last time. A compile that marks a drawable again (its own describer
+-- changing a widget) lands in the next batch.
+capi.awesome.connect_signal("clay::declare", function()
+    local batch = pending
+
+    pending = {}
+    for self in pairs(batch) do
+        protected_call(self._do_redraw)
+    end
+end)
 
 -- The widgets of a converted tree under a point, outermost first: Clay's
 -- pointer query against the output's last solve (drawable:_clay_hits), each
@@ -350,23 +378,22 @@ function drawable.new(d, widget_context_skeleton, drawable_name)
         end
     end
 
-    -- Only redraw a drawable once, even when we get told to do so multiple times.
-    ret._redraw_pending = false
+    -- Compile now: the frame's clay::declare, or an awful.popup sizing
+    -- itself before any frame.
     ret._do_redraw = function()
-        ret._redraw_pending = false
+        pending[ret] = nil
         do_redraw(ret)
     end
 
-    -- Connect our signal when we need a redraw
+    -- A redraw marks the drawable for the next frame and asks for one.
     ret.draw = function()
-        if not ret._redraw_pending then
-            timer.delayed_call(ret._do_redraw)
-            ret._redraw_pending = true
-        end
+        pending[ret] = true
+        d:_clay_dirty()
     end
     ret._do_complete_repaint = function()
         ret:draw()
     end
+    d:connect_signal("clay::solved", function(_, boxes) place_solved(ret, boxes) end)
 
     -- Geometry changes trigger a redraw.
     d:connect_signal("property::surface", ret.draw)
@@ -404,8 +431,9 @@ function drawable.new(d, widget_context_skeleton, drawable_name)
     d:connect_signal("mouse::move", function(_, x, y) handle_motion(ret, x, y) end)
     d:connect_signal("mouse::leave", function() handle_leave(ret) end)
 
-    -- A converted widget's signals: any change compiles the tree again.
-    ret._clay_relayout = function()
+    -- A converted widget's signals: a change compiles its subtree again.
+    ret._clay_relayout = function(widget)
+        wclay.invalidate(ret, widget)
         if ret._visible then
             ret:draw()
         end

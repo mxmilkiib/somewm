@@ -482,6 +482,13 @@ awful.keyboard.append_global_keybindings({
         group       = "somewm",
     },
     awful.key {
+        modifiers   = { modkey, "Shift" },
+        key         = "i",
+        on_press    = function() require("somewm.inspector").toggle() end,
+        description = "toggle the clay inspector",
+        group       = "somewm",
+    },
+    awful.key {
         modifiers   = { modkey },
         key         = "x",
         on_press    = function()

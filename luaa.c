@@ -1491,16 +1491,26 @@ luaA_awesome_test_add_output(lua_State *L)
 	return 1;
 }
 
-/** awesome._test_redeclare: re-declare every output and report the scene
- * mutations that took. Nothing else having changed between two calls, the
- * second must return 0 (see tests/test-declare-zero-mutations.lua).
+/** awesome._test_redeclare: run the frame for every output now and report
+ * the scene mutations that took. Nothing else having changed between two
+ * calls, the second must return 0 (see tests/test-declare-zero-mutations.lua).
  * \return Number of scene mutations
  */
 static int
 luaA_awesome_test_redeclare(lua_State *L)
 {
+	Monitor *m;
+	int mutations = 0, n;
+
 	declare_mark_all_dirty();
-	lua_pushinteger(L, declare_flush());
+	wl_list_for_each(m, some_get_monitors(), link) {
+		if (!m->declare || !m->wlr_output->enabled)
+			continue;
+		n = declare_output_frame(m->declare, m, some_is_lua_locked());
+		if (n > 0)
+			mutations += n;
+	}
+	lua_pushinteger(L, mutations);
 	return 1;
 }
 
@@ -1583,6 +1593,45 @@ luaA_awesome_clay_font(lua_State *L)
 		lua_pushnil(L);
 	else
 		lua_pushinteger(L, id);
+	return 1;
+}
+
+/** Style the Clay debug inspector (declare.h), for somewm.inspector: a
+ * table of six colors as {r, g, b, a} in 0-255 under bg, bg_alt, border,
+ * fg, bg_selected and highlight, the panel width, and the font for entry 0
+ * of the font table, all required. Process-global; every screen showing
+ * the panel re-solves.
+ * \param style The style table.
+ * \return Nil, or the reason the font was refused.
+ */
+static int
+luaA_awesome_inspector_style(lua_State *L)
+{
+	static const char *const keys[] = {
+		"bg", "bg_alt", "border", "fg", "bg_selected", "highlight" };
+	struct declare_inspector_style style;
+	int err;
+
+	luaL_checktype(L, 1, LUA_TTABLE);
+	for (size_t i = 0; i < countof(keys); i++) {
+		lua_getfield(L, 1, keys[i]);
+		if (!lua_istable(L, -1))
+			return luaL_error(L, "inspector style: %s is not a color", keys[i]);
+		for (int c = 0; c < 4; c++) {
+			lua_rawgeti(L, -1, c + 1);
+			style.colors[i][c] = (float)luaL_checknumber(L, -1);
+			lua_pop(L, 1);
+		}
+		lua_pop(L, 1);
+	}
+	lua_getfield(L, 1, "width");
+	style.width = (float)luaL_checknumber(L, -1);
+	lua_getfield(L, 1, "font");
+	err = declare_inspector_style(&style, luaL_checkstring(L, -1));
+	if (err == RENDER_FONT_ERR_SIZE)
+		lua_pushliteral(L, "carries a point size, name one in px");
+	else
+		lua_pushnil(L);
 	return 1;
 }
 
@@ -2454,6 +2503,7 @@ const luaL_Reg awesome_methods[] = {
 	{ "_test_redeclare", luaA_awesome_test_redeclare },
 	{ "_clay_tree", luaA_awesome_clay_tree },
 	{ "_clay_font", luaA_awesome_clay_font },
+	{ "_inspector_style", luaA_awesome_inspector_style },
 	{ "_test_declare_order", luaA_awesome_test_declare_order },
 	{ "_test_widget_boxes", luaA_awesome_test_widget_boxes },
 	/* Lock API methods */
@@ -5906,6 +5956,11 @@ luaA_hot_reload(void)
 	/* ================================================================
 	 * Phase B2: Snapshot and detach clients
 	 * ================================================================ */
+
+	/* Release borrowed trees before clients_detach clears client scene pointers. */
+	declare_hot_reload();
+	foreach(drawin, globalconf.drawins)
+		widget_nodes_clear(&(*drawin)->widgets);
 
 	if (!clients_detach(&client_snaps, &num_clients)) {
 		fprintf(stderr, "somewm: hot-reload: failed to allocate client snapshots\n");

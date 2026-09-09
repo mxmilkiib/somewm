@@ -29,8 +29,10 @@
 #include "clay_impl.h"
 #include "declare.h"
 #include "objects/drawable.h"
+#include "objects/screen.h"
 #include "render.h"
 #include "render_text.h"
+#include "input.h"
 #include "somewm.h"
 #include "somewm_types.h"
 #include "globalconf.h"
@@ -71,11 +73,23 @@ struct declare_output {
 	struct declare_band desktop;
 	struct declare_band lock;
 	bool dirty;
+	/* The frame deadline: a mark arms it, and an output the backend never
+	 * frames (a nested window on an unviewed tag, an asleep monitor) runs
+	 * its frame when it fires. */
+	struct wl_event_source *deadline;
+	bool deadline_armed;
 	/* This output's crop of the wallpaper (globalconf.wallpaper), and the
 	 * surface generation and layout position it was cut from. */
 	struct image_entry wallpaper;
 	uint64_t wallpaper_gen;
 	int wallpaper_x, wallpaper_y;
+	/* The inspector's per-output facts: the desktop context's debug flag
+	 * copied as a gate for the seat mirror (refreshed wherever the flag
+	 * can change), the press latched for the next solve, and the wheel
+	 * delta accumulated for it. */
+	bool inspecting;
+	bool press_pending;
+	double scroll_x, scroll_y;
 };
 
 /* Zero hooks until window.c installs the real ones at startup; the
@@ -84,6 +98,25 @@ struct declare_output {
 static struct render_client_hooks client_hooks;
 
 static bool in_frame;
+
+/* The seat mirror (declare.h): the left button's state, where the cursor
+ * was last mirrored, the output it was over, and how many outputs show the
+ * panel, so the mirror costs a comparison while none does. */
+static struct {
+	bool down;
+	double x, y;
+	struct declare_output *over;
+	int count;
+} insp;
+
+/* Longer than a frame period, so a visible output's frame always wins. */
+#define DECLARE_DEADLINE_MS 50
+static int deadline_fire(void *data);
+static void inspector_resync(void);
+static bool inspector_feed(struct declare_output *dout, Monitor *m,
+	Clay_Vector2 *point);
+static void inspector_emit_closed(Monitor *m);
+static void inspector_workarea(struct declare_output *dout);
 
 bool
 declare_in_frame(void)
@@ -131,11 +164,22 @@ struct handle_entry {
 	void *object;
 	enum declare_kind kind;
 	uint32_t id;
+	uint32_t declared_gen;
 };
 
 static struct handle_entry *handles;
 static size_t handles_len, handles_cap;
 static uint32_t handle_next = 1;
+static uint32_t declare_gen;
+
+/* A layout is the unit of the once-per-drawin guard. Every layout must
+ * start a new generation, including queries outside the frame walk. */
+static void
+declare_begin_layout(void)
+{
+	Clay_BeginLayout();
+	declare_gen++;
+}
 
 static uint64_t
 handle_pack(enum declare_kind kind, uint32_t id)
@@ -823,6 +867,11 @@ declare_widget_subtree(const struct widget_host *host, size_t i, Clay_ElementId 
 	return next;
 }
 
+/* The trees this pass declares for the first time since they changed: after
+ * the solve, each drawable hears clay::solved with its boxes. */
+static struct widget_host *solved_hosts;
+static size_t solved_len, solved_cap;
+
 static void
 declare_widget_tree(const struct widget_host *host, int16_t z,
 	void *userdata)
@@ -830,7 +879,14 @@ declare_widget_tree(const struct widget_host *host, int16_t z,
 	struct widget_tree *d = host->tree;
 	size_t leaf = 0;
 
-	d->declared = true;
+	if (!d->declared) {
+		d->declared = true;
+		if (solved_len == solved_cap) {
+			solved_cap = solved_cap ? solved_cap * 2 : 16;
+			p_realloc(&solved_hosts, solved_cap);
+		}
+		solved_hosts[solved_len++] = *host;
+	}
 	declare_widget_subtree(host, 0, widget_root_id(host->id), z, userdata,
 		&leaf);
 }
@@ -850,6 +906,16 @@ declare_drawin(drawin_t *d, Monitor *m, int16_t z)
 	int x = d->x - m->m.x;
 	int y = d->y - m->m.y;
 	float opacity = d->opacity >= 0 ? (float)d->opacity : 1.0f;
+
+	/* First declaration in this layout wins, including its z order. */
+	for (size_t i = 0; i < handles_len; i++) {
+		if (handles[i].id != id)
+			continue;
+		if (handles[i].declared_gen == declare_gen)
+			return;
+		handles[i].declared_gen = declare_gen;
+		break;
+	}
 
 	declare_shadow(&d->shadow,
 		shadow_get_effective_config(d->shadow_config, true),
@@ -1055,6 +1121,21 @@ widget_hits_walk(struct widget_tree *d, size_t i, Clay_ElementId id,
 	return next;
 }
 
+/* The band whose last solve placed host's tree: the lock band for a lock
+ * drawin while the session is locked, else the desktop. NULL before the band
+ * exists. */
+static struct declare_band *
+host_band(const struct widget_host *host)
+{
+	struct declare_output *dout = host->m->declare;
+	struct declare_band *band = session_is_locked()
+		&& some_is_lock_drawin(declare_handle_get(
+			handle_pack(DECLARE_KIND_DRAWIN, host->id), NULL))
+		? &dout->lock : &dout->desktop;
+
+	return band->clay ? band : NULL;
+}
+
 int
 declare_widget_hits(const struct widget_host *host, double x, double y, int *out, int cap)
 {
@@ -1067,12 +1148,7 @@ declare_widget_hits(const struct widget_host *host, double x, double y, int *out
 	Clay_ElementIdArray ids;
 	int n = 0;
 
-	if (!dout || !d->declared)
-		return 0;
-	band = session_is_locked() && some_is_lock_drawin(declare_handle_get(
-			handle_pack(DECLARE_KIND_DRAWIN, host->id), NULL))
-		? &dout->lock : &dout->desktop;
-	if (!band->clay)
+	if (!dout || !d->declared || !(band = host_band(host)))
 		return 0;
 	/* The query runs against the boxes of the output's last solve, in
 	 * output coordinates, and answers every element under the point
@@ -1099,62 +1175,95 @@ declare_widget_hits(const struct widget_host *host, double x, double y, int *out
 	return n;
 }
 
+/* The boxes of host's tree in the current context: one lookup per node
+ * against what that context last solved. */
+static int
+widget_boxes_read(const struct widget_host *host, int (*boxes)[4])
+{
+	Clay_ElementId root_id = widget_root_id(host->id);
+	Clay_ElementData root = Clay_GetElementData(root_id);
+	int n = 0;
+
+	if (root.found)
+		widget_boxes_walk(host->tree, 0, root_id, boxes, &n,
+			root.boundingBox);
+	return n;
+}
+
 int
 declare_widget_boxes(const struct widget_host *host, int (*boxes)[4])
 {
-	struct widget_tree *d = host->tree;
-	Monitor *m = host->m;
-	struct declare_output *dout = m ? m->declare : NULL;
+	struct declare_band *band;
 	Clay_Context *previous;
-	Clay_ElementId root_id;
-	Clay_ElementData root;
-	int n = 0;
+	int n;
 
 	/* Clay's hashmap answers with the last box an id ever had, so a tree
 	 * the declare pass has not reached yet would read back the boxes of
 	 * the one it replaced. Report nothing until it has. */
-	if (!dout || !d->declared)
+	if (!host->m || !host->m->declare || !host->tree->declared
+			|| !(band = host_band(host)))
 		return 0;
-
-	/* What the last frame solved, not a second solve of its own: Clay
-	 * keeps every element's box in the context's hashmap, so the readback
-	 * is one lookup per node against the boxes the output drew. */
 	previous = Clay_GetCurrentContext();
-	Clay_SetCurrentContext(dout->desktop.clay);
-	root_id = widget_root_id(host->id);
-	root = Clay_GetElementData(root_id);
-	if (root.found)
-		widget_boxes_walk(d, 0, root_id, boxes, &n, root.boundingBox);
+	Clay_SetCurrentContext(band->clay);
+	n = widget_boxes_read(host, boxes);
 	Clay_SetCurrentContext(previous);
 	return n;
 }
 
+/* After a solve: each tree this pass put in front of Clay for the first
+ * time since it changed hands its drawable the boxes, as clay::solved. The
+ * handlers place the tree's nodes and may change what the frame shows (a
+ * popup taking its content's size, a grid telling its rows), which marks
+ * the output dirty again for a second pass. */
+static void
+solved_emit(void)
+{
+	static int boxes[WIDGET_NODES_MAX][4];
+	static const char *keys[] = { "x", "y", "width", "height" };
+	lua_State *L = globalconf_L;
+	size_t len = solved_len;
+
+	solved_len = 0;
+	if (!L)
+		return;
+	for (size_t i = 0; i < len; i++) {
+		int n = widget_boxes_read(&solved_hosts[i], boxes);
+		int top = lua_gettop(L);
+
+		drawable_push(L, solved_hosts[i].drawable);
+		lua_createtable(L, n, 0);
+		for (int k = 0; k < n; k++) {
+			lua_createtable(L, 0, 4);
+			for (int j = 0; j < 4; j++) {
+				lua_pushinteger(L, boxes[k][j]);
+				lua_setfield(L, -2, keys[j]);
+			}
+			lua_rawseti(L, -2, k + 1);
+		}
+		luaA_object_emit_signal(L, -2, "clay::solved", 1);
+		lua_settop(L, top);
+	}
+}
+
 static void handle_clay_error(Clay_ErrorData error);
 
-/* Solve d's tree now, before any frame, and read every box back: what
- * drawable:_clay_nodes returns to Lua for placement and hit testing.
- * The solve runs in a context of its own
- * holding only this tree: a partial layout in the output's context would
- * evict every other element's box from Clay's hashmap (clay.h, generation
- * eviction in Clay__AddHashMapItem), and the frame's own declare, solve and
- * reconcile follow anyway. The tree is placed where the frame will place it,
- * at the drawin's output-local origin, so the device rounding matches the
- * renderer's to the pixel. */
-int
-declare_widget_solve(const struct widget_host *host, int (*boxes)[4])
+/* Solve host's stored tree on its own, now, in a context holding only this
+ * tree: a partial layout in the output's context would evict every other
+ * element's box from Clay's hashmap (clay.h, generation eviction in
+ * Clay__AddHashMapItem). The tree is placed where the frame will place it,
+ * so the device rounding matches the renderer's to the pixel. */
+bool
+declare_widget_measure(const struct widget_host *host, int *w, int *h)
 {
-	struct widget_tree *d = host->tree;
 	static Clay_Context *ctx;
 	Monitor *m = host->m;
 	Clay_Context *previous;
-	Clay_ElementId root_id;
+	Clay_ElementId root_id = widget_root_id(host->id);
 	Clay_ElementData root;
-	int n = 0;
 	size_t leaf = 0;
 
-	if (!m || d->nodes_len == 0)
-		return 0;
-	in_frame = true;
+	if (!m || host->tree->nodes_len == 0)
+		return false;
 	if (!ctx) {
 		uint32_t arena_size = Clay_MinMemorySize();
 
@@ -1170,18 +1279,19 @@ declare_widget_solve(const struct widget_host *host, int (*boxes)[4])
 	Clay_SetCurrentContext(ctx);
 	render_text_set_measure_scale(m->wlr_output->scale);
 	clay_scroll_records_clear();
-	Clay_BeginLayout();
-	root_id = widget_root_id(host->id);
+	declare_begin_layout();
 	struct widget_host isolated = *host;
 	isolated.in_parent = false;
 	declare_widget_subtree(&isolated, 0, root_id, 0, NULL, &leaf);
 	Clay_EndLayout();
 	root = Clay_GetElementData(root_id);
-	if (root.found)
-		widget_boxes_walk(d, 0, root_id, boxes, &n, root.boundingBox);
 	Clay_SetCurrentContext(previous);
-	in_frame = false;
-	return n;
+	if (!root.found)
+		return false;
+	/* Rounded as widget_boxes_walk rounds a root-relative box. */
+	*w = (int)floorf(root.boundingBox.width + 0.5f);
+	*h = (int)floorf(root.boundingBox.height + 0.5f);
+	return true;
 }
 
 int
@@ -1193,7 +1303,7 @@ declare_output_order(struct declare_output *dout, Monitor *m, void **objects,
 	Clay_SetCurrentContext(dout->desktop.clay);
 	render_text_set_measure_scale(dout->wlr_output->scale);
 	clay_scroll_records_clear();
-	Clay_BeginLayout();
+	declare_begin_layout();
 	declare_scene(m);
 	Clay_RenderCommandArray commands = Clay_EndLayout();
 
@@ -1232,7 +1342,7 @@ handle_clay_error(Clay_ErrorData error)
 {
 	/* A Clay error (arena exhaustion, duplicate id, command array
 	 * overflow) is a bug, not a condition to ride out. */
-	wlr_log(WLR_ERROR, "clay error %d: %.*s", error.errorType,
+	fprintf(stderr, "clay error %d: %.*s\n", error.errorType,
 		error.errorText.length, error.errorText.chars);
 	abort();
 }
@@ -1306,6 +1416,8 @@ declare_output_create(struct wlr_output *wlr_output)
 	struct declare_output *dout = calloc(1, sizeof(*dout));
 
 	dout->wlr_output = wlr_output;
+	dout->deadline = wl_event_loop_add_timer(
+		wl_display_get_event_loop(some_get_display()), deadline_fire, dout);
 	declare_band_init(&dout->desktop, wlr_output, &scene->tree);
 	/* Directly above the legacy layers, and below the drag icon and
 	 * LyrBlock, both placed below LyrBlock at setup before any band. */
@@ -1357,6 +1469,13 @@ declare_lock_set_visible(bool on)
 void
 declare_output_destroy(struct declare_output *dout)
 {
+	wl_event_source_remove(dout->deadline);
+	if (insp.over == dout)
+		insp.over = NULL;
+	if (dout->inspecting) {
+		dout->inspecting = false;
+		inspector_resync();
+	}
 	declare_band_wipe(&dout->desktop);
 	declare_band_wipe(&dout->lock);
 	image_entry_set(&dout->wallpaper, NULL);
@@ -1372,33 +1491,53 @@ declare_output_update(struct declare_output *dout, int lx, int ly)
 }
 
 void
+declare_hot_reload(void)
+{
+	Monitor *m;
+
+	wl_list_for_each(m, &mons, link) {
+		struct declare_output *dout = m->declare;
+		if (!dout)
+			continue;
+		struct declare_band *bands[] = { &dout->desktop, &dout->lock };
+		for (size_t i = 0; i < LENGTH(bands); i++) {
+			struct declare_band *band = bands[i];
+			if (!band->render)
+				continue;
+			render_destroy(band->render, &client_hooks);
+			band->render = render_create(band->tree);
+			declare_band_update(band, dout->wlr_output, m->m.x, m->m.y);
+			if (band == &dout->lock)
+				render_set_enabled(band->render, some_is_lua_locked());
+		}
+		declare_output_mark_dirty(dout);
+	}
+}
+
+void
 declare_output_mark_dirty(struct declare_output *dout)
 {
 	dout->dirty = true;
 	wlr_output_schedule_frame(dout->wlr_output);
+	if (!dout->deadline_armed) {
+		dout->deadline_armed = true;
+		wl_event_source_timer_update(dout->deadline, DECLARE_DEADLINE_MS);
+	}
 }
 
-/* Run the declare pass for every dirty output now. The poll function calls
- * this each loop iteration: input hit-testing reads the reconciled scene,
- * and a hidden or asleep output gets no frame events to rebuild it there.
- * The frame handler keeps its own call for marks that land in between.
- * Returns the scene mutations that took, so the caller can re-evaluate what
- * is under the pointer.
- */
-int
-declare_flush(void)
+/* The deadline fired: the frame ran and cleared the mark, or the backend
+ * sent no frame event and this is where the output declares. */
+static int
+deadline_fire(void *data)
 {
-	Monitor *m;
-	int mutations = 0, n;
+	struct declare_output *dout = data;
+	Monitor *m = dout->wlr_output->data;
 
-	wl_list_for_each(m, &mons, link) {
-		if (!m->declare || !m->wlr_output->enabled)
-			continue;
-		n = declare_output_frame(m->declare, m, some_is_lua_locked());
-		if (n > 0)
-			mutations += n;
-	}
-	return mutations;
+	dout->deadline_armed = false;
+	if (m && dout->wlr_output->enabled
+			&& declare_output_frame(dout, m, some_is_lua_locked()) > 0)
+		motionnotify(0, NULL, 0, 0, 0, 0);
+	return 0;
 }
 
 void
@@ -1414,13 +1553,18 @@ declare_mark_all_dirty(void)
 int
 declare_output_frame(struct declare_output *dout, Monitor *m, bool lock_active)
 {
+	static bool in_pass;
 	struct declare_band *band;
-	int64_t declared, solved;
+	Clay_RenderCommandArray commands;
+	Clay_Vector2 insp_point = { -1, -1 };
+	bool inspecting, insp_edge = false, insp_closed = false;
+	int64_t start, declared, solved;
 
-	if (!dout->dirty)
+	/* A clay::solved handler that runs a frame of its own (awesome
+	 * ._test_redeclare) finds this one mid-pass. */
+	if (!dout->dirty || in_pass)
 		return -1;
-	in_frame = true;
-	dout->dirty = false;
+	in_pass = true;
 
 	/* While lua-locked, this output solves its lock scene instead; the
 	 * desktop band keeps its last scene, occluded by locked_bg. The lock
@@ -1431,28 +1575,322 @@ declare_output_frame(struct declare_output *dout, Monitor *m, bool lock_active)
 		declare_band_update(&dout->lock, dout->wlr_output, m->m.x, m->m.y);
 	}
 	band = lock_active ? &dout->lock : &dout->desktop;
+	band->declare_us = band->solve_us = 0;
+	/* The panel is the desktop context's; the lock band never shows it. */
+	inspecting = dout->inspecting && !lock_active;
 
-	band->declare_us = now_us();
-	Clay_SetCurrentContext(band->clay);
-	render_text_set_measure_scale(dout->wlr_output->scale);
-	clay_scroll_records_clear();
-	Clay_BeginLayout();
-	if (lock_active)
-		declare_lock_scene(m);
-	else
-		declare_scene(m);
-	declared = now_us();
-	Clay_RenderCommandArray commands = Clay_EndLayout();
-	solved = now_us();
+	/* Two passes at most: Lua compiles what changed, C declares every tree
+	 * from its store and solves, and the trees solved for the first time
+	 * hand their boxes back. A handler that changes the frame (a popup
+	 * taking its content's size, a grid telling its rows) marks the output
+	 * dirty again and the second pass declares that; what a second pass
+	 * dirties waits for the next frame. */
+	for (int pass = 0; pass < 2; pass++) {
+		luaA_emit_signal_global("clay::declare");
+		/* What the compile stored, this pass declares: its marks are
+		 * consumed here, not carried into a second pass. */
+		dout->dirty = false;
+		start = now_us();
+		in_frame = true;
+		Clay_SetCurrentContext(band->clay);
+		render_text_set_measure_scale(dout->wlr_output->scale);
+		clay_scroll_records_clear();
+		if (inspecting)
+			insp_edge = inspector_feed(dout, m, &insp_point);
+		declare_begin_layout();
+		if (lock_active)
+			declare_lock_scene(m);
+		else
+			declare_scene(m);
+		declared = now_us();
+		commands = Clay_EndLayout();
+		solved = now_us();
+		in_frame = false;
+		if (inspecting) {
+			/* Retire the edge now that the pass that wanted it is over
+			 * (inspector_feed says why). This is also the call that
+			 * closes the panel: its x button has no id, so the check
+			 * at clay.h:3381-3389 never matches, and what closes it is
+			 * the hover handler at clay.h:3370, which fires inside
+			 * Clay_SetPointerState while the state is still the
+			 * PRESSED_THIS_FRAME the feed pinned. */
+			if (insp_edge)
+				Clay_SetPointerState(insp_point, insp.down);
+			if (!Clay_IsDebugModeEnabled()) {
+				/* Closed after this pass emitted the panel: one more
+				 * pass takes it out of the scene. */
+				dout->inspecting = false;
+				inspecting = false;
+				insp_closed = true;
+				inspector_resync();
+				declare_output_mark_dirty(dout);
+			}
+		}
+		band->declare_us += declared - start;
+		band->solve_us += solved - declared;
+		solved_emit();
+		if (!dout->dirty)
+			break;
+	}
 
+	/* The reconcile rasterises shape leaves through their Lua callbacks,
+	 * which must not change the tree it is drawing. */
+	start = now_us();
+	in_frame = true;
 	band->commands = commands.length;
 	band->mutations = render_reconcile(band->render, commands,
 		&client_hooks, (Clay_BoundingBox) { 0, 0, m->m.width, m->m.height });
-	band->reconcile_us = now_us() - solved;
-	band->solve_us = solved - declared;
-	band->declare_us = declared - band->declare_us;
 	in_frame = false;
+	band->reconcile_us = now_us() - start;
+	in_pass = false;
+	if (insp_closed) {
+		inspector_workarea(dout);
+		inspector_emit_closed(m);
+	}
 	return band->mutations;
+}
+
+/* --- the Clay debug inspector (declare.h) --- */
+
+/* The palette is plain globals with external linkage that the vendored
+ * header never declares in its header section (clay.h:3100-3104); the
+ * width and highlight color it does (clay.h:926-927). */
+extern Clay_Color CLAY__DEBUGVIEW_COLOR_1;
+extern Clay_Color CLAY__DEBUGVIEW_COLOR_2;
+extern Clay_Color CLAY__DEBUGVIEW_COLOR_3;
+extern Clay_Color CLAY__DEBUGVIEW_COLOR_4;
+extern Clay_Color CLAY__DEBUGVIEW_COLOR_SELECTED_ROW;
+
+/* Recount the gate from the per-output copies, which are refreshed at
+ * every point the flag can change: the setter, the frame's EndLayout, and
+ * an output's destruction. */
+static void
+inspector_resync(void)
+{
+	Monitor *m;
+
+	insp.count = 0;
+	wl_list_for_each(m, &mons, link)
+		if (m->declare && m->declare->inspecting)
+			insp.count++;
+}
+
+int
+declare_inspector_strut(struct declare_output *dout)
+{
+	return dout->inspecting ? (int)Clay__debugViewWidth : 0;
+}
+
+/* The workarea follows the panel like a right wibar's strut. */
+static void
+inspector_workarea(struct declare_output *dout)
+{
+	Monitor *m = dout->wlr_output->data;
+	screen_t *s = m ? luaA_screen_get_by_monitor(globalconf_L, m) : NULL;
+
+	if (s)
+		screen_update_workarea(s);
+}
+
+bool
+declare_inspector_get(struct declare_output *dout)
+{
+	Clay_Context *previous = Clay_GetCurrentContext();
+	bool on;
+
+	Clay_SetCurrentContext(dout->desktop.clay);
+	on = Clay_IsDebugModeEnabled();
+	Clay_SetCurrentContext(previous);
+	return on;
+}
+
+void
+declare_inspector_set(struct declare_output *dout, bool on)
+{
+	Clay_Context *previous = Clay_GetCurrentContext();
+
+	Clay_SetCurrentContext(dout->desktop.clay);
+	Clay_SetDebugModeEnabled(on);
+	Clay_SetCurrentContext(previous);
+	dout->inspecting = on;
+	dout->press_pending = false;
+	dout->scroll_x = dout->scroll_y = 0;
+	inspector_resync();
+	declare_output_mark_dirty(dout);
+	inspector_workarea(dout);
+}
+
+int
+declare_inspector_style(const struct declare_inspector_style *style,
+	const char *font)
+{
+	Clay_Color *slots[] = {
+		&CLAY__DEBUGVIEW_COLOR_1, &CLAY__DEBUGVIEW_COLOR_2,
+		&CLAY__DEBUGVIEW_COLOR_3, &CLAY__DEBUGVIEW_COLOR_4,
+		&CLAY__DEBUGVIEW_COLOR_SELECTED_ROW, &Clay__debugViewHighlightColor,
+	};
+	Clay_Context *previous = Clay_GetCurrentContext();
+	Monitor *m;
+	int err = 0;
+
+	for (size_t i = 0; i < countof(slots); i++)
+		*slots[i] = (Clay_Color) { style->colors[i][0], style->colors[i][1],
+			style->colors[i][2], style->colors[i][3] };
+	Clay__debugViewWidth = style->width > 0 ? (uint32_t)style->width : 0;
+	if (font)
+		err = render_font_set_default(font);
+	wl_list_for_each(m, &mons, link) {
+		if (!m->declare)
+			continue;
+		/* Clay's measure cache keys on the font id, so a new face behind
+		 * id 0 would keep answering with the old one's widths
+		 * (clay.h:919 exists for this). */
+		if (font && !err) {
+			Clay_SetCurrentContext(m->declare->desktop.clay);
+			Clay_ResetMeasureTextCache();
+		}
+		if (m->declare->inspecting) {
+			declare_output_mark_dirty(m->declare);
+			inspector_workarea(m->declare);
+		}
+	}
+	Clay_SetCurrentContext(previous);
+	return err;
+}
+
+void
+declare_inspector_pointer(int down, bool press_edge)
+{
+	struct declare_output *at;
+	Monitor *m;
+
+	if (down >= 0)
+		insp.down = down;
+	if (insp.count == 0)
+		return;
+	/* A frame with mutations replays a motion at the same point
+	 * (rendermon, deadline_fire); a solve for it would mutate nothing and
+	 * replay it again. Only a moved cursor or a button is news. */
+	if (down < 0 && !press_edge && cursor->x == insp.x && cursor->y == insp.y)
+		return;
+	insp.x = cursor->x;
+	insp.y = cursor->y;
+	m = xytomon(cursor->x, cursor->y);
+	at = m ? m->declare : NULL;
+	if (at != insp.over) {
+		/* The panel left behind keeps its hovered row until it solves. */
+		if (insp.over && insp.over->inspecting)
+			declare_output_mark_dirty(insp.over);
+		insp.over = at;
+	}
+	if (!at || !at->inspecting)
+		return;
+	if (press_edge)
+		at->press_pending = true;
+	/* The hovered row, the highlight and the selection only move in a
+	 * solve. */
+	declare_output_mark_dirty(at);
+}
+
+void
+declare_inspector_scroll(double dx, double dy)
+{
+	Monitor *m = insp.count ? xytomon(cursor->x, cursor->y) : NULL;
+
+	if (!m || !m->declare || !m->declare->inspecting)
+		return;
+	m->declare->scroll_x += dx;
+	m->declare->scroll_y += dy;
+	declare_output_mark_dirty(m->declare);
+}
+
+bool
+declare_inspector_covers(double lx, double ly)
+{
+	Monitor *m = insp.count ? xytomon(lx, ly) : NULL;
+
+	/* While lua-locked the desktop band, panel included, sits under
+	 * locked_bg. */
+	if (!m || !m->declare || !m->declare->inspecting || some_is_lua_locked())
+		return false;
+	return lx - m->m.x >= m->m.width - (double)Clay__debugViewWidth;
+}
+
+/* Hand Clay one pass's worth of seat, for the panel only. Every state is
+ * forced rather than mirrored, because Clay's pointer state is an edge
+ * machine driven by a function other callers also invoke:
+ * declare_widget_hits runs Clay_SetPointerState on every hit query, and
+ * each call advances the machine. The transition is a pure function of
+ * (previous state, down), so two calls pin any state whatever those
+ * queries left behind: (up, down) is the one PRESSED_THIS_FRAME, (down,
+ * down) is PRESSED, (up, up) is RELEASED. Runs before Clay_BeginLayout,
+ * against the previous pass's tree, which is what the panel wants: the row
+ * under the cursor and the close button it may have pressed belong to the
+ * panel it drew last.
+ *
+ * An output the cursor is not over is pinned to a point off its panel, up:
+ * a stale hover clears, and no press or wheel lands where the cursor is
+ * not. (Kiln fed the converted point into every inspecting context, and
+ * Clay's row math, clay.h:3405-3414, drops the hover only for a point left
+ * of the panel, so a cursor on the screen to the right picked a row by y.)
+ *
+ * Returns whether a press edge was fed. The caller retires it after
+ * Clay_EndLayout: the close button registers a hover handler every frame
+ * that fires inside Clay_SetPointerState on PRESSED_THIS_FRAME
+ * (clay.h:3370-3376), and left standing, the next hit query over that
+ * button would close the panel out of nowhere. */
+static bool
+inspector_feed(struct declare_output *dout, Monitor *m, Clay_Vector2 *point)
+{
+	bool mine = xytomon(cursor->x, cursor->y) == m;
+	bool edge = false;
+
+	*point = mine ? (Clay_Vector2) { cursor->x - m->m.x, cursor->y - m->m.y }
+		: (Clay_Vector2) { -1, -1 };
+	if (dout->press_pending) {
+		/* Latched onto this output; a cursor that left since is a lost
+		 * click, not one delivered somewhere else. */
+		dout->press_pending = false;
+		if (mine) {
+			Clay_SetPointerState(*point, false);
+			Clay_SetPointerState(*point, true);
+			edge = true;
+		}
+	}
+	if (!edge) {
+		bool down = insp.down && mine;
+
+		Clay_SetPointerState(*point, down);
+		Clay_SetPointerState(*point, down);
+	}
+	/* At most once per pass, and only with a delta: it drops every scroll
+	 * record not declared since the last call (clay.h:4045), so a second
+	 * call in one pass would purge the panel's own panes. Clay's own scroll
+	 * handling stays in charge, since the panel's clips and its hovered-row
+	 * math are both written against it; the overflow scroll nodes set
+	 * their childOffset themselves and never read it. */
+	if (dout->scroll_x != 0 || dout->scroll_y != 0) {
+		Clay_UpdateScrollContainers(false,
+			(Clay_Vector2) { dout->scroll_x, dout->scroll_y }, 0);
+		dout->scroll_x = dout->scroll_y = 0;
+	}
+	return edge;
+}
+
+/* The panel closed itself through its x button: the screen hears the
+ * signal the property setter emits (objects/screen.c). After the frame,
+ * so a handler may dirty the output. */
+static void
+inspector_emit_closed(Monitor *m)
+{
+	lua_State *L = globalconf_L;
+	screen_t *s = luaA_screen_get_by_monitor(L, m);
+
+	if (!s)
+		return;
+	luaA_screen_push(L, s);
+	luaA_object_emit_signal(L, -1, "property::inspector", 0);
+	lua_pop(L, 1);
 }
 
 /* --- the solved tree dump (somewm-client clay tree) ---
@@ -1797,8 +2235,13 @@ dump_band(buffer_t *buf, struct declare_band *band, Monitor *m,
 
 	if (!band->clay)
 		return;
-	buffer_addf(buf, "output %s band %s scale %.2f\n", o->name, name,
-		o->scale);
+	/* The solved boxes and the inspector flag come out of this band's own
+	 * Clay context, which is a read of its state; nothing here declares or
+	 * solves. */
+	previous = Clay_GetCurrentContext();
+	Clay_SetCurrentContext(band->clay);
+	buffer_addf(buf, "output %s band %s scale %.2f inspector %s\n", o->name,
+		name, o->scale, Clay_IsDebugModeEnabled() ? "on" : "off");
 	buffer_addf(buf, "  commands %d mutations %d nodes %zu raster_bytes %zu "
 		"buffers %d declare %" PRId64 "us solve %" PRId64 "us "
 		"reconcile %" PRId64 "us\n",
@@ -1808,10 +2251,6 @@ dump_band(buffer_t *buf, struct declare_band *band, Monitor *m,
 		render_buffers_created(band->render),
 		band->declare_us, band->solve_us, band->reconcile_us);
 	render_walk(band->render, dump_node, buf);
-	/* The solved boxes come out of this band's own Clay context, which is
-	 * a read of its hashmap; nothing here declares or solves. */
-	previous = Clay_GetCurrentContext();
-	Clay_SetCurrentContext(band->clay);
 	dump_drawins(buf, m, lock);
 	if (!lock)
 		dump_titlebars(buf, m);

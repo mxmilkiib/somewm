@@ -947,7 +947,7 @@ local function register_builtin_commands()
       capi.awesome.kill(pid, 9) -- SIGKILL
       return string.format("Force-killed client (pid=%d)", pid)
     else
-      capi.client.kill(c)
+      c:kill()
       return string.format("Killed client %s", target)
     end
   end)
@@ -984,7 +984,7 @@ local function register_builtin_commands()
   --- client.close <ID|focused> - Close a client gracefully
   ipc.register("client.close", function(target)
     local c = resolve_client(target)
-    capi.client.kill(c)
+    c:kill()
     return string.format("Closed client %s", target or "focused")
   end)
 

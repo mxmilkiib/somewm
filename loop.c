@@ -140,6 +140,17 @@ refresh_source_prepare(GSource *source, gint *timeout)
 
 	some_refresh();
 
+	/* Drain wlroots idle sources here too. wlr_output_schedule_frame()
+	 * queues the frame as a wl_event_loop idle, and idles only run inside
+	 * wl_event_loop_dispatch(), which otherwise happens solely when the
+	 * loop fd is readable (wayland_source_dispatch): a timer-driven redraw
+	 * on an idle session would update nothing until the next input. The
+	 * frame runs Lua (declare.h), so it runs in this prepare for the same
+	 * reason the refresh does, and before the poll function flushes the
+	 * configures its reconcile sends. dispatch_idle runs exactly the queued
+	 * idles, not fd sources, which stay with their GSource. */
+	wl_event_loop_dispatch_idle(wl_display_get_event_loop(dpy));
+
 	/* Check Lua stack integrity (matches AwesomeWM) */
 	if (L && lua_gettop(L) != 0) {
 		fprintf(stderr, "WARNING: Something left %d items on Lua stack, this is a bug!\n",
@@ -201,30 +212,9 @@ some_glib_poll(GPollFD *ufds, guint nfsd, gint timeout)
 	float length;
 	int saved_errno;
 
-	/* Apply pending declare marks before sleeping: input hit-testing reads
-	 * the reconciled scene, and a hidden or asleep output gets no frame
-	 * events to rebuild it in rendermon. Runs before the client flush so
-	 * configures the reconcile sends leave in this iteration. When the
-	 * scene changed, what sits under the stationary pointer may have too
-	 * (a surface mapped under it, a tag switch): re-evaluate pointer
-	 * focus, the way banning_refresh() does after visibility flips. */
-	if (declare_flush())
-		motionnotify(0, NULL, 0, 0, 0, 0);
-
 	/* Flush pending Wayland client data before polling
 	 * Clients won't receive data until we flush */
 	wl_display_flush_clients(dpy);
-
-	/* Drain wlroots idle sources before sleeping. wlr_output_schedule_frame()
-	 * queues the frame as a wl_event_loop idle, and idles only run inside
-	 * wl_event_loop_dispatch().
-	 * That otherwise happens solely when the loop fd is readable from input or
-	 * client traffic (via wayland_source_dispatch), so a timer-driven redraw (e.g.
-	 * textclock / awful.widget.watch) updates the scene buffer but is never
-	 * committed on an idle session and the widget freezes until the next input.
-	 * dispatch_idle runs exactly the queued idles (not fd sources, which stay with
-	 * the GSource), presenting those frames every iteration. */
-	wl_event_loop_dispatch_idle(wl_display_get_event_loop(dpy));
 
 	/* Check iteration performance (matches AwesomeWM) */
 	gettimeofday(&now, NULL);

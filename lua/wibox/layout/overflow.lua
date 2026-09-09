@@ -15,7 +15,6 @@ local clay = require('wibox.clay')
 local gmatrix = require('gears.matrix')
 local separator = require('wibox.widget.separator')
 local gtable = require('gears.table')
-local timer = require('gears.timer')
 local gshape = require('gears.shape')
 local gobject = require('gears.object')
 local mousegrabber = mousegrabber
@@ -78,10 +77,7 @@ local function describe_overflow(w)
         end
         if solved_avail ~= p.avail_in_dir or solved_used ~= p.used_in_dir then
             p.avail_in_dir, p.used_in_dir = solved_avail, solved_used
-            -- The drawable wires the tree's widgets after placing them
-            -- (drawable.lua draw_converted): a signal sent now is lost on
-            -- the first conversion.
-            timer.delayed_call(w.emit_signal, w, "widget::layout_changed")
+            w:emit_signal("widget::layout_changed")
         end
     end
     return node

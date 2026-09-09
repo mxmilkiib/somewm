@@ -56,6 +56,7 @@ void luaA_drawable_setup(lua_State *L);
 
 /* The converted tree and its box, resolved through the drawable owner. */
 struct widget_host;
+int drawable_push(lua_State *L, drawable_t *d);
 bool drawable_widget_host(drawable_t *d, struct widget_host *out);
 
 /* Buffer creation from raw Cairo pixel data (for non-drawable Cairo surfaces) */

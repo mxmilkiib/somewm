@@ -380,6 +380,20 @@ axisnotify(struct wl_listener *listener, void *data)
 	wlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
 	some_notify_activity();
 
+	/* A wheel over the Clay inspector's panel scrolls the panel: nothing
+	 * under it, no button 4/5 for Lua, no axis for the focused client. One
+	 * notch is about 15, Clay multiplies the delta by 10, and a row is 30
+	 * units, so a fifth of a notch is one row; the sign flips because a
+	 * wheel down moves the content up. */
+	if (!session_is_locked() && event->delta != 0
+			&& declare_inspector_covers(cursor->x, cursor->y)) {
+		if (event->orientation == WL_POINTER_AXIS_VERTICAL_SCROLL)
+			declare_inspector_scroll(0, -event->delta / 5);
+		else
+			declare_inspector_scroll(-event->delta / 5, 0);
+		return;
+	}
+
 	/* Handle scroll wheel for mousebindings and the mousegrabber
 	 * (AwesomeWM compatibility).
 	 * Convert axis events to X11-style button 4/5/6/7 press+release events.
@@ -541,6 +555,18 @@ buttonpress(struct wl_listener *listener, void *data)
 		if (some_is_lua_locked() && drawin != some_get_lua_lock_surface())
 			return;
 
+		/* The Clay inspector's seat mirror learns every left press; a press
+		 * inside its panel is the panel's, with the edge its next solve
+		 * turns into a click, and reaches neither Lua nor a client. */
+		{
+			bool inside = declare_inspector_covers(cursor->x, cursor->y);
+
+			declare_inspector_pointer(event->button == BTN_LEFT ? 1 : -1,
+				inside && event->button == BTN_LEFT);
+			if (inside)
+				return;
+		}
+
 		/* Get keyboard modifiers */
 		keyboard = wlr_seat_get_keyboard(seat);
 		mods = keyboard ? wlr_keyboard_get_modifiers(keyboard) : 0;
@@ -627,6 +653,12 @@ buttonpress(struct wl_listener *listener, void *data)
 
 		/* NOTE: C-level move/resize exit handling removed - Lua mousegrabber handles this now */
 		cursor_mode = CurNormal;
+
+		/* The inspector's mirror learns the left release wherever it lands;
+		 * one inside the panel goes nowhere else, like its press. */
+		declare_inspector_pointer(event->button == BTN_LEFT ? 0 : -1, false);
+		if (declare_inspector_covers(cursor->x, cursor->y))
+			return;
 
 		/* Check if a drawin was released over */
 		if (!session_is_locked()) {
@@ -856,6 +888,10 @@ motionnotify(uint32_t time, struct wlr_input_device *device, double dx, double d
 				selmon = mon;
 		}
 	}
+
+	/* The Clay inspector's seat mirror: a moved cursor re-solves the panel
+	 * it is over (and the one it left), for the hovered row. */
+	declare_inspector_pointer(-1, false);
 
 	/* Update drag icon's position */
 	wlr_scene_node_set_position(&drag_icon->node, (int)round(cursor->x), (int)round(cursor->y));

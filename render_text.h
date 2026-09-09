@@ -39,6 +39,15 @@
 #define RENDER_FONT_ERR_FULL (-2)
 int32_t render_font_intern(const char *name);
 
+/* Replace entry 0's face: the one Clay's debug view draws with (fontId 0),
+ * and the fallback for an id past the table. The only rewrite the table
+ * allows, because no interned declaration ever names id 0 (an interned
+ * description carries a size, and "Sans" alone is entry 0 itself); the
+ * caller resets Clay's measure caches (declare_inspector_style). A carried
+ * absolute size becomes the panel's text size (render_set_text). Same
+ * refusal as intern for a point size; the cap does not apply. */
+int render_font_set_default(const char *name);
+
 /* Flags a text declaration carries through its config's userData, which is
  * documented as passed through untouched to the render command (clay.h:375-376,
  * 688-689) and is not part of the measure cache key (clay.h:1508-1531, which

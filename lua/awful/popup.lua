@@ -399,10 +399,11 @@ end
 function popup:_apply_size_now(skip_set)
     if not self.widget then return end
 
+    -- Compile now and measure the tree on its own: the size lands before
+    -- any frame, as it did with the engine.
     self._drawable._do_redraw()
-    local tree = self._drawable._clay_tree
-    if not tree then return end
-    local w, h = tree.box.width, tree.box.height
+    local w, h = self._drawable.drawable:_clay_measure()
+    if not w then return end
 
     -- It is important to do it for the obscure reason that calling `w:geometry()`
     -- is actually mutating the state due to quantum determinism thanks to XCB

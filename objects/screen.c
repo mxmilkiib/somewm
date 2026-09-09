@@ -8,6 +8,7 @@
 #include "common/luaclass.h"
 #include "common/luaobject.h"
 #include "../somewm_api.h"
+#include "../declare.h"
 #include "../globalconf.h"
 #include "../event_queue.h"
 #include "common/util.h"
@@ -787,6 +788,10 @@ screen_update_workarea_ex(screen_t *screen, bool defer)
 
 #undef COMPUTE_DRAWIN_STRUT
 
+	/* The Clay inspector's panel takes the right edge while it is up. */
+	if (screen->monitor && screen->monitor->declare)
+		right = MAX(right, declare_inspector_strut(screen->monitor->declare));
+
 	area.x += left;
 	area.y += top;
 	area.width -= MIN(area.width, left + right);
@@ -1229,6 +1234,46 @@ static int luaA_screen_get_scale(lua_State *L, screen_t *s)
  * \param s The screen object.
  * \return Number of values pushed on stack (0).
  */
+/** The Clay debug inspector on this screen (declare.h): Clay's own flag on
+ * the screen's desktop context, read back rather than stored, since the
+ * panel closes itself through its x button. */
+static int
+luaA_screen_get_inspector(lua_State *L, screen_t *s)
+{
+	lua_pushboolean(L, s && s->monitor && s->monitor->declare
+		&& declare_inspector_get(s->monitor->declare));
+	return 1;
+}
+
+/** Set it. Enabling first hands somewm.inspector its restyle, so the panel
+ * comes up in the theme's colors and font rather than Clay's; a screen
+ * without an output stores nothing. Emits property::inspector on a change,
+ * the signal the frame also emits when the panel closes itself.
+ */
+static int
+luaA_screen_set_inspector(lua_State *L, screen_t *s)
+{
+	bool on = lua_toboolean(L, -1);
+
+	if (!s || !s->monitor || !s->monitor->declare)
+		return 0;
+	if (on == declare_inspector_get(s->monitor->declare))
+		return 0;
+	if (on) {
+		lua_getglobal(L, "require");
+		lua_pushliteral(L, "somewm.inspector");
+		lua_call(L, 1, 1);
+		lua_getfield(L, -1, "restyle");
+		lua_call(L, 0, 0);
+		lua_pop(L, 1);
+	}
+	declare_inspector_set(s->monitor->declare, on);
+	luaA_screen_push(L, s);
+	luaA_object_emit_signal(L, -1, "property::inspector", 0);
+	lua_pop(L, 1);
+	return 0;
+}
+
 static int luaA_screen_set_scale(lua_State *L, screen_t *s)
 {
 	float scale = luaL_checknumber(L, -1);
@@ -1849,6 +1894,8 @@ luaA_screen_index(lua_State *L)
 		screen_t *screen = luaA_checkscreen(L, 1);
 		return luaA_screen_get_output(L, screen);
 	}
+	if (strcmp(key, "inspector") == 0)
+		return luaA_screen_get_inspector(L, luaA_checkscreen(L, 1));
 
 	/* Check for _private table (AwesomeWM compatibility) */
 	if (strcmp(key, "_private") == 0) {
@@ -1933,6 +1980,12 @@ luaA_screen_newindex(lua_State *L)
 	if (strcmp(key, "scale") == 0) {
 		lua_pushvalue(L, 3);  /* Push value to top where setter expects it */
 		luaA_screen_set_scale(L, screen);
+		lua_pop(L, 1);
+		return 0;
+	}
+	if (strcmp(key, "inspector") == 0) {
+		lua_pushvalue(L, 3);
+		luaA_screen_set_inspector(L, screen);
 		lua_pop(L, 1);
 		return 0;
 	}
@@ -2242,6 +2295,7 @@ screen_class_setup(lua_State *L)
 		{ "content", NULL, (lua_class_propfunc_t) luaA_screen_get_content, NULL },
 		{ "scale", (lua_class_propfunc_t) luaA_screen_set_scale, (lua_class_propfunc_t) luaA_screen_get_scale, (lua_class_propfunc_t) luaA_screen_set_scale },
 		{ "output", NULL, (lua_class_propfunc_t) luaA_screen_get_output, NULL },
+		{ "inspector", (lua_class_propfunc_t) luaA_screen_set_inspector, (lua_class_propfunc_t) luaA_screen_get_inspector, (lua_class_propfunc_t) luaA_screen_set_inspector },
 	};
 	luaA_class_add_properties(&screen_class, properties, countof(properties));
 }

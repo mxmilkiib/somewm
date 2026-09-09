@@ -378,6 +378,23 @@ luaA_drawable_geometry(lua_State *L)
 	return 1;
 }
 
+/* Push the drawable: an item of its owner's environment, not a registry
+ * object of its own. Pushes nil for an orphan. */
+int
+drawable_push(lua_State *L, drawable_t *d)
+{
+	void *owner = d->owner_type == DRAWABLE_OWNER_NONE ? NULL : d->owner.ptr;
+
+	if (!owner) {
+		lua_pushnil(L);
+		return 1;
+	}
+	luaA_object_push(L, owner);
+	luaA_object_push_item(L, -1, d);
+	lua_remove(L, -2);
+	return 1;
+}
+
 bool
 drawable_widget_host(drawable_t *d, struct widget_host *out)
 {
@@ -390,28 +407,24 @@ drawable_widget_host(drawable_t *d, struct widget_host *out)
 	return false;
 }
 
-/** Hand the renderer the converted widget tree, and solve it.
- * lua/wibox/drawable.lua calls this once per redraw with the tree
- * lua/wibox/clay.lua compiled. The tree is solved immediately through
- * declare_widget_solve, and widget boxes return to Lua for placement and
- * hit testing. Image entries reference their widget surfaces. Returns false
- * when no tree, host or solved boxes are available, or false with a reason
- * ("budget" or "malformed") when the tree is refused. These states show nothing.
+/** Store the converted widget tree for the renderer.
+ * lua/wibox/drawable.lua calls this with the tree lua/wibox/clay.lua
+ * compiled, from the frame's clay::declare. The frame declares the tree
+ * from the store and, once solved, sends the drawable clay::solved with the
+ * boxes (declare.h). Image entries reference their widget surfaces. Returns
+ * false when no tree or host is available, or false with a reason ("budget"
+ * or "malformed") when the tree is refused. These states show nothing.
  *
  * \param L The Lua VM state.
  * \param tree The node tree, or nil.
- * \return Whether a tree was stored and solved.
- * \return The boxes, drawin-local, one per widget node in preorder; or the
- * reason nothing shows.
+ * \return Whether a tree was stored.
+ * \return The reason nothing shows, when the tree was refused.
  */
 static int
 luaA_drawable_clay_nodes(lua_State *L)
 {
-	static int boxes[WIDGET_NODES_MAX][4];
-	static const char *keys[] = { "x", "y", "width", "height" };
 	drawable_t *d = (drawable_t *)lua_touserdata(L, 1);
 	struct widget_host host = { 0 };
-	int n;
 
 	if (!d) {
 		return luaL_error(L, "expected drawable, got %s",
@@ -419,8 +432,7 @@ luaA_drawable_clay_nodes(lua_State *L)
 	}
 
 	if (!drawable_widget_host(d, &host)
-			|| !widget_nodes_set(L, host.tree, host.m, 2)
-			|| (n = declare_widget_solve(&host, boxes)) == 0) {
+			|| !widget_nodes_set(L, host.tree, host.m, 2)) {
 		lua_pushboolean(L, false);
 		if (host.tree && (host.tree->state == WIDGET_NODES_OVER_BUDGET
 				|| host.tree->state == WIDGET_NODES_MALFORMED)) {
@@ -431,18 +443,44 @@ luaA_drawable_clay_nodes(lua_State *L)
 		return 1;
 	}
 	widget_leaves_set(host.tree);
-
 	lua_pushboolean(L, true);
-	lua_createtable(L, n, 0);
-	for (int i = 0; i < n; i++) {
-		lua_createtable(L, 0, 4);
-		for (int k = 0; k < 4; k++) {
-			lua_pushinteger(L, boxes[i][k]);
-			lua_setfield(L, -2, keys[k]);
-		}
-		lua_rawseti(L, -2, i + 1);
-	}
+	return 1;
+}
+
+/** The size the stored tree's root takes, from a solve of its own now
+ * (declare_widget_measure): what an awful.popup sizes itself by before any
+ * frame. Nil for a drawable with no stored tree or no output.
+ * \param L The Lua VM state.
+ * \return The width and height, or nil.
+ */
+static int
+luaA_drawable_clay_measure(lua_State *L)
+{
+	drawable_t *d = (drawable_t *)lua_touserdata(L, 1);
+	struct widget_host host;
+	int w, h;
+
+	if (!drawable_widget_host(d, &host)
+			|| !declare_widget_measure(&host, &w, &h))
+		return 0;
+	lua_pushinteger(L, w);
+	lua_pushinteger(L, h);
 	return 2;
+}
+
+/** Mark the drawable's output dirty, so a frame comes to compile and
+ * declare it. Nothing for a drawable without an output.
+ * \param L The Lua VM state.
+ */
+static int
+luaA_drawable_clay_dirty(lua_State *L)
+{
+	drawable_t *d = (drawable_t *)lua_touserdata(L, 1);
+	struct widget_host host;
+
+	if (drawable_widget_host(d, &host) && host.m->declare)
+		declare_output_mark_dirty(host.m->declare);
+	return 0;
 }
 
 /** The widget nodes under a drawable-local point, as Clay's pointer query
@@ -553,6 +591,8 @@ drawable_class_setup(lua_State *L)
 		{ "__newindex", luaA_drawable_newindex },
 		{ "geometry", luaA_drawable_geometry },
 		{ "_clay_nodes", luaA_drawable_clay_nodes },
+		{ "_clay_measure", luaA_drawable_clay_measure },
+		{ "_clay_dirty", luaA_drawable_clay_dirty },
 		{ "_clay_hits", luaA_drawable_clay_hits },
 		LUA_OBJECT_META(drawable)
 		{ NULL, NULL }

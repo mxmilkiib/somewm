@@ -1,6 +1,7 @@
 /* The font table and the shared Pango setup both the measure callback and the
  * raster path go through, ported from kiln (ui.c). */
 
+#include <stdlib.h>
 #include <string.h>
 #include <pango/pangocairo.h>
 
@@ -37,7 +38,7 @@ static void render_fonts_init(void) {
 	if (render_fonts_len > 0) {
 		return;
 	}
-	render_fonts[0].name = RENDER_FONT_FAMILY;
+	render_fonts[0].name = strdup(RENDER_FONT_FAMILY);
 	render_fonts[0].desc = pango_font_description_from_string(RENDER_FONT_FAMILY);
 	render_fonts_len = 1;
 }
@@ -75,6 +76,25 @@ int32_t render_font_intern(const char *name) {
 	return render_fonts_len++;
 }
 
+int render_font_set_default(const char *name) {
+	render_fonts_init();
+	PangoFontDescription *desc = pango_font_description_from_string(name);
+	double px = 0;
+	if (pango_font_description_get_set_fields(desc) & PANGO_FONT_MASK_SIZE) {
+		if (!pango_font_description_get_size_is_absolute(desc)) {
+			pango_font_description_free(desc);
+			return RENDER_FONT_ERR_SIZE;
+		}
+		px = (double)pango_font_description_get_size(desc) / PANGO_SCALE;
+	}
+	pango_font_description_free(render_fonts[0].desc);
+	free((char *)render_fonts[0].name);
+	render_fonts[0].name = strdup(name);
+	render_fonts[0].desc = desc;
+	render_fonts[0].px = px;
+	return 0;
+}
+
 void render_set_text(PangoLayout *layout, const char *text, int len,
 		uint16_t font_id, uint16_t font_size, float scale, int max_width) {
 	render_fonts_init();
@@ -84,6 +104,11 @@ void render_set_text(PangoLayout *layout, const char *text, int len,
 	int id = font_id < render_fonts_len ? font_id : 0;
 	PangoFontDescription *desc = render_fonts[id].desc;
 	double px = font_size > 0 ? (double)font_size : render_fonts[id].px;
+	/* Entry 0's own size wins over the 16 the debug view hardcodes, so a
+	 * theme can size the panel's text; measure and raster both come through
+	 * here, so they agree. */
+	if (id == 0 && render_fonts[0].px > 0)
+		px = render_fonts[0].px;
 	pango_font_description_set_absolute_size(desc, px * scale * PANGO_SCALE);
 	pango_layout_set_font_description(layout, desc);
 

@@ -26,6 +26,7 @@
 #include "somewm.h"
 #include "somewm_api.h"
 #include "declare.h"
+#include "input.h"
 #include "monitor.h"
 #include "nested_inhibitor.h"
 #include "protocols.h"
@@ -521,12 +522,17 @@ rendermon(struct wl_listener *listener, void *data)
 	struct timespec bench_render_start, bench_render_end;
 	clock_gettime(CLOCK_MONOTONIC, &bench_render_start);
 #endif
-	/* The Clay frame: when the output is dirty, declare its scene, solve,
-	 * and reconcile into wlr_scene before the commit below presents it.
-	 * A clean output does zero work here. While the lua lock is engaged
-	 * the lock band solves instead of the desktop (declare.h). */
-	if (m->declare)
-		declare_output_frame(m->declare, m, some_is_lua_locked());
+	/* The Clay frame: when the output is dirty, have Lua compile what
+	 * changed, declare the scene, solve, and reconcile into wlr_scene
+	 * before the commit below presents it. A clean output does zero work
+	 * here. While the lua lock is engaged the lock band solves instead of
+	 * the desktop (declare.h). When the scene changed, what sits under the
+	 * stationary pointer may have too (a surface mapped under it, a tag
+	 * switch): re-evaluate pointer focus, the way banning_refresh() does
+	 * after visibility flips. */
+	if (m->declare && declare_output_frame(m->declare, m,
+			some_is_lua_locked()) > 0)
+		motionnotify(0, NULL, 0, 0, 0, 0);
 
 	/* needs_frame is true only when there is something to present;
 	 * wlr_scene_output_commit() returns true without presenting otherwise, so

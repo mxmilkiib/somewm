@@ -467,7 +467,18 @@ local compile_node
 --- The nodes for a list of child specs: a widget's node with the sizing its
 -- parent decided, or an empty element the parent asked for, which stands for
 -- no widget and is left out of the box readback.
-local function compile_specs(st, specs, parent, fg, offer, box)
+-- A node's own colors at the opacity its widget and ancestors compound to.
+local function fade(node, alpha)
+    for _, key in ipairs { "bg", "border", "fill", "stroke", "color" } do
+        local color = node[key]
+        if color and color[4] then color[4] = color[4] * alpha end
+    end
+    if node.fill and node.fill.stops then
+        for _, stop in ipairs(node.fill.stops) do stop[5] = stop[5] * alpha end
+    end
+end
+
+local function compile_specs(st, specs, parent, fg, offer, box, alpha)
     local nodes = {}
 
     for _, spec in ipairs(specs) do
@@ -478,8 +489,7 @@ local function compile_specs(st, specs, parent, fg, offer, box)
         local inner, spec_box = node_offer(spec, bound)
 
         if spec.widget then
-            node = compile_node(st, spec.widget, parent, fg, spec_box)
-            if node then merge_sizing(node, spec) end
+            node = compile_node(st, spec.widget, parent, fg, spec_box, spec, alpha)
         else
             node = spec
             node.spacer = true
@@ -489,30 +499,73 @@ local function compile_specs(st, specs, parent, fg, offer, box)
                 st.leaves[#st.leaves + 1] = { image = true, node = node }
             end
             node.children = spec.children
-                and compile_specs(st, spec.children, parent, fg, inner, spec_box) or nil
+                and compile_specs(st, spec.children, parent, fg, inner, spec_box, alpha) or nil
+            if alpha ~= 1 then fade(node, alpha) end
         end
         if node then nodes[#nodes + 1] = node end
     end
     return nodes
 end
 
-local function fade(node, alpha)
-    for _, key in ipairs { "bg", "border", "fill", "stroke", "color" } do
-        local color = node[key]
-        if color and color[4] then color[4] = color[4] * alpha end
+local sizing_keys = { "w", "h", "wmin", "hmin", "wmax", "hmax" }
+
+local function same_sizing(a, b)
+    for _, k in ipairs(sizing_keys) do
+        local x, y = a[k], b[k]
+
+        if x ~= y and not (type(x) == "table" and type(y) == "table"
+                and x.percent == y.percent) then
+            return false
+        end
     end
-    if node.fill and node.fill.stops then
-        for _, stop in ipairs(node.fill.stops) do stop[5] = stop[5] * alpha end
-    end
-    for _, child in ipairs(node.children or {}) do fade(child, alpha) end
+    return true
 end
 
---- The node tree for `widget`.
-function compile_node(st, widget, parent, fg, offer)
-    st.widgets[widget] = parent or false
+-- Every widget the compile reaches, refused ones included, with its parent:
+-- what the drawable wires, in preorder so a kept subtree can replay its own.
+local function register(st, widget, parent)
+    if st.widgets[widget] ~= nil then st.dup = true end
+    st.widgets[widget] = parent
+    st.regs[#st.regs + 1] = { widget, parent }
+end
+
+local function slice(list, from)
+    local out = {}
+
+    for i = from, #list do out[#out + 1] = list[i] end
+    return out
+end
+
+--- The node tree for `widget`, sized as its parent's `spec` decided.
+--
+-- A widget's finished subtree depends on its own state, its offer, its
+-- spec, its foreground and the opacity compounded down to it, and on
+-- nothing of its siblings: compile_specs hands every child the same offer.
+-- So a widget that no signal marked since the last compile keeps its
+-- subtree when those inputs are equal, describers and all. The root is
+-- always compiled, since every mark reaches it and the drawable's own
+-- sizing is applied to its node.
+function compile_node(st, widget, parent, fg, offer, spec, alpha)
+    local cache = st.cache
+    local entry = cache.entries[widget]
+
+    alpha = alpha * (widget._private.opacity or 1)
+    if entry and parent and not st.stale[widget] and st.widgets[widget] == nil
+            and entry.fg == fg and entry.alpha == alpha
+            and entry.offer.w == offer.w and entry.offer.h == offer.h
+            and same_sizing(entry.spec, spec) then
+        for _, reg in ipairs(entry.regs) do register(st, reg[1], reg[2]) end
+        for _, leaf in ipairs(entry.leaves) do st.leaves[#st.leaves + 1] = leaf end
+        return entry.node
+    end
+
+    local given, regs_from, leaves_from = offer, #st.regs + 1, #st.leaves + 1
+
+    register(st, widget, parent or false)
     local node, node_fg = describe(widget, fg, st)
 
     if not node then
+        cache.entries[widget] = nil
         return nil
     end
 
@@ -526,13 +579,33 @@ function compile_node(st, widget, parent, fg, offer)
         local axis, count = node.share, #node.specs
         inner[axis] = math.max(0, (inner[axis] - (node.gap or 0) * (count - 1)) / count)
     end
-    node.children = compile_specs(st, node.specs or {}, widget, node_fg or fg, inner, box)
+    node.children = compile_specs(st, node.specs or {}, widget, node_fg or fg, inner, box, alpha)
     node.specs = nil
     node.class = class_name(widget)
     node.widget = widget
-    local opacity = widget._private.opacity
-    if opacity and opacity ~= 1 then fade(node, opacity) end
+    merge_sizing(node, spec)
+    if alpha ~= 1 then fade(node, alpha) end
+
+    local sizing = {}
+    for _, k in ipairs(sizing_keys) do sizing[k] = spec[k] end
+    cache.entries[widget] = { node = node, fg = fg, alpha = alpha, offer = given,
+        spec = sizing, regs = slice(st.regs, regs_from), leaves = slice(st.leaves, leaves_from) }
     return node
+end
+
+--- Mark `widget` as changed in `self`'s tree, up to the root: the next
+-- compile describes those again and keeps every other subtree.
+-- @tparam table self The drawable.
+-- @tparam wibox.widget widget The widget that signalled.
+-- @staticfct wibox.clay.invalidate
+function clay.invalidate(self, widget)
+    local cache = self._clay_cache
+
+    if not cache then return end
+    while widget do
+        cache.stale[widget] = true
+        widget = cache.parents[widget] or nil
+    end
 end
 
 --- Add a wrapper class that passes through to one child: the widget under
@@ -595,9 +668,25 @@ function clay.compile(self, root, context, width, height)
     if self.background_color and not base_rgba and not fill then
         clay.ignore("drawable", "bg", "is not a solid or a gradient and is transparent")
     end
-    local st = { leaves = {}, widgets = {}, context = context, width = width, height = height }
-    local node = root and compile_node(st, root, nil,
-        self.foreground_color, { w = width, h = height })
+    -- The kept subtrees, from the last compile of this context and size.
+    -- A widget in the tree twice shares one entry, so such a tree is
+    -- compiled whole every time.
+    local cache = self._clay_cache
+    if not cache or cache.context ~= context or cache.width ~= width
+            or cache.height ~= height or cache.dup then
+        cache = { context = context, width = width, height = height,
+            entries = {}, stale = {}, parents = {} }
+        self._clay_cache = cache
+    end
+    local st = { leaves = {}, widgets = {}, regs = {}, context = context,
+        width = width, height = height, cache = cache, stale = cache.stale }
+    cache.stale = {}
+    local node = root and compile_node(st, root, nil, self.foreground_color,
+        { w = width, h = height }, { w = "grow", h = "grow" }, 1)
+    for w in pairs(cache.entries) do
+        if st.widgets[w] == nil then cache.entries[w] = nil end
+    end
+    cache.parents, cache.dup = st.widgets, st.dup
     -- The widget gets the whole drawin, as the engine gave it. The root is
     -- the drawin's box, told (CLAY_SIZING_FIXED), unless the widget sizes
     -- the drawin (an awful.popup follows its content, `node.fit`): then
@@ -607,7 +696,6 @@ function clay.compile(self, root, context, width, height)
         w = width, h = height, children = { node }, widgets = st.widgets }
 
     if node then
-        merge_sizing(node, { w = "grow", h = "grow" })
         if node.fit then
             tree.fit, node.fit = node.fit, nil
             tree.w, tree.h = "fit", "fit"
