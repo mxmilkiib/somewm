@@ -29,7 +29,7 @@
  * (awful.mouse.client.move/resize) instead of C-level cursor_mode state machine */
 enum { CurNormal, CurPressed }; /* cursor */
 enum { XDGShell, LayerShell, X11 }; /* client types */
-enum { LyrBg, LyrBottom, LyrTile, LyrFloat, LyrWibox, LyrTop, LyrFS, LyrOverlay, LyrBlock, NUM_LAYERS }; /* scene layers */
+enum { LyrBg, LyrWibox, LyrTop, LyrOverlay, LyrBlock, NUM_LAYERS }; /* scene layers */
 
 /* Window types (for stacking and EWMH) - AwesomeWM compatibility */
 typedef enum {
@@ -99,7 +99,6 @@ struct Monitor {
 	struct wl_list link;
 	struct wlr_output *wlr_output;
 	struct wlr_scene_output *scene_output;
-	struct wlr_scene_rect *fullscreen_bg; /* See createmon() for info */
 	struct wl_listener frame;
 	struct wl_listener destroy;
 	struct wl_listener request_state;
@@ -115,6 +114,7 @@ struct Monitor {
 	int needs_screen_added; /* Set in createmon, cleared by updatemons after geometry is ready */
 	int needs_output_added; /* Set in createmon, cleared by updatemons after screen is ready */
 	output_t *output; /* Lua output object (persists across enable/disable) */
+	struct declare_output *declare; /* Per-output Clay context and render_state (declare.h) */
 };
 
 /* KeyboardGroup structure */
@@ -143,6 +143,14 @@ typedef struct LayerSurface {
 
 	Monitor *mon;
 	struct wlr_scene_tree *scene;
+	/* The render_state currently borrowing scene (render.h owner token) */
+	void *render_owner;
+	/* Output-local position from the last layer-shell arrange; the declare
+	 * pass reads this, never the scene node the reconciler owns. */
+	struct { int x, y; } geom;
+	/* The zwlr layer this surface last committed to, keyed to the
+	 * m->layers list holding it (= its declare band). */
+	uint32_t band;
 	struct wlr_scene_tree *popups;
 	struct wlr_scene_layer_surface_v1 *scene_layer;
 	struct wl_list link;

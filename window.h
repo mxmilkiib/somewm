@@ -35,7 +35,17 @@ void minimizenotify(struct wl_listener *listener, void *data);
 void fullscreennotify(struct wl_listener *listener, void *data);
 
 /* Geometry */
-void apply_geometry_to_wlroots(Client *c);
+/* The client-facing half of geometry application: surface inset,
+ * titlebars, the configure send, and the surface clip. Returns whether the
+ * client content is at least partially visible on its monitor. The Clay
+ * flip's render_client_hooks land here; forced configure re-sends keep
+ * calling it directly. */
+bool client_configure_to_box(Client *c);
+bool client_clamps_to_monitor(Client *c);
+void window_setup_render_hooks(void);
+/* The disabled parking tree new and released surface trees live in until
+ * the reconciler borrows them into a band. */
+struct wlr_scene_tree *window_parked_tree(void);
 void resize(Client *c, struct wlr_box geo, int interact);
 void applybounds(Client *c, struct wlr_box *bbox);
 

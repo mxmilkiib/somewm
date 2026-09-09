@@ -1161,6 +1161,82 @@ composite_scene_buffer_to_cairo(struct wlr_scene_buffer *scene_buffer,
 		free(pixels);
 }
 
+
+/** Composite one scene node and its children onto a cairo target.
+ *
+ * wlr_scene_node_for_each_buffer only reaches buffers, and the renderer draws
+ * a flat color as a wlr_scene_rect (render.c): a converted widget container's
+ * background is a rectangle and nothing else, and so is the backing behind a
+ * non-opaque fullscreen surface. Walking once covers both kinds, in the order
+ * the compositor stacks them.
+ *
+ * Shared with objects/screen.c via screenshot_compose.h.
+ */
+/* Whether a node's layout box reaches the target at all. */
+static bool
+within_bounds(const struct screenshot_render_data *rdata, int x, int y,
+              int w, int h)
+{
+	if (rdata->bound_w <= 0 || rdata->bound_h <= 0)
+		return true;
+	return !(x + w <= rdata->bound_x || x >= rdata->bound_x + rdata->bound_w
+		|| y + h <= rdata->bound_y || y >= rdata->bound_y + rdata->bound_h);
+}
+
+void
+composite_scene_node_to_cairo(struct wlr_scene_node *node, void *data)
+{
+	struct screenshot_render_data *rdata = data;
+	struct wlr_scene_node *child;
+	int lx, ly;
+
+	if (!node->enabled)
+		return;
+
+	switch (node->type) {
+	case WLR_SCENE_NODE_BUFFER: {
+		struct wlr_scene_buffer *buffer = wlr_scene_buffer_from_node(node);
+		int w, h;
+
+		if (!wlr_scene_node_coords(node, &lx, &ly) || !buffer->buffer)
+			return;
+		/* The size it draws at, not the size of its pixels: a shadow
+		 * edge is a one-pixel texture stretched the length of a client,
+		 * and culling on the texture would drop it. */
+		w = buffer->dst_width > 0 ? buffer->dst_width : buffer->buffer->width;
+		h = buffer->dst_height > 0 ? buffer->dst_height : buffer->buffer->height;
+		if (!within_bounds(rdata, lx, ly, w, h))
+			return;
+		composite_scene_buffer_to_cairo(buffer, lx, ly, rdata);
+		return;
+	}
+	case WLR_SCENE_NODE_RECT: {
+		struct wlr_scene_rect *rect = wlr_scene_rect_from_node(node);
+		float a = rect->color[3];
+
+		if (!wlr_scene_node_coords(node, &lx, &ly))
+			return;
+		if (!within_bounds(rdata, lx, ly, rect->width, rect->height))
+			return;
+		/* Scene rect colors are premultiplied; cairo wants straight. */
+		cairo_save(rdata->cr);
+		cairo_set_source_rgba(rdata->cr,
+		                      a > 0 ? rect->color[0] / a : 0,
+		                      a > 0 ? rect->color[1] / a : 0,
+		                      a > 0 ? rect->color[2] / a : 0, a);
+		cairo_rectangle(rdata->cr, lx + rdata->offset_x, ly + rdata->offset_y,
+		                rect->width, rect->height);
+		cairo_fill(rdata->cr);
+		cairo_restore(rdata->cr);
+		return;
+	}
+	case WLR_SCENE_NODE_TREE:
+		wl_list_for_each(child, &wlr_scene_tree_from_node(node)->children, link)
+			composite_scene_node_to_cairo(child, rdata);
+		return;
+	}
+}
+
 /** root.content([preserve_alpha]) - Get screenshot of entire desktop
  *
  * Returns a Cairo surface containing the current desktop content.
@@ -1178,7 +1254,7 @@ luaA_root_get_content(lua_State *L)
 	cairo_surface_t *surface;
 	cairo_t *cr;
 	int width, height;
-	struct screenshot_render_data rdata;
+	struct screenshot_render_data rdata = { 0 };
 	bool preserve_alpha = false;
 
 	/* Check for optional preserve_alpha parameter */
@@ -1221,10 +1297,10 @@ luaA_root_get_content(lua_State *L)
 	rdata.renderer = drw;
 	rdata.offset_x = 0;
 	rdata.offset_y = 0;
+	/* bound_w stays zero: the whole layout is the target. */
 
-	/* Iterate scene buffers for client content (GPU-rendered surfaces) */
-	wlr_scene_node_for_each_buffer(&scene->tree.node,
-		composite_scene_buffer_to_cairo, &rdata);
+	/* Walk the scene for client content and the chrome the renderer drew */
+	composite_scene_node_to_cairo(&scene->tree.node, &rdata);
 
 	/* Composite widgets in z-order: normal first, then ontop.
 	 * This ensures correct layering where ontop popups appear above titlebars. */

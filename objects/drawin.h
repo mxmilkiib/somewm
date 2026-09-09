@@ -11,10 +11,12 @@
 #include "common/luaclass.h"  /* For lua_class_t */
 #include "common/luaobject.h"  /* For LUA_OBJECT_FUNCS macro */
 #include "shadow.h"           /* For shadow_config_t, shadow_nodes_t */
+#include "../render_image.h"  /* For struct image_entry */
 
 /* Forward declarations */
 struct screen_t;
 struct drawable_t;
+struct widget_node;
 
 /* Drawin object structure - represents a drawable window (wibox/panel/popup)
  *
@@ -58,17 +60,10 @@ typedef struct drawin_t {
 	 * Pointer retrieved via luaA_object_ref_item, pushed via luaA_object_push_item */
 	struct drawable_t *drawable;   /* Direct C pointer for callback access */
 
-	/* Scene graph integration for rendering (Wayland-specific) */
-	struct wlr_scene_tree *scene_tree;      /* Container node for positioning */
-	struct wlr_scene_buffer *scene_buffer;  /* The actual rendered surface */
-
-	/* Border rendering (Wayland-specific, shaped border support) */
-	struct wlr_scene_buffer *border_buffer; /* Single buffer for shaped border */
 	color_t border_color_parsed;            /* Cached parsed color for efficient refresh */
 
 	/* Shadow support (compositor-level, replaces picom shadows) */
 	shadow_config_t *shadow_config;         /* Per-drawin override (NULL = use defaults) */
-	shadow_nodes_t shadow;                  /* Shadow scene nodes */
 
 	/* Shape properties (AwesomeWM compatibility)
 	 * These are cairo_surface_t* alpha masks, either A1 (AwesomeWM's
@@ -78,6 +73,29 @@ typedef struct drawin_t {
 	cairo_surface_t *shape_clip;            /* Drawing clip region */
 	cairo_surface_t *shape_input;           /* Input hit-test region (click-through) */
 	cairo_surface_t *shape_border;          /* Pre-rendered anti-aliased border (ARGB32) */
+
+	/* Renderer leaves (the Clay flip): stable image entries the declare
+	 * pass hands to the renderer as imageData. Each native surface is a
+	 * drawin-owned copy (masks applied), so a drawable resize can never
+	 * dangle the renderer's source; gen bumps whenever content changes.
+	 * shadow_entry_config is the memoized config the composite was built
+	 * from; the leaf's origin and the memo's size derive from it. */
+	struct image_entry content_entry;
+	struct image_entry border_entry;
+	struct image_entry shadow_entry;
+	shadow_config_t shadow_entry_config;
+
+	/* The converted widget chain (widget.h), outermost first and always
+	 * ending in the raster leaf that carries content_entry. NULL while the
+	 * drawable paints itself whole, which is every drawin lua/wibox/clay.lua
+	 * finds nothing to convert in. */
+	struct widget_node *widget_nodes;
+	size_t widget_nodes_len;
+	/* Whether the declare pass has put this chain in front of Clay yet.
+	 * Clay's element hashmap is persistent and answers a lookup with the
+	 * last box an id ever had, so without this a chain that changed since
+	 * the last frame would read back the boxes of the one it replaced. */
+	bool widget_nodes_declared;
 } drawin_t;
 
 /* Metatable name for drawin userdata */
@@ -112,9 +130,17 @@ void luaA_drawin_set_strut(lua_State *L, drawin_t *drawin, strut_t strut);
 
 /* Drawin geometry synchronization */
 void luaA_drawin_apply_geometry(drawin_t *drawin);
+/* Hand a renderer image entry a new owned surface (NULL clears it) */
+void drawin_entry_set(struct image_entry *entry, cairo_surface_t *owned);
 
 /* Drawin refresh cycle (called from main event loop) */
 void drawin_refresh(void);
+
+/* Re-feed the content entry from the drawable's pixels. Callers outside
+ * the widget path need it for state composited into the entry rather than
+ * drawn into it, which the systray is: dropping the tray has to repaint
+ * the host, or its icons stay baked in until something else redraws. */
+void drawin_refresh_drawable(drawin_t *drawin);
 
 /* Apply an A1 or ARGB32 shape mask to a surface.
  * Returns a new surface scaled by the mask's coverage.

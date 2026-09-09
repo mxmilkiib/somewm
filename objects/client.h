@@ -156,14 +156,18 @@ struct client_t
     } surface;
     /** Scene tree for this client */
     struct wlr_scene_tree *scene;
+    /** The render_state currently borrowing scene (render.h owner token) */
+    void *render_owner;
     /** Scene surface node */
     struct wlr_scene_tree *scene_surface;
     /** Popup parent tree: tracks scene_surface's position but is exempt
      * from client_get_clip()'s content clip (mirrors LayerSurface::popups),
      * since context menus routinely extend beyond the parent's bounds. */
     struct wlr_scene_tree *popups;
-    /** Border rectangles */
-    struct wlr_scene_rect *border[4];
+    /** C-side border recolor (focus tracking): the declare pass reads this
+     * when the Lua border_color property was never set. */
+    float border_rgba[4];
+    bool border_rgba_set;
     /** Shadow configuration (NULL = use defaults) */
     shadow_config_t *shadow_config;
     /** Shadow scene nodes */
@@ -406,6 +410,7 @@ void client_focus(client_t *);
 bool client_focus_update(client_t *);
 void client_focus_refresh(void);
 void client_refresh(void);
+void client_border_rgba(client_t *, float out[4]);
 void client_destroy_later(void);
 bool client_hasproto(client_t *, uint32_t);  /* Changed from xcb_atom_t */
 void client_ignore_enterleave_events(void);

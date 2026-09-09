@@ -22,6 +22,7 @@ local timer = require("gears.timer")
 local grect =  require("gears.geometry").rectangle
 local matrix = require("gears.matrix")
 local whierarchy = require("wibox.hierarchy")
+local wclay = require("wibox.clay")
 local unpack = unpack or table.unpack -- luacheck: globals unpack (compatibility with Lua 5.1)
 
 local visible_drawables = {}
@@ -133,10 +134,25 @@ local function do_redraw(self)
     self._dirty_area = cairo.Region.create()
     cr:clip()
 
+    -- Compile the front of the widget tree into Clay declarations. The
+    -- renderer draws what converted; the rest keeps painting into this
+    -- surface, which rides as the chain's innermost leaf. Below the empty
+    -- region check because every property that feeds a node dirties the
+    -- region on its way here.
+    local chain, leaf, leaf_parent, leaf_fg =
+        wclay.compile(self, self._widget_hierarchy)
+    local converted = self.drawable:_clay_nodes(chain)
+
     -- Draw the background
     cr:save()
 
-    if not capi.awesome.composite_manager_running then
+    if converted then
+        -- The chain's outermost node is this background, drawn by the
+        -- renderer. What is left here is the leaf, so the surface starts
+        -- empty and shows the chain through wherever the leaf does not draw.
+        cr.operator = cairo.Operator.SOURCE
+        cr:set_source_rgba(0, 0, 0, 0)
+    elseif not capi.awesome.composite_manager_running then
         -- This is pseudo-transparency: We draw the wallpaper in the background
         local wallpaper = surface.load_silently(capi.root.wallpaper(), false)
         cr.operator = cairo.Operator.SOURCE
@@ -147,12 +163,13 @@ local function do_redraw(self)
         end
         cr:paint()
         cr.operator = cairo.Operator.OVER
+        cr:set_source(self.background_color)
     else
         -- This is true transparency: We draw a translucent background
         cr.operator = cairo.Operator.SOURCE
+        cr:set_source(self.background_color)
     end
 
-    cr:set_source(self.background_color)
     cr:paint()
 
     cr:restore()
@@ -171,7 +188,18 @@ local function do_redraw(self)
     end
 
     -- Draw the widget
-    if self._widget_hierarchy then
+    if converted then
+        -- Only the leaf: every container above it is a Clay declaration now.
+        -- The leaf's own matrix is relative to its parent, so the parent's
+        -- matrix to the surface goes on first.
+        if leaf then
+            cr:save()
+            cr:set_source(leaf_fg)
+            cr:transform(leaf_parent:get_matrix_to_device():to_cairo_matrix())
+            leaf:draw(context, cr)
+            cr:restore()
+        end
+    elseif self._widget_hierarchy then
         cr:set_source(self.foreground_color)
         self._widget_hierarchy:draw(context, cr)
     end

@@ -149,6 +149,65 @@ Widget-layer consumers (`naughty.list`, `awful.widget.tasklist`, `awful.widget.t
 
 ---
 
+## Clay Draw Order (somewm 2.1)
+
+somewm 2.1 draws each output from one Clay layout tree. Every client, drawin and layer-shell surface is a Clay floating element with a `zIndex`. Clay sorts by `zIndex` and leaves equal values in declaration order, so clients sharing a `zIndex` draw in stack order and layer-shell surfaces oldest first.
+
+A client's `zIndex` follows `ontop`, `above`, `below` and `fullscreen`. A transient that sets none of them gets its parent's.
+
+| zIndex | draws |
+|--------|-------|
+| 10 | layer-shell background |
+| 20 | desktop clients |
+| 30 | desktop and splash drawins |
+| 40 | layer-shell bottom |
+| 50 | `below` clients |
+| 60 | normal clients |
+| 70 | drawins (wibars, popups) |
+| 80 | layer-shell top |
+| 90 | `above` clients |
+| 100 | dock drawins |
+| 105 | fullscreen backing rectangle |
+| 110 | fullscreen clients |
+| 120 | layer-shell overlay |
+| 130 | `ontop` clients |
+| 140 | `ontop` drawins |
+| 150 | override-redirect X11 windows |
+
+**Override-redirect X11 windows draw above everything.** X11 menus and tooltips set no stacking properties, so somewm gives them the top `zIndex`. AwesomeWM stacks them with the client that owns them, and somewm 2.0 left the result to scene insertion order. The lock screen is unaffected: it has its own Clay tree above this one.
+
+**A drawin's border and shadow do not accept pointer input.** Clicks fall through to whatever draws below, as in 2.0.
+
+**Clicking a client's border focuses that client.** In 2.0 the border was a separate scene rectangle that reported no client, so the click did nothing.
+
+**`border_color` set from Lua survives focus changes.** somewm recolors a client's border on focus only while the config has not set the color itself. AwesomeWM never recolors it.
+
+**xdg popups draw above the client's tiled neighbours.** A popup wider than its client is no longer covered by the next tile.
+
+**`client._scene_layer`** returns the name of the layer a client draws in. It is a test aid, not AwesomeWM API.
+
+---
+
+## Converted Widget Containers (somewm 2.1)
+
+A drawable's widget tree is compiled to Clay declarations from the root down, and the first widget the compile step cannot express keeps drawing itself with cairo into the drawable's surface, which the renderer shows as one image on top of the converted containers. `wibox.container.margin` and `wibox.container.background` convert; everything else, for now, does not. Widget code, signals and boxes are unchanged either way, and so is what a wibar looks like.
+
+A container stays on the cairo path when it carries something a Clay declaration does not say:
+
+- a subclass that overrides `:fit`, `:layout`, `:draw`, `before_draw_children` or `after_draw_children`
+- `visible = false`, an `opacity` other than 1, or a forced width or height
+- a background gradient, surface pattern or `bgimage`
+- a shape other than `gears.shape.rectangle` or `gears.shape.rounded_rect`, and a rounded shape together with a border width
+- a margin with `draw_empty = false`
+
+The whole drawable stays on the cairo path when its own background is not a solid color, when it has a background image, or when the drawin is shaped (`shape_bounding`, `shape_clip` or `shape_input`): those masks apply to the drawable's own pixels, which a converted container is no longer part of.
+
+**A margin's `color` draws above its child instead of below it.** The ring is the margin band, and the child is placed inside it, so the two do not overlap unless a widget draws outside its own box.
+
+**Screenshots include what the renderer draws as a flat color.** `root.content()` and `screen.content` now walk the scene for rectangles as well as buffers, so a converted container's background is in the capture. The same walk replaced `screen.content`'s own buffer pass, which ignored a scene buffer's destination size and scaled HiDPI captures wrong.
+
+---
+
 ## No-Op APIs
 
 These APIs exist and can be called without error, but have no effect on Wayland.
