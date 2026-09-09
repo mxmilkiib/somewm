@@ -3,7 +3,7 @@
 --
 -- awful.widget.taglist and tasklist are wrappers around a base layout, so a
 -- converted bar holds one element per tag or client below them rather than
--- one raster leaf for the whole list. The items are built from the widget
+-- one image leaf for the whole list. The items are built from the widget
 -- template, so the tag buttons on each item have to keep working through
 -- find_widgets over Clay's boxes. A tasklist item's `icon_role` may be an
 -- awful.widget.clienticon, as the bundled config has it, which shows its
@@ -35,7 +35,7 @@ local function nodes()
                 break
             end
             out[#out + 1] = { depth = #indent / 2, class = class,
-                raster = line:find(" raster ", 1, true) ~= nil, line = line }
+                image = line:find(" image ", 1, true) ~= nil, line = line }
         elseif line:sub(1, #want) == want then
             head = line
         end
@@ -43,10 +43,10 @@ local function nodes()
     return head, out
 end
 
-local function count(list, class, raster)
+local function count(list, class, image)
     local n = 0
     for _, node in ipairs(list) do
-        if node.class == class and node.raster == raster then
+        if node.class == class and node.image == image then
             n = n + 1
         end
     end
@@ -120,7 +120,7 @@ local steps = {
         assert(count(list, "wibox.widget.textbox", false) == 4,
             "expected four textboxes as text elements")
         assert(count(list, "awful.widget.clienticon", false) == 1
-            and count(list, "image", false) == 1,
+            and count(list, "image", true) == 1,
             "the task's clienticon is not an image element")
         io.stderr:write("[PASS] the lists pass through to their items\n")
         return true
@@ -133,7 +133,7 @@ local steps = {
             local _, list = nodes()
             local items = {}
             for _, node in ipairs(list) do
-                if node.class == "wibox.container.background" and not node.raster then
+                if node.class == "wibox.container.background" and not node.image then
                     items[#items + 1] = tonumber(node.line:match("box (%d+),"))
                 end
             end

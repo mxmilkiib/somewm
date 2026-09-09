@@ -5105,7 +5105,6 @@ luaA_state_drop_object_pointers(void)
 	foreach(d, globalconf.drawins) {
 		drawin_t *w = *d;
 		declare_handle_drop(w);
-		image_entry_set(&w->content_entry, NULL);
 		image_entry_set(&w->border_entry, NULL);
 		shadow_leaves_clear(&w->shadow);
 	}
@@ -5172,7 +5171,6 @@ clients_detach(client_snapshot_t **out, int *out_count)
 		for (j = 0; j < CLIENT_TITLEBAR_COUNT; j++) {
 			declare_handle_drop(c->titlebar[j].drawable);
 			widget_nodes_clear(&c->titlebar[j].widgets);
-			image_entry_set(&c->titlebar[j].content, NULL);
 		}
 
 		/* Copy entire client_t via memcpy */

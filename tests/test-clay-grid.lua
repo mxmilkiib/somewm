@@ -145,7 +145,7 @@ local steps = {
             assert(count < 20, "the calendar never converted: " .. (head or "no drawin"))
             return nil
         end
-        assert(head:match("converted: %d+ nodes, 0 raster"), "the calendar has raster nodes: " .. head)
+        assert(head:match("converted: %d+ nodes, 0 images"), "the calendar has image nodes: " .. head)
         local textboxes = {}
         for line in dump:gmatch("[^\n]* wibox%.widget%.textbox [^\n]*") do
             textboxes[#textboxes + 1] = line

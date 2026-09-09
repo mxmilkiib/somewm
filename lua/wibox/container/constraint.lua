@@ -16,30 +16,7 @@ local math = math
 
 local constraint = { mt = {} }
 
--- Layout a constraint layout
-function constraint:layout(_, width, height)
-    if self._private.widget then
-        return { base.place_widget_at(self._private.widget, 0, 0, width, height) }
-    end
-end
 
--- Fit a constraint layout into the given space
-function constraint:fit(context, width, height)
-    local w, h
-    if self._private.widget then
-        w = self._private.strategy(width, self._private.width)
-        h = self._private.strategy(height, self._private.height)
-
-        w, h = base.fit_widget(self, context, self._private.widget, w, h)
-    else
-        w, h = 0, 0
-    end
-
-    w = self._private.strategy(w, self._private.width)
-    h = self._private.strategy(h, self._private.height)
-
-    return w, h
-end
 
 --- The widget to be constrained.
 --
@@ -194,9 +171,6 @@ local function describe_constraint(w)
     local p = w._private
     local strategy = p.strategy_name
 
-    if w.layout ~= constraint.layout then
-        return nil
-    end
 
     local node = { specs = clay.whole_box(p.widget) }
 
@@ -214,7 +188,7 @@ local function describe_constraint(w)
     return node
 end
 
-constraint._clay = { describe = describe_constraint, fit = constraint.fit }
+constraint._clay = { describe = describe_constraint }
 
 return setmetatable(constraint, constraint.mt)
 

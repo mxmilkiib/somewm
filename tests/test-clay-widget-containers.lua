@@ -1,12 +1,4 @@
--- Test: margin and background containers convert to Clay declarations, and a
--- wibar drawn that way is pixel-identical to the same wibar painted whole.
---
--- Two things are checked. First, the boxes Clay solves for the converted
--- chain, read back through awesome._test_widget_boxes(). Second, that the
--- screen looks the same either way: setting a bgimage puts the drawable back on the path where
--- cairo paints every pixel (lua/wibox/clay.lua refuses a background image),
--- so the same tree renders twice, once converted and once whole, and the two
--- captures have to agree.
+-- Test container boxes and pixels, including shapes and surface backgrounds.
 --
 -- Run: make test-one TEST=tests/test-clay-widget-containers.lua
 
@@ -23,12 +15,6 @@ local BAR_BG, BOX_BG, BORDER_COLOR = "#101010", "#204080", "#ff8000"
 
 local cap = capture.new(s, BX, BY, BW, BH)
 local bar, box, captured, shaped
-
--- A step that runs `setup` once and then waits for the readback to say the
--- tree did or did not convert.
-local function step_until(converted, setup, what)
-    return capture.step_until(function() return bar end, converted, setup, what)
-end
 
 local steps = {
     -- A wibox built with a shape, the way awful.wibar applies the theme's
@@ -194,8 +180,7 @@ local steps = {
         return true
     end,
 
-    -- A rounded shape with a border keeps the background drawing itself: a
-    -- leaf in place of its subtree.
+    -- A rounded shape with a border refuses the background and its subtree.
     function(count)
         if count == 1 then
             box.bg = BOX_BG
@@ -203,12 +188,12 @@ local steps = {
             box.widget.margins = INNER
             return nil
         end
-        if #awesome._test_widget_boxes(bar.drawin) == 3 then
-            io.stderr:write("[PASS] a rounded border keeps the background on cairo\n")
+        if #awesome._test_widget_boxes(bar.drawin) == 2 then
+            io.stderr:write("[PASS] a rounded shape with a border refuses the background\n")
             box.shape = nil
             return true
         end
-        assert(count < 20, "a rounded border did not put the background on cairo")
+        assert(count < 20, "the background with a rounded shape and border was not refused")
     end,
 
     function(count)
@@ -235,13 +220,14 @@ local steps = {
         return true
     end,
 
-    -- A background image keeps the drawable painting whole; a
-    -- transparent one masks nothing away, so the pixels have to agree.
-    step_until(false, function()
-        bar.bgimage = cairo.ImageSurface(cairo.Format.ARGB32, 1, 1)
-    end, "a background image did not put the drawable back"),
-
+    -- A transparent surface bgimage keeps the widget tree visible.
     function(count)
+        if count == 1 then
+            bar.bgimage = cairo.ImageSurface(cairo.Format.ARGB32, 1, 1)
+            return nil
+        end
+        assert(#awesome._test_widget_boxes(bar.drawin) == 5, "bgimage changed the widget count")
+        assert(awesome._clay_tree(s):find(" image ", 1, true), "bgimage has no image node")
         return cap:compare(count, captured, "a background image")
     end,
 

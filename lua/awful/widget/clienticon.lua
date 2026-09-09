@@ -21,31 +21,7 @@ local function icon_surface(c)
     return s, w, h
 end
 
-function clienticon:draw(_, cr, width, height)
-    local s, w, h = icon_surface(self._private.client)
-    if not s then return end
-    local aspect = math.min(width / w, height / h)
-    cr:scale(aspect, aspect)
-    cr:set_source_surface(s, 0, 0)
-    cr:paint()
-end
 
-function clienticon:fit(_, width, height)
-    local _, w, h = icon_surface(self._private.client)
-    if not w then return 0, 0 end
-
-    if w > width then
-        h = h * width / w
-        w = width
-    end
-    if h > height then
-        w = w * height / h
-        h = height
-    end
-
-    local aspect = math.min(width / w, height / h)
-    return w * aspect, h * aspect
-end
 
 --- The widget's @{client}.
 --

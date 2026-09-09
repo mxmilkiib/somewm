@@ -16,10 +16,8 @@
 ---------------------------------------------------------------------------
 
 local clay = require("wibox.clay")
-local base  = require("wibox.widget.base" )
 local fixed = require("wibox.layout.fixed")
 local table = table
-local pairs = pairs
 local gtable  = require("gears.table")
 
 local stack = {mt={}}
@@ -70,35 +68,6 @@ local stack = {mt={}}
 -- @propemits true false
 -- @interface layout
 
-function stack:layout(_, width, height)
-    local result = {}
-    local spacing = self._private.spacing
-
-    width  = width  - math.abs(self._private.h_offset * #self._private.widgets) - 2*spacing
-    height = height - math.abs(self._private.v_offset * #self._private.widgets) - 2*spacing
-
-    local h_off, v_off = spacing, spacing
-
-    for _, v in pairs(self._private.widgets) do
-        table.insert(result, base.place_widget_at(v, h_off, v_off, width, height))
-        h_off, v_off = h_off + self._private.h_offset, v_off + self._private.v_offset
-        if self._private.top_only then break end
-    end
-
-    return result
-end
-
-function stack:fit(context, orig_width, orig_height)
-    local max_w, max_h = 0,0
-    local spacing = self._private.spacing
-
-    for _, v in pairs(self._private.widgets) do
-        local w, h = base.fit_widget(self, context, v, orig_width, orig_height)
-        max_w, max_h = math.max(max_w, w+2*spacing), math.max(max_h, h+2*spacing)
-    end
-
-    return math.min(max_w, orig_width), math.min(max_h, orig_height)
-end
 
 --- If only the first stack widget is drawn.
 --
@@ -233,8 +202,7 @@ local function describe_stack(w)
     local p = w._private
     local spacing, ho, vo = p.spacing or 0, p.h_offset or 0, p.v_offset or 0
 
-    if w.layout ~= stack.layout
-            or not clay.whole(spacing) or not clay.whole(ho) or not clay.whole(vo) then
+    if not clay.whole(spacing) or not clay.whole(ho) or not clay.whole(vo) then
         return nil
     end
 
@@ -259,7 +227,7 @@ local function describe_stack(w)
 end
 
 -- Fixed's constructor builds stack, so widget_name names fixed.
-stack._clay = { describe = describe_stack, fit = stack.fit, name = "wibox.layout.stack" }
+stack._clay = { describe = describe_stack, name = "wibox.layout.stack" }
 
 return setmetatable(stack, stack.mt)
 -- vim: filetype=lua:expandtab:shiftwidth=4:tabstop=8:softtabstop=4:textwidth=80

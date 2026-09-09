@@ -74,9 +74,10 @@ local steps = {
             return nil
         end
         local line = awesome._clay_tree(s):match("[^\n]*wibox.layout.manual[^\n]*")
-        assert(line and line:find(" raster", 1, true), "the callable point did not raster")
+        assert(not line, "wibox.layout.manual was not refused")
+        assert(#awesome._test_widget_boxes(bar.drawin) == 2, "the refused subtree still has boxes")
         bar.visible = false
-        io.stderr:write("[PASS] callable points return the manual layout to a raster\n")
+        io.stderr:write("[PASS] callable points refuse the manual layout\n")
         return true
     end,
 }

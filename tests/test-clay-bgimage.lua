@@ -72,7 +72,7 @@ local steps = {
             assert(count < 20, "the background never converted")
             return nil
         end
-        assert(head:find("converted: 5 nodes, 1 raster", 1, true), head)
+        assert(head:find("converted: 5 nodes, 1 images", 1, true), head)
         check_box(dump:match("[^\n]* image 20x20 natural [^\n]*"), 0, 0, 100, 60)
         local backgrounds = dump:gmatch("[^\n]*wibox.container.background[^\n]*")
         backgrounds()
@@ -92,7 +92,7 @@ local steps = {
         end
         local dump, head = nodes()
 
-        assert(head and head:find("converted: 4 nodes, 0 raster", 1, true), head)
+        assert(head and head:find("converted: 4 nodes, 0 images", 1, true), head)
         assert(not dump:find(" image ", 1, true), "the cleared background still has an image")
         assert(pixel(2, 2, "#00ff00"), "the cleared image hides the fill")
         assert(pixel(15, 15, "#0000ff"), "the child colour is missing")
@@ -107,12 +107,11 @@ local steps = {
             end
             return nil
         end
-        local _, head = nodes()
+        local dump, head = nodes()
 
-        assert(head and head:find("whole:", 1, true), "the painter did not raster the whole drawin")
-        assert(pixel(2, 2, "#ff0000"), "the painter's red background is missing")
-        assert(pixel(15, 15, "#0000ff"), "the painter covers the child")
-        io.stderr:write("[PASS] a function bgimage paints the whole drawin\n")
+        assert(head and head:find("converted", 1, true), "the drawin has no tree")
+        assert(not dump:find(" image ", 1, true), "the refused painter has an image node")
+        io.stderr:write("[PASS] a function bgimage leaves out its container\n")
         return true
     end,
     function()

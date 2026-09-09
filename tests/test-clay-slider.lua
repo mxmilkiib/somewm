@@ -36,7 +36,7 @@ local steps = {
                 bar_color = "#00ff00", handle_color = "#ff0000",
                 handle_width = 20, bar_height = 10, widget = wibox.widget.slider,
             }
-            -- The empty margin keeps the tree inspectable when the slider rasters.
+            -- The empty margin keeps the tree inspectable when the slider is refused.
             bar = wibox { x = geo.x + 100, y = geo.y + 100, width = 200, height = 40,
                 screen = s, visible = true, bg = BG,
                 widget = wibox.container.margin(slider) }

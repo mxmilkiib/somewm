@@ -39,7 +39,6 @@ local setmetatable = setmetatable
 local ipairs = ipairs
 local math = math
 local base = require("wibox.widget.base")
-local color = require("gears.color")
 local beautiful = require("beautiful")
 local shape = require("gears.shape")
 local gtable = require("gears.table")
@@ -338,208 +337,10 @@ local properties = { "border_color", "color"     , "background_color",
                      "paddings",
                    }
 
-function progressbar.draw(pbar, _, cr, width, height)
-    local ticks_gap = pbar._private.ticks_gap or 1
-    local ticks_size = pbar._private.ticks_size or 4
 
-    -- We want one pixel wide lines
-    cr:set_line_width(1)
-
-    local max_value = pbar._private.max_value
-
-    local value = math.min(max_value, math.max(0, pbar._private.value))
-
-    if value >= 0 then
-        value = value / max_value
-    end
-    local border_width = pbar._private.border_width
-        or beautiful.progressbar_border_width or 0
-
-    local bcol = pbar._private.border_color or beautiful.progressbar_border_color
-
-    border_width = bcol and border_width or 0
-
-    local bg = pbar._private.background_color or
-        beautiful.progressbar_bg or "#ff0000aa"
-
-    local bg_width, bg_height = width, height
-
-    local clip = pbar._private.clip ~= false and beautiful.progressbar_clip ~= false
-
-    -- Apply the margins
-    local margin = pbar._private.margins or beautiful.progressbar_margins
-
-    if margin then
-        if type(margin) == "number" then
-            cr:translate(margin, margin)
-            bg_width, bg_height = bg_width - 2*margin, bg_height - 2*margin
-        else
-            cr:translate(margin.left or 0, margin.top or 0)
-            bg_height = bg_height -
-                (margin.top  or 0) - (margin.bottom or 0)
-            bg_width = bg_width   -
-                (margin.left or 0) - (margin.right  or 0)
-        end
-    end
-
-    -- Draw the background shape
-    if border_width > 0 then
-        -- Cairo draw half of the border outside of the path area
-        cr:translate(border_width/2, border_width/2)
-        bg_width, bg_height = bg_width - border_width, bg_height - border_width
-        cr:set_line_width(border_width)
-    end
-
-    local background_shape = pbar._private.shape or
-        beautiful.progressbar_shape or shape.rectangle
-
-    background_shape(cr, bg_width, bg_height)
-
-    cr:set_source(color(bg))
-
-    local over_drawn_width  = bg_width  + border_width
-    local over_drawn_height = bg_height + border_width
-
-    if border_width > 0 then
-        cr:fill_preserve()
-
-        -- Draw the border
-        cr:set_source(color(bcol))
-
-        cr:stroke()
-
-        over_drawn_width  = over_drawn_width  - 2*border_width
-        over_drawn_height = over_drawn_height - 2*border_width
-    else
-        cr:fill()
-    end
-
-    -- Undo the translation
-    cr:translate(-border_width/2, -border_width/2)
-
-    -- Make sure the bar stay in the shape
-    if clip then
-        background_shape(cr, bg_width, bg_height)
-        cr:clip()
-        cr:translate(border_width, border_width)
-    else
-        -- Assume the background size is irrelevant to the bar itself
-        if type(margin) == "number" then
-            cr:translate(-margin, -margin)
-        else
-            cr:translate(-(margin.left or 0), -(margin.top or 0))
-        end
-
-        over_drawn_height = height
-        over_drawn_width  = width
-    end
-
-    -- Apply the padding
-    local padding = pbar._private.paddings or beautiful.progressbar_paddings
-
-    if padding then
-        if type(padding) == "number" then
-            cr:translate(padding, padding)
-            over_drawn_height = over_drawn_height - 2*padding
-            over_drawn_width  = over_drawn_width  - 2*padding
-        else
-            cr:translate(padding.left or 0, padding.top or 0)
-
-            over_drawn_height = over_drawn_height -
-                (padding.top  or 0) - (padding.bottom or 0)
-            over_drawn_width = over_drawn_width   -
-                (padding.left or 0) - (padding.right  or 0)
-        end
-    end
-
-    over_drawn_width  = math.max(over_drawn_width , 0)
-    over_drawn_height = math.max(over_drawn_height, 0)
-
-    local rel_x = over_drawn_width * value
-
-
-    -- Draw the progressbar shape
-
-    local explicit_bar_shape = pbar._private.bar_shape or beautiful.progressbar_bar_shape
-    local bar_shape = explicit_bar_shape or shape.rectangle
-
-    local bar_border_width = pbar._private.bar_border_width or
-        beautiful.progressbar_bar_border_width or pbar._private.border_width or
-        beautiful.progressbar_border_width or 0
-
-    local bar_border_color = pbar._private.bar_border_color or
-        beautiful.progressbar_bar_border_color
-
-    bar_border_width = bar_border_color and bar_border_width or 0
-
-    over_drawn_width  = over_drawn_width  - bar_border_width
-    over_drawn_height = over_drawn_height - bar_border_width
-    cr:translate(bar_border_width/2, bar_border_width/2)
-
-    if pbar._private.ticks and explicit_bar_shape then
-        local tr_off = 0
-
-        -- Make all the shape and fill later in case the `color` is a gradient.
-        for _=0, width / (ticks_size+ticks_gap)-border_width do
-            bar_shape(cr, ticks_size - (bar_border_width/2), over_drawn_height)
-            cr:translate(ticks_size+ticks_gap, 0)
-            tr_off = tr_off + ticks_size+ticks_gap
-        end
-
-        -- Re-align the (potential) color gradients to 0,0.
-        cr:translate(-tr_off, 0)
-
-        if bar_border_width > 0 then
-            cr:set_source(color(bar_border_color))
-            cr:set_line_width(bar_border_width)
-            cr:stroke_preserve()
-        end
-
-        cr:set_source(color(pbar._private.color or beautiful.progressbar_fg or "#ff0000"))
-
-        cr:fill()
-    else
-        bar_shape(cr, rel_x, over_drawn_height)
-
-        cr:set_source(color(pbar._private.color or beautiful.progressbar_fg or "#ff0000"))
-
-        if bar_border_width > 0 then
-            cr:fill_preserve()
-            cr:set_source(color(bar_border_color))
-            cr:set_line_width(bar_border_width)
-            cr:stroke()
-        else
-            cr:fill()
-        end
-    end
-
-    -- Legacy "ticks" bars. It looks horrible, but to avoid breaking the
-    -- behavior, so be it.
-    if pbar._private.ticks  and not explicit_bar_shape then
-        for i=0, width / (ticks_size+ticks_gap)-border_width do
-            local rel_offset = over_drawn_width / 1 - (ticks_size+ticks_gap) * i
-
-            if rel_offset <= rel_x then
-                cr:rectangle(rel_offset,
-                                border_width,
-                                ticks_gap,
-                                over_drawn_height)
-            end
-        end
-        cr:set_source(color(pbar._private.background_color or "#000000aa"))
-        cr:fill()
-    end
-end
-
-function progressbar:fit(_, width, height)
-    return width, height
-end
 
 local function describe_progressbar(w)
     local p = w._private
-    if w.draw ~= progressbar.draw then
-        return nil
-    end
     if p.ticks then
         return nil
     end
@@ -628,7 +429,7 @@ local function describe_progressbar(w)
     } }
 end
 
-progressbar._clay = { describe = describe_progressbar, fit = progressbar.fit }
+progressbar._clay = { describe = describe_progressbar }
 
 --- Set the progressbar value.
 --

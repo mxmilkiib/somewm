@@ -89,10 +89,10 @@ int declare_widget_boxes(const struct widget_host *host, int (*boxes)[4]);
 int declare_widget_hits(const struct widget_host *host, double x, double y, int *out, int cap);
 
 /* Solve d's stored widget tree on its own, now, and read back the box of
- * every widget node in preorder (as declare_widget_boxes) plus each raster
- * leaf's device size in leaf order. Returns the box count, 0 for a drawin
+ * every widget node in preorder (as declare_widget_boxes).
+ * Returns the box count, 0 for a drawin
  * with no tree or no output. */
-int declare_widget_solve(const struct widget_host *host, int (*boxes)[4], int (*dev)[2]);
+int declare_widget_solve(const struct widget_host *host, int (*boxes)[4]);
 
 /* Test hook (awesome._test_declare_order): the desktop band's draw order for
  * m, bottom to top, one entry per declared object. A fresh solve of the

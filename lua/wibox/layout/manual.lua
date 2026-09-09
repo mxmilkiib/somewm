@@ -54,62 +54,12 @@ function manual_layout:insert(index, widget)
     self:emit_signal("widget::layout_changed")
 end
 
---- Remove one or more widgets from the layout.
---
--- The last parameter can be a boolean, forcing a recursive seach of the
--- widget(s) to remove.
---
--- @method remove_widgets
--- @tparam widget ... Widgets that should be removed (must at least be one)
--- @treturn boolean If the operation is successful
-
-
-function manual_layout:fit(_, width, height)
-    return width, height
-end
 
 local function geometry(self, new)
     self._new_geo = new
     return self._new_geo or self
 end
 
-function manual_layout:layout(context, width, height)
-    local res = {}
-
-    for k, v in ipairs(self._private.widgets) do
-        local pt = self._private.pos[k] or {x=0,y=0}
-        local w, h = base.fit_widget(self, context, v, width, height)
-
-        -- Make sure the signature is compatible with `awful.placement`. `Wibox`,
-        -- doesn't depend on `awful`, but it is still nice not to have to code
-        -- geometry functions again and again.
-        if type(pt) == "function" or (getmetatable(pt) or {}).__call then
-            local geo = {
-                x      = 0,
-                y      = 0,
-                width  = w,
-                height = h,
-                geometry = geometry,
-            }
-            pt = pt(geo, {
-                parent = {
-                    x=0, y=0, width = width, height = height, geometry = geometry
-                }
-            })
-            -- Trick to ensure compatibility with `awful.placement`
-            gtable.crush(pt, geo._new_geo or {})
-        end
-
-        assert(pt.x)
-        assert(pt.y)
-
-        table.insert(res, base.place_widget_at(
-            v, pt.x, pt.y, pt.width or w, pt.height or h
-        ))
-    end
-
-    return res
-end
 
 function manual_layout:add(...)
     local wdgs = {}
@@ -250,9 +200,6 @@ local function new_manual(...)
 end
 
 local function describe_manual(w)
-    if w.layout ~= manual_layout.layout then
-        return nil
-    end
     local node = { w = "grow", h = "grow", specs = {} }
     for k, child in ipairs(w._private.widgets) do
         local pt = w._private.pos[k] or { x = 0, y = 0 }
@@ -272,7 +219,7 @@ local function describe_manual(w)
     return node
 end
 
-manual_layout._clay = { describe = describe_manual, fit = manual_layout.fit }
+manual_layout._clay = { describe = describe_manual }
 
 --@DOC_fixed_COMMON@
 

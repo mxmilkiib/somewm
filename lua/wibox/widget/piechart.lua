@@ -11,12 +11,10 @@
 -- @supermodule wibox.widget.base
 ---------------------------------------------------------------------------
 
-local color     = require( "gears.color"       )
 local base      = require( "wibox.widget.base" )
 local beautiful = require( "beautiful"         )
 local gtable    = require( "gears.table"       )
 local pie       = require( "gears.shape"       ).pie
-local unpack    = unpack or table.unpack -- luacheck: globals unpack (compatibility with Lua 5.1)
 
 local clay = require("wibox.clay")
 
@@ -24,33 +22,6 @@ local module = {}
 
 local piechart = {}
 
-local function draw_label(cr,angle,radius,center_x,center_y,text)
-    local edge_x = center_x+(radius/2)*math.cos(angle)
-    local edge_y = center_y+(radius/2)*math.sin(angle)
-
-    cr:move_to(edge_x, edge_y)
-
-    cr:rel_line_to(radius*math.cos(angle), radius*math.sin(angle))
-
-    local x,y = cr:get_current_point()
-
-    cr:rel_line_to(x > center_x and radius/2 or -radius/2, 0)
-
-    local ext = cr:text_extents(text)
-
-    cr:rel_move_to(
-        (x>center_x and radius/2.5 or (-radius/2.5 - ext.width)),
-        ext.height/2
-    )
-
-    cr:show_text(text) --TODO eventually port away from the toy API
-    cr:stroke()
-
-    cr:arc(edge_x, edge_y,2,0,2*math.pi)
-    cr:arc(x+(x>center_x and radius/2 or -radius/2),y,2,0,2*math.pi)
-
-    cr:fill()
-end
 
 local function label_path(cr,angle,radius,center_x,center_y,text)
     local edge_x = center_x+(radius/2)*math.cos(angle)
@@ -86,83 +57,7 @@ local function compute_sum(data)
     return ret
 end
 
-local function draw(self, _, cr, width, height)
-    if not self._private.data_list then return end
 
-    local radius = (height > width and width or height) / 4
-    local sum, start, count = compute_sum(self._private.data_list),0,0
-    local has_label = self._private.display_labels ~= false
-
-    -- Labels need to be drawn later so the original source is kept
-    -- use get_source() wont work are the reference cannot be set from Lua(?)
-    local labels = {}
-
-    local border_width = self:get_border_width() or 1
-    local border_color = self:get_border_color()
-    border_color       = border_color and color(border_color)
-
-    -- Draw the pies
-    cr:save()
-    cr:set_line_width(border_width)
-
-    -- Alternate from a given sets or colors
-    local colors = self:get_colors()
-    local col_count = colors and #colors or 0
-
-    for _, entry in ipairs(self._private.data_list) do
-        local k, v = entry[1], entry[2]
-        local end_angle = start + 2*math.pi*(v/sum)
-
-        local col = colors and color(colors[math.fmod(count,col_count)+1]) or nil
-
-        pie(cr, width, height, start, end_angle, radius)
-
-        if col then
-            cr:save()
-            cr:set_source(color(col))
-        end
-
-        if border_width > 0 then
-            if col then
-                cr:fill_preserve()
-                cr:restore()
-            end
-
-            -- By default, it uses the fg color
-            if border_color then
-                cr:set_source(border_color)
-            end
-            cr:stroke()
-        elseif col then
-            cr:fill()
-            cr:restore()
-        end
-
-        -- Store the label position for later
-        if has_label then
-            table.insert(labels, {
-                --[[angle   ]] start+(end_angle-start)/2,
-                --[[radius  ]] radius,
-                --[[center_x]] width/2,
-                --[[center_y]] height/2,
-                --[[text    ]] k,
-            })
-        end
-        start,count = end_angle,count+1
-    end
-    cr:restore()
-
-    -- Draw the labels
-    if has_label then
-        for _, v in ipairs(labels) do
-            draw_label(cr, unpack(v))
-        end
-    end
-end
-
-local function fit(_, _, width, height)
-    return width, height
-end
 
 --- The pie chart data list.
 --
@@ -291,8 +186,6 @@ local function new(data_list)
 
     gtable.crush(ret, piechart)
 
-    rawset(ret, "fit" , fit )
-    rawset(ret, "draw", draw)
 
     ret:set_data_list(data_list)
 
@@ -300,9 +193,6 @@ local function new(data_list)
 end
 
 local function describe_piechart(w, fg)
-    if rawget(w, "draw") ~= draw then
-        return nil
-    end
     local data = w._private.data_list
     if not data then return { w = "grow", h = "grow" } end
     local sum = compute_sum(data)
@@ -353,7 +243,7 @@ local function describe_piechart(w, fg)
         local angle, text = label[1], label[2]
         specs[#specs + 1] = {
             float = true, w = "grow", h = "grow", stroke = foreground,
-            -- Neither wibox.hierarchy nor wibox.drawable sets a line width;
+            -- The shape recorder starts with the cairo default line width;
             -- draw_label strokes with cairo's default after the outer restore.
             stroke_width = 2,
             shape = function(width, height)
@@ -383,7 +273,7 @@ local function describe_piechart(w, fg)
     return node
 end
 
-piechart._clay = { describe = describe_piechart, fit = fit }
+piechart._clay = { describe = describe_piechart }
 
 return setmetatable(module, { __call = function(_, ...) return new(...) end })
 -- vim: filetype=lua:expandtab:shiftwidth=4:tabstop=8:softtabstop=4:textwidth=80

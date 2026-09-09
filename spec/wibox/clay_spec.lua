@@ -8,16 +8,21 @@ local background = require("wibox.container.background")
 local margin = require("wibox.container.margin")
 local rotate = require("wibox.container.rotate")
 local fixed = require("wibox.layout.fixed")
-local utils = require("wibox.test_utils")
+local base = require("wibox.widget.base")
+local gdebug = require("gears.debug")
 local wclay = require("wibox.clay")
 
 local BG = gcolor("#102030")
 local BG_RGBA = { 0x10/255, 0x20/255, 0x30/255, 1 }
 local context = { dpi = 96 }
 
--- A widget the tree can never convert, so it always ends up on a leaf.
-local function leaf_widget()
-    return utils.widget_stub(10, 10)
+-- A described color leaf with a preferred size.
+local function leaf_widget(width, height)
+    local w = base.make_widget()
+    w._clay = { name = "leaf", describe = function(_, fg)
+        return { w = width or 10, h = height or 10, bg = wclay.solid_rgba(fg) }
+    end }
+    return w
 end
 
 -- compile() walks the widget tree, in a 100x100 drawable: no hierarchy, no
@@ -32,8 +37,7 @@ local function compile(bg, root, fg)
     return wclay.compile(drawable, root, context, 100, 100)
 end
 
--- The node for a widget put under a converted margin, so a widget that
--- degrades shows up as the margin's raster leaf instead of a nil tree.
+-- The child node under a margin, or nil when the child is refused.
 local function layout_node(w)
     local tree = compile(BG, margin(w, 1, 1, 1, 1), BG)
 
@@ -47,7 +51,7 @@ local function fixed_node(w)
 end
 
 local function degraded(w)
-    return layout_node(w).raster == true
+    return layout_node(w) == nil
 end
 
 -- The tree's nodes, outermost first, following the only child down: what
@@ -63,6 +67,26 @@ local function chain(tree)
 end
 
 describe("wibox.clay", function()
+    it("offers flex children equal shares less the gaps", function()
+        local cairo = require("lgi").cairo
+        local imagebox = require("wibox.widget.imagebox")
+        local flex = require("wibox.layout.flex")
+        local surface = cairo.ImageSurface(cairo.Format.ARGB32, 10, 10)
+        local layout = flex.vertical(imagebox(surface), imagebox(surface))
+
+        for _, spacing in ipairs { 0, 10 } do
+            layout.spacing = spacing
+            local tree = compile(BG, layout, BG)
+            local children = tree.children[1].children
+            assert.is_equal(2, #children)
+            for _, child in ipairs(children) do
+                local image = child.children[1]
+                assert.is_equal(50 - spacing / 2, image.w)
+                assert.is_equal(50 - spacing / 2, image.h)
+            end
+        end
+    end)
+
     it("records both lines when a shape strokes between them", function()
         local ops = wclay.shape_ops(function(cr)
             cr:move_to(1, 2)
@@ -75,11 +99,15 @@ describe("wibox.clay", function()
         assert.is_same({ 0, 1, 2, 1, 3, 4, 0, 5, 6, 1, 7, 8 }, ops)
     end)
 
-    it("refuses a drawable whose own background is not a solid color", function()
-        assert.is_nil(compile(nil, margin(leaf_widget(), 1, 1, 1, 1), BG))
-        assert.is_nil(compile(
-            gcolor("linear:0,0:10,0:0,#000000:1,#ffffff"),
-            margin(leaf_widget(), 1, 1, 1, 1), BG))
+    it("keeps a transparent background or a gradient shape", function()
+        local tree = compile(nil, margin(leaf_widget(), 1, 1, 1, 1), BG)
+        assert.is_nil(tree.bg)
+        assert.is_equal(1, #tree.children)
+        tree = compile(gcolor("linear:0,0:10,0:0,#000000:1,#ffffff"),
+            margin(leaf_widget(), 1, 1, 1, 1), BG)
+        assert.is_nil(tree.bg)
+        assert.is_function(tree.children[1].shape)
+        assert.is_equal(2, #tree.children[1].fill.stops)
     end)
 
     it("converts a drawable whose own background is transparent", function()
@@ -92,17 +120,20 @@ describe("wibox.clay", function()
         assert.is_equal(2, #chain(tree) - 1)
     end)
 
-    it("refuses a drawable with a background image", function()
-        assert.is_nil(wclay.compile({
-            background_color = BG,
-            foreground_color = BG,
-            background_image = "anything",
-        }, margin(leaf_widget(), 1, 1, 1, 1), context, 100, 100))
+    it("wraps the widget in a surface background image", function()
+        local cairo = require("lgi").cairo
+        local surface = cairo.ImageSurface(cairo.Format.ARGB32, 1, 1)
+        local tree, leaves = wclay.compile({
+            background_color = BG, foreground_color = BG, background_image = surface,
+        }, margin(leaf_widget(), 1, 1, 1, 1), context, 100, 100)
+        assert.is_equal(surface._native, tree.children[1].image)
+        assert.is_equal(1, #tree.children[1].children)
+        assert.is_equal(1, #leaves)
     end)
 
-    it("refuses a tree whose root converts nothing", function()
-        assert.is_nil(compile(BG, leaf_widget(), BG))
-        assert.is_nil(compile(BG, nil, BG))
+    it("keeps the drawable background when the root is absent or refused", function()
+        assert.is_same({}, compile(BG, base.make_widget(), BG).children)
+        assert.is_same({}, compile(BG, nil, BG).children)
     end)
 
     it("maps margins onto padding, the child growing into them", function()
@@ -123,14 +154,11 @@ describe("wibox.clay", function()
         assert.is_equal("fit", nodes[2].h)
         assert.is_equal(100, nodes[2].wmin)
         assert.is_equal(100, nodes[2].hmin)
-        assert.is_true(nodes[3].raster)
+        assert.is_equal("leaf", nodes[3].class)
         assert.is_equal("grow", nodes[3].w)
         assert.is_equal(10, nodes[3].wmin)
         assert.is_equal(10, nodes[3].hmin)
-        assert.is_equal(1, #leaves)
-        assert.is_equal(w, leaves[1].widget)
-        assert.is_equal(nodes[3], leaves[1].node)
-        assert.is_equal(BG, leaves[1].fg)
+        assert.is_equal(0, #leaves)
     end)
 
     it("maps a margin color onto a border of the same widths", function()
@@ -177,7 +205,7 @@ describe("wibox.clay", function()
         local nodes = chain(compile(BG, w, BG))
 
         assert.is_equal(8, nodes[2].radius)
-        assert.is_true(nodes[3].raster)
+        assert.is_equal("leaf", nodes[3].class)
         assert.is_nil(nodes[3].radius)
     end)
 
@@ -189,8 +217,8 @@ describe("wibox.clay", function()
 
         assert.is_equal(6, nodes[2].radius)
         -- A function whose radius follows the size draws itself.
-        assert.is_nil(compile(BG,
-            background(leaf_widget(), "#00ff00", gshape.rounded_bar), BG))
+        assert.is_same({}, compile(BG,
+            background(leaf_widget(), "#00ff00", gshape.rounded_bar), BG).children)
     end)
 
     it("converts a rounded background under a margin", function()
@@ -204,9 +232,8 @@ describe("wibox.clay", function()
         assert.is_equal(4, #nodes)
         assert.is_same({ 5, 5, 5, 5 }, nodes[2].pad)
         assert.is_equal(8, nodes[3].radius)
-        assert.is_true(nodes[4].raster)
-        assert.is_equal(1, #leaves)
-        assert.is_equal(nodes[4], leaves[1].node)
+        assert.is_equal("leaf", nodes[4].class)
+        assert.is_equal(0, #leaves)
     end)
 
     it("converts a rounded background over a converting child", function()
@@ -223,8 +250,8 @@ describe("wibox.clay", function()
         assert.is_equal(4, #nodes)
         assert.is_equal(8, nodes[2].radius)
         assert.is_same({ 2, 2, 2, 2 }, nodes[3].pad)
-        assert.is_true(nodes[4].raster)
-        assert.is_equal(1, #leaves)
+        assert.is_equal("leaf", nodes[4].class)
+        assert.is_equal(0, #leaves)
     end)
 
     it("converts a rounded background with nothing filling it", function()
@@ -236,7 +263,7 @@ describe("wibox.clay", function()
 
         assert.is_equal(8, nodes[2].radius)
         assert.is_nil(nodes[2].bg)
-        assert.is_true(nodes[3].raster)
+        assert.is_equal("leaf", nodes[3].class)
     end)
 
     it("refuses a rounded background that also has a border", function()
@@ -246,7 +273,7 @@ describe("wibox.clay", function()
         w.border_width = 1
         w.border_color = "#0000ff"
 
-        assert.is_nil(compile(BG, w, BG))
+        assert.is_same({}, compile(BG, w, BG).children)
     end)
 
     it("converts containers down to the first it cannot", function()
@@ -256,33 +283,27 @@ describe("wibox.clay", function()
             background(margin(stopper, 4, 4, 4, 4), "#00ff00"), BG)
         local nodes = chain(tree)
 
-        -- background, margin, then the rotate is the leaf; the margin
-        -- inside it stays on the leaf with everything below.
-        assert.is_equal(4, #nodes)
+        -- The rotate and its subtree are absent beneath the margin.
+        assert.is_equal(3, #nodes)
         assert.is_same({ 0, 1, 0, 1 }, nodes[2].bg)
         assert.is_same({ 4, 4, 4, 4 }, nodes[3].pad)
-        assert.is_true(nodes[4].raster)
-        assert.is_equal(stopper, leaves[1].widget)
+        assert.is_nil(nodes[4])
     end)
 
     it("carries the innermost background foreground to the leaf", function()
-        local fg = gcolor("#ff00ff")
         local w = background(leaf_widget(), "#00ff00")
-
-        w.fg = fg
-
-        local _, leaves = compile(BG, w, BG)
-
-        assert.is_equal(fg, leaves[1].fg)
+        w.fg = gcolor("#ff00ff")
+        local nodes = chain(compile(BG, w, BG))
+        assert.is_same({ 1, 0, 1, 1 }, nodes[3].bg)
     end)
 
-    it("stops at a widget whose drawing the tree does not carry", function()
-        for prop, value in pairs { visible = false, opacity = 0.5 } do
-            local w = margin(leaf_widget(), 3, 3, 3, 3)
-
-            w[prop] = value
-            assert.is_nil(compile(BG, w, BG), prop)
-        end
+    it("omits invisible widgets and multiplies opacity through children", function()
+        local w = margin(leaf_widget(), 3, 3, 3, 3)
+        w.visible = false
+        assert.is_same({}, compile(BG, w, BG).children)
+        w.visible, w.opacity = true, 0.5
+        local nodes = chain(compile(BG, w, BG))
+        assert.is_equal(0.5, nodes[3].bg[4])
     end)
 
     it("tells Clay a forced size where a parent asks for one", function()
@@ -302,44 +323,27 @@ describe("wibox.clay", function()
         assert.is_equal(20, node.wmin)
     end)
 
-    it("sizes a leaf by its fit, growing on an axis it takes whole", function()
-        -- A stub answers its own size whatever it is offered: no fill,
-        -- even at exactly the bound. A widget that answers the bound fills.
-        local node = fixed_node(utils.widget_stub(30, 90))
 
-        assert.is_true(node.raster)
-        assert.is_equal(30, node.w)
-        assert.is_equal("grow", node.h)
-        assert.is_equal(90, node.hmin)
-
-        local fill = utils.widget_stub(30, 100)
-
-        rawset(fill, "fit", function(_, _, w, h) return 30, h end)
-        node = fixed_node(fill)
-        assert.is_equal(30, node.w)
-        assert.is_equal("grow", node.h)
-        assert.is_nil(node.hmin)
-    end)
 
     it("stops at a subclass that overrides the layout it converted", function()
         local w = margin(leaf_widget(), 3, 3, 3, 3)
 
         rawset(w, "layout", function() return {} end)
-        assert.is_nil(compile(BG, w, BG))
+        assert.is_same({}, compile(BG, w, BG).children)
     end)
 
     it("stops at a margin that shrinks away with its child", function()
         local w = margin(leaf_widget(), 3, 3, 3, 3)
 
         w.draw_empty = false
-        assert.is_nil(compile(BG, w, BG))
+        assert.is_same({}, compile(BG, w, BG).children)
     end)
 end)
 
 describe("wibox.clay fixed", function()
     it("maps direction and spacing, children at their size along it, whole across", function()
-        local l = fixed.horizontal(utils.widget_stub(10, 5),
-            margin(utils.widget_stub(20, 5), 1, 1, 1, 1))
+        local l = fixed.horizontal(leaf_widget(10, 5),
+            margin(leaf_widget(20, 5), 1, 1, 1, 1))
 
         l.spacing = 4
 
@@ -348,7 +352,7 @@ describe("wibox.clay fixed", function()
         assert.is_equal("x", node.dir)
         assert.is_equal(4, node.gap)
         assert.is_equal(2, #node.children)
-        assert.is_true(node.children[1].raster)
+        assert.is_equal("leaf", node.children[1].class)
         assert.is_equal(10, node.children[1].w)
         assert.is_equal("grow", node.children[1].h)
         assert.is_equal(5, node.children[1].hmin)
@@ -356,7 +360,7 @@ describe("wibox.clay fixed", function()
         assert.is_nil(node.children[2].w)
         assert.is_equal("grow", node.children[2].h)
 
-        local v = layout_node(fixed.vertical(utils.widget_stub(5, 10)))
+        local v = layout_node(fixed.vertical(leaf_widget(5, 10)))
 
         assert.is_equal("y", v.dir)
         assert.is_equal(10, v.children[1].h)
@@ -364,7 +368,7 @@ describe("wibox.clay fixed", function()
     end)
 
     it("grows the last child when fill_space is set", function()
-        local l = fixed.horizontal(utils.widget_stub(10, 5), utils.widget_stub(20, 5))
+        local l = fixed.horizontal(leaf_widget(10, 5), leaf_widget(20, 5))
 
         l:fill_space(true)
 
@@ -375,39 +379,43 @@ describe("wibox.clay fixed", function()
         assert.is_equal(20, node.children[2].wmin)
     end)
 
-    it("declares every child, an invisible one at no size", function()
-        local hidden = utils.widget_stub(10, 5)
+    it("omits invisible children", function()
+        local hidden = leaf_widget(10, 5)
 
         hidden._private.visible = false
 
-        local l = fixed.horizontal(utils.widget_stub(10, 5), hidden,
-            utils.widget_stub(0, 5), utils.widget_stub(20, 5))
+        local l = fixed.horizontal(leaf_widget(10, 5), hidden,
+            leaf_widget(0, 5), leaf_widget(20, 5))
         local node = layout_node(l)
 
-        assert.is_equal(4, #node.children)
+        assert.is_equal(3, #node.children)
         assert.is_equal(0, node.children[2].w)
-        assert.is_equal(0, node.children[3].w)
-        assert.is_equal(20, node.children[4].w)
+        assert.is_equal(20, node.children[3].w)
     end)
 
-    it("degrades for a spacing widget, negative spacing and overrides", function()
-        local l = fixed.horizontal(utils.widget_stub(10, 5), utils.widget_stub(10, 5))
+    it("is refused for a spacing widget, negative spacing and overrides", function()
+        local l = fixed.horizontal(leaf_widget(10, 5), leaf_widget(10, 5))
 
         l.spacing = 3
-        l.spacing_widget = utils.widget_stub(3, 5)
+        l.spacing_widget = leaf_widget(3, 5)
         assert.is_true(degraded(l))
 
-        l = fixed.horizontal(utils.widget_stub(10, 5), utils.widget_stub(10, 5))
+        l = fixed.horizontal(leaf_widget(10, 5), leaf_widget(10, 5))
         l.spacing = -2
         assert.is_true(degraded(l))
 
-        l = fixed.horizontal(utils.widget_stub(10, 5))
+        l = fixed.horizontal(leaf_widget(10, 5))
         rawset(l, "layout", function(self, ...) return fixed.layout(self, ...) end)
         assert.is_true(degraded(l))
 
-        l = fixed.horizontal(utils.widget_stub(10, 5))
-        rawset(l, "fit", function(self, ...) return fixed.fit(self, ...) end)
+        l = fixed.horizontal(leaf_widget(10, 5))
+        l._clay = { name = "cutoff_override", describe = fixed._clay.describe }
+        rawset(l, "fit", function() return 0, 0 end)
+        local warning = stub(gdebug, "print_warning")
         assert.is_true(degraded(l))
+        assert.is_true(degraded(l))
+        assert.stub(warning).was_called(1)
+        warning:revert()
     end)
 end)
 
@@ -415,7 +423,7 @@ describe("wibox.clay flex", function()
     local flex = require("wibox.layout.flex")
 
     it("grows every child along the direction, with max_widget_size as the ceiling", function()
-        local l = flex.horizontal(utils.widget_stub(10, 5), utils.widget_stub(50, 5))
+        local l = flex.horizontal(leaf_widget(10, 5), leaf_widget(50, 5))
 
         l.spacing = 2
 
@@ -427,7 +435,7 @@ describe("wibox.clay flex", function()
         assert.is_equal("grow", node.children[1].w)
         assert.is_equal("grow", node.children[1].h)
         assert.is_nil(node.children[1].wmax)
-        assert.is_true(node.children[2].raster)
+        assert.is_equal("leaf", node.children[2].class)
 
         l.max_widget_size = 30
         node = layout_node(l)
@@ -435,7 +443,7 @@ describe("wibox.clay flex", function()
         assert.is_equal(30, node.children[2].wmax)
         assert.is_nil(node.children[2].hmax)
 
-        local v = flex.vertical(utils.widget_stub(5, 10))
+        local v = flex.vertical(leaf_widget(5, 10))
 
         v.max_widget_size = 12
         node = layout_node(v)
@@ -443,18 +451,18 @@ describe("wibox.clay flex", function()
         assert.is_equal(12, node.children[1].hmax)
     end)
 
-    it("degrades for a spacing widget, negative spacing and overrides", function()
-        local l = flex.horizontal(utils.widget_stub(10, 5), utils.widget_stub(10, 5))
+    it("is refused for a spacing widget, negative spacing and overrides", function()
+        local l = flex.horizontal(leaf_widget(10, 5), leaf_widget(10, 5))
 
         l.spacing = 3
-        l.spacing_widget = utils.widget_stub(3, 5)
+        l.spacing_widget = leaf_widget(3, 5)
         assert.is_true(degraded(l))
 
-        l = flex.horizontal(utils.widget_stub(10, 5), utils.widget_stub(10, 5))
+        l = flex.horizontal(leaf_widget(10, 5), leaf_widget(10, 5))
         l.spacing = -2
         assert.is_true(degraded(l))
 
-        l = flex.horizontal(utils.widget_stub(10, 5))
+        l = flex.horizontal(leaf_widget(10, 5))
         rawset(l, "layout", function(self, ...) return flex.layout(self, ...) end)
         assert.is_true(degraded(l))
     end)
@@ -464,7 +472,7 @@ describe("wibox.clay align", function()
     local align = require("wibox.layout.align")
 
     local function stub(w)
-        return utils.widget_stub(w, 5)
+        return leaf_widget(w, 5)
     end
 
     it("inside: outer widgets at their size, the second grows between", function()
@@ -476,11 +484,11 @@ describe("wibox.clay align", function()
         assert.is_equal("grow", node.children[2].w)
         assert.is_equal(20, node.children[3].w)
         for _, child in ipairs(node.children) do
-            assert.is_true(child.raster)
+            assert.is_equal("leaf", child.class)
             assert.is_equal("grow", child.h)
         end
 
-        local v = layout_node(align.vertical(utils.widget_stub(5, 10), stub(5), nil))
+        local v = layout_node(align.vertical(leaf_widget(5, 10), stub(5), nil))
 
         assert.is_equal("y", v.dir)
         assert.is_equal(10, v.children[1].h)
@@ -517,14 +525,14 @@ describe("wibox.clay align", function()
         assert.is_true(node.children[1].spacer)
         assert.is_equal("grow", node.children[1].w)
         assert.is_equal(20, node.children[2].w)
-        assert.is_true(node.children[3].raster)
+        assert.is_equal("leaf", node.children[3].class)
     end)
 
-    it("outside without a second widget degrades", function()
+    it("outside without a second widget is refused", function()
         local l = align.horizontal(stub(10), nil, stub(30))
 
         l.expand = "outside"
-        assert.is_true(layout_node(l).raster)
+        assert.is_nil(layout_node(l))
 
         l = align.horizontal(nil, nil, nil)
         l.expand = "outside"
@@ -554,18 +562,18 @@ describe("wibox.clay align", function()
         node = layout_node(l)
         assert.is_equal(0, #node.children[1].children)
 
-        l = align.vertical(utils.widget_stub(5, 10), utils.widget_stub(5, 20), nil)
+        l = align.vertical(leaf_widget(5, 10), leaf_widget(5, 20), nil)
         l.expand = "none"
         node = layout_node(l)
         assert.is_same({ x = "left", y = "bottom" }, node.children[3].align)
         assert.is_equal(10, node.children[1].children[1].h)
     end)
 
-    it("degrades for an override", function()
+    it("is refused for an override", function()
         local l = align.horizontal(stub(10), stub(20), stub(30))
 
         rawset(l, "layout", function(self, ...) return align.layout(self, ...) end)
-        assert.is_true(layout_node(l).raster)
+        assert.is_nil(layout_node(l))
     end)
 end)
 
@@ -573,7 +581,7 @@ describe("wibox.clay stack", function()
     local stack = require("wibox.layout.stack")
 
     it("floats each child over the one before, sized to the stack", function()
-        local a, b = utils.widget_stub(10, 5), utils.widget_stub(20, 5)
+        local a, b = leaf_widget(10, 5), leaf_widget(20, 5)
         local node = layout_node(stack(a, b))
 
         assert.is_equal(2, #node.children)
@@ -583,18 +591,17 @@ describe("wibox.clay stack", function()
             assert.is_true(wrapper.spacer)
             assert.is_equal("grow", wrapper.w)
             assert.is_equal(1, #wrapper.children)
-            assert.is_true(wrapper.children[1].raster)
+            assert.is_equal("leaf", wrapper.children[1].class)
             assert.is_equal("grow", wrapper.children[1].w)
         end
 
         local _, leaves = compile(BG, margin(stack(a, b), 1, 1, 1, 1), BG)
 
-        assert.is_equal(a, leaves[1].widget)
-        assert.is_equal(b, leaves[2].widget)
+        assert.is_equal(0, #leaves)
     end)
 
     it("turns spacing and offsets into padding around each child", function()
-        local l = stack(utils.widget_stub(10, 5), utils.widget_stub(20, 5))
+        local l = stack(leaf_widget(10, 5), leaf_widget(20, 5))
 
         l.spacing = 3
         l.horizontal_offset = 4
@@ -607,7 +614,7 @@ describe("wibox.clay stack", function()
     end)
 
     it("declares only the first child with top_only", function()
-        local l = stack(utils.widget_stub(10, 5), utils.widget_stub(20, 5))
+        local l = stack(leaf_widget(10, 5), leaf_widget(20, 5))
 
         l.top_only = true
 
@@ -616,15 +623,15 @@ describe("wibox.clay stack", function()
         assert.is_equal(1, #node.children)
     end)
 
-    it("degrades for a negative offset and an override", function()
-        local l = stack(utils.widget_stub(10, 5), utils.widget_stub(20, 5))
+    it("is refused for a negative offset and an override", function()
+        local l = stack(leaf_widget(10, 5), leaf_widget(20, 5))
 
         l.horizontal_offset = -2
-        assert.is_true(layout_node(l).raster)
+        assert.is_nil(layout_node(l))
 
-        l = stack(utils.widget_stub(10, 5))
+        l = stack(leaf_widget(10, 5))
         rawset(l, "layout", function(self, ...) return stack.layout(self, ...) end)
-        assert.is_true(layout_node(l).raster)
+        assert.is_nil(layout_node(l))
     end)
 end)
 
@@ -632,19 +639,19 @@ describe("wibox.clay place", function()
     local place = require("wibox.container.place")
 
     it("aligns a child at its size on both axes", function()
-        local node = layout_node(place(utils.widget_stub(10, 20)))
+        local node = layout_node(place(leaf_widget(10, 20)))
 
         assert.is_same({ x = "center", y = "center" }, node.align)
         assert.is_equal(1, #node.children)
         assert.is_equal(10, node.children[1].w)
         assert.is_equal(20, node.children[1].h)
 
-        node = layout_node(place(utils.widget_stub(10, 20), "right", "bottom"))
+        node = layout_node(place(leaf_widget(10, 20), "right", "bottom"))
         assert.is_same({ x = "right", y = "bottom" }, node.align)
     end)
 
     it("grows the child on an axis content_fill_* names", function()
-        local c = place(utils.widget_stub(10, 20))
+        local c = place(leaf_widget(10, 20))
 
         c.content_fill_horizontal = true
 
@@ -659,20 +666,20 @@ describe("wibox.clay place", function()
     end)
 
     it("fills the axes fill_* names, where a parent asks its size", function()
-        local c = place(utils.widget_stub(10, 20))
+        local c = place(leaf_widget(10, 20))
 
         assert.is_nil(fixed_node(c).w)
         c.fill_horizontal = true
         assert.is_equal("grow", fixed_node(c).w)
     end)
 
-    it("converts with no child, and degrades for an override", function()
+    it("converts with no child, and is refused for an override", function()
         assert.is_equal(0, #layout_node(place()).children)
 
-        local c = place(utils.widget_stub(10, 20))
+        local c = place(leaf_widget(10, 20))
 
         rawset(c, "layout", function(self, ...) return place.layout(self, ...) end)
-        assert.is_true(layout_node(c).raster)
+        assert.is_nil(layout_node(c))
     end)
 end)
 

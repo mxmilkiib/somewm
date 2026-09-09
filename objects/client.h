@@ -343,7 +343,6 @@ struct client_t
         /** The drawable for this bar. */
         drawable_t *drawable;
         struct widget_tree widgets;
-        struct image_entry content;
     } titlebar[CLIENT_TITLEBAR_COUNT];
     /** Motif WM hints, with an additional MWM_HINTS_AWESOME_SET bit */
     motif_wm_hints_t motif_wm_hints;
@@ -416,7 +415,6 @@ void client_destroy_later(void);
 bool client_hasproto(client_t *, uint32_t);  /* Changed from xcb_atom_t */
 void client_ignore_enterleave_events(void);
 void client_restore_enterleave_events(void);
-void client_refresh_partial(client_t *, int16_t, int16_t, uint16_t, uint16_t);
 void client_class_setup(lua_State *);
 void client_send_configure(client_t *);
 void client_find_transient_for(client_t *);
@@ -426,7 +424,6 @@ drawable_t *client_get_drawable(client_t *, int, int);
 drawable_t *client_get_drawable_offset(client_t *, int *, int *);
 area_t client_get_undecorated_geometry(client_t *);
 void client_apply_opacity_to_scene(client_t *, float);
-struct image_entry *client_titlebar_content(client_t *c, drawable_t *d);
 bool client_titlebar_host(client_t *c, drawable_t *d, struct widget_host *out);
 
 /* Forward declarations for inline functions

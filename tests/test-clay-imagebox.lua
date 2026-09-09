@@ -45,7 +45,7 @@ local function nodes()
             end
             local x, y, w, h = line:match("box (%d+),(%d+) (%d+)x(%d+)")
             out[#out + 1] = { depth = #indent / 2, class = class, line = line,
-                raster = line:find(" raster ", 1, true) ~= nil,
+                image = line:find(" image ", 1, true) ~= nil,
                 box = x and { x = tonumber(x), y = tonumber(y),
                     width = tonumber(w), height = tonumber(h) } }
         elseif line:sub(1, #want) == want then
@@ -97,15 +97,15 @@ local steps = {
 
         local ib = imageboxes(list)
 
-        assert(#ib == 4, "expected four imageboxes, got " .. #ib)
-        assert(not ib[1].node.raster and ib[1].image,
+        assert(#ib == 3, "expected three imageboxes, got " .. #ib)
+        assert(not ib[1].node.image and ib[1].image,
             "the first imagebox is not an image element: " .. ib[1].node.line)
-        assert(not ib[2].node.raster and ib[2].image,
+        assert(not ib[2].node.image and ib[2].image,
             "the padded imagebox is not an image element: " .. ib[2].node.line)
-        assert(ib[3].node.raster, "a clip shape converted: " .. ib[3].node.line)
-        assert(not ib[4].node.raster and not ib[4].image
-            and ib[4].node.box.width == 0,
-            "an imagebox with no image is not an empty element: " .. ib[4].node.line)
+        assert(#awesome._test_widget_boxes(bar.drawin) == 6, "the refused widget still has a box")
+        assert(not ib[3].node.image and not ib[3].image
+            and ib[3].node.box.width == 0,
+            "an imagebox with no image is not an empty element: " .. ib[3].node.line)
 
         -- Scaled to the bar's height, and to the padded slot's, keeping the
         -- square; the margin's slot was sized for the taller image.

@@ -24,8 +24,6 @@
 local wibox     = require( "wibox"           )
 local gtable    = require( "gears.table"     )
 local placement = require( "awful.placement" )
-local xresources= require("beautiful.xresources")
-local timer     = require( "gears.timer"     )
 local capi      = {mouse = mouse}
 
 
@@ -99,23 +97,6 @@ local function apply_size(self, width, height, set_pos)
 
     if set_pos or width ~= prev_geo.width or height ~= prev_geo.height then
         set_position(self)
-    end
-end
-
--- Layout this widget
-function main_widget:layout(context, width, height)
-    if self._private.widget then
-        local w, h = wibox.widget.base.fit_widget(
-            self,
-            context,
-            self._private.widget,
-            self._wb._private.maximum_width  or 9999,
-            self._wb._private.maximum_height or 9999
-        )
-        timer.delayed_call(function()
-            apply_size(self._wb, w, h, true)
-        end)
-        return { wibox.widget.base.place_widget_at(self._private.widget, 0, 0, width, height) }
     end
 end
 
@@ -418,13 +399,10 @@ end
 function popup:_apply_size_now(skip_set)
     if not self.widget then return end
 
-    local w, h = wibox.widget.base.fit_widget(
-        self.widget,
-        {dpi= self.screen.dpi or xresources.get_dpi()},
-        self.widget,
-        self._private.maximum_width  or 9999,
-        self._private.maximum_height or 9999
-    )
+    self._drawable._do_redraw()
+    local tree = self._drawable._clay_tree
+    if not tree then return end
+    local w, h = tree.box.width, tree.box.height
 
     -- It is important to do it for the obscure reason that calling `w:geometry()`
     -- is actually mutating the state due to quantum determinism thanks to XCB
@@ -489,8 +467,7 @@ local function create_popup(_, args)
 
     -- Under Clay the popup's tree sizes the drawin: the wrapper hands its
     -- widget the whole box and asks for a root that wraps it within the
-    -- popup's limits, and takes the solved size as `main_widget:layout`
-    -- applies the engine's fit.
+    -- popup's limits, and applies the solved size to its geometry.
     require("wibox.clay").describe_widget(ii, function()
         local p = w._private
 

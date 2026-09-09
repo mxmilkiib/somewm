@@ -174,15 +174,15 @@ local steps = {
                     "no " .. class .. " in the solved tree")
             end
 
-            -- Every leaf widget is a raster, and nothing else is.
-            local rasters = 0
+            -- Four described leaf widgets fill their solved boxes.
+            local leaves = 0
             for _, node in ipairs(nodes) do
-                if node.line:find(" raster ", 1, true) then
-                    rasters = rasters + 1
+                if node.class == "leaf" then
+                    leaves = leaves + 1
                 end
             end
-            assert(rasters == 4,
-                "expected four raster leaves, got " .. rasters)
+            assert(leaves == 4,
+                "expected four leaves, got " .. leaves)
 
             -- The readback agrees with the dump about how much was solved.
             local boxes = awesome._test_widget_boxes(bar.drawin)
@@ -319,8 +319,7 @@ local steps = {
         mouse.coords({ x = 100, y = 100 })
     end),
 
-    -- A raster leaf drawn into the corner is cut to the arc, as the mask
-    -- cut it: the renderer clips a raster under a rounded corner to it.
+    -- A leaf drawn into the corner is cut to the arc.
     bar_step({
         what = "a leaf in a rounded corner is cut to the arc",
         shape = function(cr, w, h) gshape.rounded_rect(cr, w, h, 8) end,

@@ -198,73 +198,9 @@ local function content_workarea(self, width, height)
     return wa
 end
 
-local function draw(self, _, cr, width, height)
-    local size = math.min(width, height)
 
-    local background_shape = self:get_shape() or shape.rectangle
-    local border_width = self:get_border_width() or 1
-
-    local main_color = self:get_color()
-    local bg = self:get_bg()
-    local border_color = self:get_border_color()
-
-    -- If no color is set, it will fallback to the default one
-    if border_color or main_color then
-        cr:set_source(color(border_color or main_color))
-    end
-
-    local wa = outline_workarea(self, size, size)
-    cr:translate(wa.x, wa.y)
-    background_shape(cr, wa.width, wa.height)
-    cr:set_line_width(border_width)
-
-    if bg then
-        cr:save()
-        cr:set_source(color(bg))
-        cr:fill_preserve()
-        cr:restore()
-    end
-
-    cr:stroke()
-
-    cr:translate(-wa.x, -wa.y)
-
-    -- Draw the checked part
-    if self._private.checked then
-        local col = self:get_check_color() or main_color
-        border_color = self:get_check_border_color()
-        border_width = self:get_check_border_width() or 0
-        local check_shape = self:get_check_shape() or background_shape
-
-        wa = content_workarea(self, size, size)
-        cr:translate(wa.x, wa.y)
-
-        check_shape(cr, wa.width, wa.height)
-
-        if col then
-            cr:set_source(color(col))
-        end
-
-        if border_width > 0 then
-            cr:fill_preserve()
-            cr:set_line_width(border_width)
-            cr:set_source(color(border_color))
-            cr:stroke()
-        else
-            cr:fill()
-        end
-    end
-end
-
-local function fit(_, _, w, h)
-    local size = math.min(w, h)
-    return size, size
-end
 
 local function describe_checkbox(w)
-    if rawget(w, "draw") ~= draw then
-        return nil
-    end
 
     local main_color = w:get_color()
     local bg = w:get_bg()
@@ -310,7 +246,7 @@ local function describe_checkbox(w)
     return node
 end
 
-checkbox._clay = { describe = describe_checkbox, fit = fit }
+checkbox._clay = { describe = describe_checkbox }
 
 --- If the checkbox is checked.
 -- @property checked
@@ -358,8 +294,6 @@ local function new(checked, args)
     ret._private.checked = checked
     ret._private.color = args.color and color(args.color) or nil
 
-    rawset(ret, "fit" , fit )
-    rawset(ret, "draw", draw)
 
     return ret
 end

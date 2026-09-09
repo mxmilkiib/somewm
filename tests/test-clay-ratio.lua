@@ -21,7 +21,7 @@ local steps = {
     function(count)
         if count == 1 then
             layout = wibox.layout.ratio.horizontal()
-            assert(layout.fit == layout._clay.fit, "the ratio fit does not match its record")
+            assert(layout.fit == nil, "the ratio defines fit")
             layout:add(wibox.container.background(nil, "#ff0000"),
                 wibox.container.background(nil, "#00ff00"),
                 wibox.container.background(nil, "#0000ff"))
@@ -63,9 +63,10 @@ local steps = {
             return nil
         end
         local line = awesome._clay_tree(s):match("[^\n]*wibox.layout.ratio[^\n]*")
-        assert(line and line:find(" raster", 1, true), "the spaced ratio did not raster")
+        assert(not line, "wibox.layout.ratio was not refused")
+        assert(#awesome._test_widget_boxes(bar.drawin) == 2, "the refused subtree still has boxes")
         bar.visible = false
-        io.stderr:write("[PASS] spacing returns the ratio to a raster\n")
+        io.stderr:write("[PASS] spacing refuses the ratio\n")
         return true
     end,
 }

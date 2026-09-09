@@ -2,9 +2,8 @@
  * widget.c - the widget tree lua/wibox/clay.lua compiles
  *
  * lua/wibox/clay.lua walks a drawable's widget tree and describes what Clay
- * can solve as a tree of nodes, with every subtree it cannot express as a
- * raster leaf. This file reads that description off the Lua stack, stores it
- * on the drawin, and owns the leaf surfaces Lua draws into. It holds no Clay:
+ * can solve as a tree of nodes. This file reads the description off the Lua
+ * stack, stores it on the owner, and references image surfaces. It holds no Clay:
  * declaring the tree is declare.c's and drawing it is the renderer's, so a
  * node here is nothing but the numbers Lua handed over.
  */
@@ -57,10 +56,8 @@ read_quad(lua_State *L, int idx, const char *name, float *out)
 }
 
 /* An optional number field inside a range, false for one outside it or of
- * the wrong type. Refusing rather than raising is what lets a malformed
- * tree fall back to painting whole: an error here unwinds through the
- * redraw that already dropped its dirty region, leaving the last tree
- * declared and nothing repainting it. */
+ * the wrong type. Refusing rather than raising lets the caller clear the
+ * malformed tree and report its state without unwinding the redraw. */
 static bool
 read_number(lua_State *L, int idx, const char *name, double min, double max,
 	float *out)
@@ -339,13 +336,9 @@ read_node(lua_State *L, int idx, struct widget_node *n)
 	lua_getfield(L, idx, "float");
 	n->floating = lua_toboolean(L, -1);
 	lua_pop(L, 1);
-	lua_getfield(L, idx, "raster");
-	n->raster = lua_toboolean(L, -1);
-	lua_pop(L, 1);
 	lua_getfield(L, idx, "image");
 	if (lua_islightuserdata(L, -1)) {
 		n->image = lua_touserdata(L, -1);
-		n->raster = true;
 	} else if (!lua_isnil(L, -1)) {
 		ok = false;
 	}
@@ -410,18 +403,18 @@ read_tree(lua_State *L, int idx, struct widget_node *nodes, size_t *len,
 	if (!read_node(L, idx, n))
 		return false;
 	if (n->shape) {
-		if (n->raster)
+		if (n->image)
 			return false;
 		n->shape = (uint16_t)luaA_rawlen(L, shapes) + 1;
 		lua_getfield(L, idx, "shape");
 		lua_rawseti(L, shapes, n->shape);
 	}
-	if (n->raster)
+	if (n->image)
 		(*leaves)++;
 	n->clip_by = (uint8_t)clip_by;
 
 	lua_getfield(L, idx, "children");
-	ok = lua_isnil(L, -1) || (lua_istable(L, -1) && (!n->raster || n->image) && !n->text);
+	ok = lua_isnil(L, -1) || (lua_istable(L, -1) && !n->text);
 	count = ok ? luaA_rawlen(L, -1) : 0;
 	n->children = (uint16_t)count;
 	if (ok && (*len == 1 || (n->radius > 0 && count > 0))) {
@@ -443,7 +436,7 @@ read_tree(lua_State *L, int idx, struct widget_node *nodes, size_t *len,
 
 /* The leaf array at the tree's leaf count, surfaces kept where the index
  * survives: a leaf keeps its surface by its index in the tree, and
- * widget_leaves_size resizes the ones whose box changed. */
+ * widget_leaves_set references the image surfaces. */
 static void
 leaves_count(struct widget_tree *d, size_t count)
 {
@@ -459,16 +452,15 @@ leaves_count(struct widget_tree *d, size_t count)
 }
 
 void
-widget_leaves_size(struct widget_tree *d, int (*dev)[2])
+widget_leaves_set(struct widget_tree *d)
 {
-	size_t leaf = 0, sized = 0;
+	size_t leaf = 0;
 
 	for (size_t i = 0; i < d->nodes_len; i++) {
 		const struct widget_node *n = &d->nodes[i];
 		struct image_entry *entry;
-		int w, h;
 
-		if (!n->raster)
+		if (!n->image)
 			continue;
 		entry = &d->leaves[leaf++];
 		if (entry->filter != n->filter) {
@@ -481,21 +473,10 @@ widget_leaves_size(struct widget_tree *d, int (*dev)[2])
 		}
 		/* The widget's own surface: referenced, and a new reference only
 		 * when it is another surface, so its generation moves with it. */
-		if (n->image) {
-			cairo_surface_t *surface = (cairo_surface_t *)n->image;
+		cairo_surface_t *surface = (cairo_surface_t *)n->image;
 
-			if (entry->native != surface)
-				image_entry_set(entry, cairo_surface_reference(surface));
-			continue;
-		}
-		w = MAX(1, dev[sized][0]);
-		h = MAX(1, dev[sized][1]);
-		sized++;
-		if (entry->native && entry->width == w && entry->height == h)
-			continue;
-		image_entry_set(entry, cairo_image_surface_create(
-			CAIRO_FORMAT_ARGB32, w, h));
-		entry->fresh = true;
+		if (entry->native != surface)
+			image_entry_set(entry, cairo_surface_reference(surface));
 	}
 }
 
@@ -657,37 +638,8 @@ widget_nodes_set(lua_State *L, struct widget_tree *d, Monitor *m, int idx)
 	d->text = text_len ? p_dup(text_buf, text_len) : NULL;
 	d->text_len = text_len;
 	d->declared = false;
-	/* A container's color or margin can change with no pixel in any leaf
-	 * changing, so the tree has to wake the frame path on its own;
-	 * drawable:refresh() only speaks for the pixels. */
+	/* Every stored tree change wakes the frame path. */
 	if (m && m->declare)
 		declare_output_mark_dirty(m->declare);
 	return true;
-}
-
-cairo_surface_t *
-widget_leaf_surface(struct widget_tree *d, size_t i, bool *fresh)
-{
-	if (i >= d->leaves_len)
-		return NULL;
-	*fresh = d->leaves[i].fresh;
-	d->leaves[i].fresh = false;
-	return cairo_surface_reference(d->leaves[i].native);
-}
-
-bool
-widget_leaves_drawn(lua_State *L, struct widget_tree *d, int idx)
-{
-	bool any = false;
-
-	for (size_t i = 0; i < d->leaves_len; i++) {
-		lua_rawgeti(L, idx, (int)i + 1);
-		if (lua_toboolean(L, -1)) {
-			cairo_surface_flush(d->leaves[i].native);
-			d->leaves[i].gen++;
-			any = true;
-		}
-		lua_pop(L, 1);
-	}
-	return any;
 }

@@ -187,9 +187,10 @@ local steps = {
         end
         local line = nodes():match("[^\n]*wibox.container.border[^\n]*")
 
-        assert(line and line:find(" raster", 1, true), "honor_borders=false did not raster")
+        assert(not line, "wibox.container.border was not refused")
+        assert(#awesome._test_widget_boxes(bar.drawin) == 3, "the refused subtree still has boxes")
         bar.visible = false
-        io.stderr:write("[PASS] honor_borders=false returns the border to a raster\n")
+        io.stderr:write("[PASS] honor_borders=false refuses the border\n")
         return true
     end,
 }

@@ -620,77 +620,10 @@ local function graph_walk_values(self, cr, height, drawn_values_num, visit)
     end
 end
 
-local function graph_draw_values(self, cr, _, height, drawn_values_num)
-    local nan_started = false
-    local step_width = self._private.step_width or prop_fallbacks.step_width
-    graph_walk_values(self, cr, height, drawn_values_num, function(group_idx, x, value_y, base_y, transform)
-        if x == nil then
-            if group_idx then
-                cr:set_source(color(self:pick_data_group_color(group_idx)))
-            else
-                cr:fill()
-            end
-        elseif group_idx then
-            graph_emit_value(self, cr, x, value_y, base_y, transform)
-        else
-            if not nan_started then
-                cr:set_source(color(self._private.nan_color or prop_fallbacks.nan_color))
-                nan_started = true
-            end
-            cr:rectangle(x, 0, step_width, height)
-        end
-    end)
-    if nan_started then
-        cr:fill()
-    end
-end
 
-function graph:draw(_, cr, width, height)
-    local border_width = self._private.border_width or prop_fallbacks.border_width
-    local drawn_values_num = self:compute_drawn_values_num(width-2*border_width)
 
-    -- Track our usage to help us guess the necessary values array capacity
-    graph_gather_drawn_values_num_stats(self, drawn_values_num)
-
-    -- Draw the background first
-    cr:set_source(color(self._private.background_color or prop_fallbacks.background_color))
-    cr:paint()
-
-    -- Draw the values
-    if drawn_values_num > 0 then
-        cr:save()
-
-        -- Account for the border width
-        if border_width > 0 then
-            cr:translate(border_width, border_width)
-        end
-
-        local values_width = width - 2*border_width
-        local values_height = height - 2*border_width
-
-        graph_draw_values(self, cr, values_width, values_height, drawn_values_num)
-
-        -- Undo the cr:translate() for the border and step shapes
-        cr:restore()
-    end
-
-    -- Draw the border last so that it overlaps already drawn values
-    if border_width > 0 then
-        cr:set_line_width(border_width)
-        cr:rectangle(border_width/2, border_width/2, width - border_width, height - border_width)
-        cr:set_source(color(self._private.border_color or prop_fallbacks.border_color))
-        cr:stroke()
-    end
-end
-
-function graph:fit(_, width, height)
-    return width, height
-end
 
 local function describe_graph(w)
-    if w.draw ~= graph.draw then
-        return nil
-    end
     local p = w._private
     local bg = clay.solid_rgba(p.background_color or prop_fallbacks.background_color)
     local bw = p.border_width or prop_fallbacks.border_width
@@ -769,7 +702,7 @@ local function describe_graph(w)
     return node
 end
 
-graph._clay = { describe = describe_graph, fit = graph.fit }
+graph._clay = { describe = describe_graph }
 
 --- Determine how many values should be drawn for a given widget width.
 --

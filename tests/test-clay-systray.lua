@@ -41,7 +41,7 @@ local function nodes()
             end
             local x, y, w, h = line:match("box (%d+),(%d+) (%d+)x(%d+)")
             out[#out + 1] = { depth = #indent / 2, class = class, line = line,
-                raster = line:find(" raster ", 1, true) ~= nil,
+                image = line:find(" image ", 1, true) ~= nil,
                 box = x and { x = tonumber(x), y = tonumber(y),
                     width = tonumber(w), height = tonumber(h) } }
         elseif line:sub(1, #want) == want then
@@ -51,10 +51,10 @@ local function nodes()
     return head, out
 end
 
-local function count(list, class, raster)
+local function count(list, class, image)
     local n = 0
     for _, node in ipairs(list) do
-        if node.class == class and node.raster == raster then
+        if node.class == class and node.image == image then
             n = n + 1
         end
     end
@@ -99,7 +99,7 @@ local steps = {
             "the tray is not a converted element")
         assert(count(list, "wibox.widget.systray_icon", false) == 2,
             "expected two converted icons")
-        assert(count(list, "image", false) == 2, "expected two image leaves")
+        assert(count(list, "image", true) == 2, "expected two image leaves")
 
         -- Each icon its base size square, 24, inside the 2px padding.
         local icons = {}
@@ -130,7 +130,7 @@ local steps = {
         assert(count_ < 20, "the icons were not drawn")
     end,
 
-    -- An urgent item draws itself.
+    -- An urgent item is refused.
     function(count_)
         if count_ == 1 then
             items[2].status = "NeedsAttention"
@@ -139,12 +139,13 @@ local steps = {
 
         local _, list = nodes()
 
-        if count(list, "wibox.widget.systray_icon", true) == 1 then
-            io.stderr:write("[PASS] an urgent icon draws itself\n")
+        if count(list, "wibox.widget.systray_icon", false) == 1 then
+            assert(#awesome._test_widget_boxes(bar.drawin) == 4, "the refused icon still has a box")
+            io.stderr:write("[PASS] an urgent icon is refused\n")
             bar.visible = false
             return true
         end
-        assert(count_ < 20, "the urgent icon did not raster")
+        assert(count_ < 20, "the urgent icon was not refused")
     end,
 }
 

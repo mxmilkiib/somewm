@@ -34,27 +34,7 @@ local function setup_dpi(box, dpi)
     end
 end
 
---- Setup a pango layout for the given textbox and dpi
-local function setup_layout(box, width, height, dpi)
-    box._private.layout.width = Pango.units_from_double(width)
-    box._private.layout.height = Pango.units_from_double(height)
-    setup_dpi(box, dpi)
-end
 
--- Draw the given textbox on the given cairo context in the given geometry
-function textbox:draw(context, cr, width, height)
-    setup_layout(self, width, height, context.dpi)
-    cr:update_layout(self._private.layout)
-    local _, logical = self._private.layout:get_pixel_extents()
-    local offset = 0
-    if self._private.valign == "center" then
-        offset = (height - logical.height) / 2
-    elseif self._private.valign == "bottom" then
-        offset = height - logical.height
-    end
-    cr:move_to(0, offset)
-    cr:show_layout(self._private.layout)
-end
 
 local function do_fit_return(self)
     local _, logical = self._private.layout:get_pixel_extents()
@@ -64,11 +44,6 @@ local function do_fit_return(self)
     return logical.width, logical.height
 end
 
--- Fit the given textbox
-function textbox:fit(context, width, height)
-    setup_layout(self, width, height, context.dpi)
-    return do_fit_return(self)
-end
 
 --- Get the preferred size of a textbox.
 --
@@ -604,16 +579,9 @@ local function describe_textbox(w, fg, st)
     local p = w._private
     local layout = p.layout
 
-    if w.draw ~= textbox.draw then
-        return nil
-    end
-    -- Empty text draws nothing whatever the layout says (a prompt's textbox
-    -- ellipsizes at the start), and keeps its line's height, as
-    -- `textbox:fit` answers it.
+    -- An empty textbox draws nothing and takes no size of its own.
     if (layout.text or "") == "" then
-        local _, h = w:fit(st.context, st.width, st.height)
-
-        return { hmin = math.ceil(h) }
+        return {}
     end
     if layout:get_justify() or layout:get_indent() ~= 0
             or layout:get_line_spacing() ~= 0 then
@@ -660,7 +628,7 @@ local function describe_textbox(w, fg, st)
             halign = halign, ellipsize = ellipsize == "END", class = "text" } } }
 end
 
-textbox._clay = { describe = describe_textbox, fit = textbox.fit }
+textbox._clay = { describe = describe_textbox }
 
 return setmetatable(textbox, textbox.mt)
 

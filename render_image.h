@@ -8,7 +8,7 @@
 /* What an IMAGE command's imageData points at: one cairo surface the
  * renderer scales and rounds into the solved box. The entry's address is
  * stable for as long as its owner lives (a drawin's content, border, shadow
- * and raster leaves, objects/drawin.h), so Clay carries it across the solve;
+ * and widget images, objects/drawin.h), so Clay carries it across the solve;
  * gen bumps whenever the pixels change, which is what tells the renderer to
  * re-raster a node whose pointer never moved. */
 struct image_entry {
@@ -18,9 +18,6 @@ struct image_entry {
 	uint8_t filter;      /* cairo_filter_t + 1, 0 keeps cairo's default */
 	bool stretch;       /* Rastered once at its own size, scaled to the box by the scene. */
 	bool natural;       /* Paint at logical size from the top-left corner. */
-	/* A surface made for one box and not yet painted: whoever draws into
-	 * it paints it whole once, wherever their dirty region reaches. */
-	bool fresh;
 };
 
 /* Hand an entry a new owned surface, destroying the previous one, and bump

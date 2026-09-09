@@ -1,8 +1,8 @@
 /*
  * drawable.c - Drawable object implementation
  *
- * Manages Cairo surfaces for rendering widgets. This is the "canvas" that
- * Lua draws on via Cairo, which then gets displayed on screen.
+ * Stores widget geometry and connects its owner to the declared tree.
+ * Lua supplies descriptions and receives solved boxes for placement.
  *
  * Based on AwesomeWM's drawable but adapted for Wayland/wlroots.
  */
@@ -48,43 +48,6 @@ LUA_OBJECT_FUNCS(drawable_class, drawable_t, drawable)
 #ifndef MFD_ALLOW_SEALING
 #define MFD_ALLOW_SEALING 0x0002U
 #endif
-
-/* ============================================================================
- * HiDPI Support
- * ============================================================================
- *
- * Get the output scale factor for a drawable based on its owner (drawin/client).
- * Used to create Cairo surfaces at native resolution for sharp rendering.
- */
-static float
-drawable_get_scale(drawable_t *d)
-{
-	if (!d)
-		return 1.0f;
-
-	/* Check for drawin-level scale override (somewm extension).
-	 * Allows Lua to force a specific scale for performance-sensitive drawins
-	 * like screenshot overlays that don't benefit from HiDPI upscaling. */
-	if (d->owner_type == DRAWABLE_OWNER_DRAWIN && d->owner.drawin) {
-		if (d->owner.drawin->scale_override > 0.0f)
-			return d->owner.drawin->scale_override;
-	}
-
-	/* Default: use output scale for HiDPI rendering */
-	screen_t *screen = NULL;
-
-	if (d->owner_type == DRAWABLE_OWNER_DRAWIN && d->owner.drawin) {
-		screen = d->owner.drawin->screen;
-	} else if (d->owner_type == DRAWABLE_OWNER_CLIENT && d->owner.client) {
-		screen = d->owner.client->screen;
-	}
-
-	if (screen && screen->monitor && screen->monitor->wlr_output) {
-		return screen->monitor->wlr_output->scale;
-	}
-
-	return 1.0f;
-}
 
 /* ============================================================================
  * SHM Buffer Implementation
@@ -268,19 +231,14 @@ extern void signal_array_wipe(signal_array_t *arr);
  * This is called by drawable_allocator, not directly from Lua
  */
 
-/** Allocate a new drawable with a refresh callback
+/** Allocate a drawable
  * This is the public API used by drawin
  */
 drawable_t *
-drawable_allocator(lua_State *L, drawable_refresh_callback callback, void *data)
+drawable_allocator(lua_State *L)
 {
 	drawable_t *d = drawable_new(L);
-	d->refresh_callback = callback;
-	d->refresh_data = data;
-	d->refreshed = false;
 	d->valid = true;  /* Drawable is valid when created */
-	d->surface = NULL;
-	d->surface_scale = 0.0f;  /* Will be set when surface is created */
 	d->geometry.width = 0;
 	d->geometry.height = 0;
 	d->geometry.x = 0;
@@ -300,37 +258,8 @@ drawable_allocator(lua_State *L, drawable_refresh_callback callback, void *data)
 static lua_object_t *
 drawable_allocator_wrapper(lua_State *L)
 {
-	/* Call existing allocator with NULL callback/data (drawins set these later) */
-	drawable_t *d = drawable_allocator(L, NULL, NULL);
+	drawable_t *d = drawable_allocator(L);
 	return (lua_object_t *)d;
-}
-
-/** Unset drawable surface (AwesomeWM API - cleanup surface and buffer) */
-static void
-drawable_unset_surface(drawable_t *d)
-{
-	if (d->surface) {
-		cairo_surface_finish(d->surface);
-		cairo_surface_destroy(d->surface);
-		d->surface = NULL;
-	}
-	d->refreshed = false;
-}
-
-/** Cleanup drawable resources */
-static void
-drawable_wipe(drawable_t *d)
-{
-	drawable_unset_surface(d);
-}
-
-/** Garbage collection */
-static int
-luaA_drawable_gc(lua_State *L)
-{
-	drawable_t *d = luaA_checkdrawable(L, 1);
-	drawable_wipe(d);
-	return 0;
 }
 
 /* ============================================================================
@@ -348,64 +277,23 @@ luaA_checkdrawable(lua_State *L, int idx)
  * Drawable Properties
  * ============================================================================ */
 
-/** Set drawable geometry
- * When geometry or scale changes, the surface needs to be recreated
- */
-/** Set drawable geometry (AwesomeWM pattern - area_t parameter) */
+/** Set drawable geometry (AwesomeWM pattern - area_t parameter). A size
+ * change emits property::surface, the redraw trigger lua/wibox/drawable.lua
+ * listens to; a move alone redraws nothing, since the tree does not depend
+ * on where it is. */
 void
 drawable_set_geometry(lua_State *L, int didx, area_t geom)
 {
 	drawable_t *d = luaA_checkudata(L, didx, &drawable_class);
 	area_t old = d->geometry;
 	bool area_changed;
-	float scale = drawable_get_scale(d);
-	bool scale_changed = (d->surface_scale != scale);
 
 	d->geometry = geom;
 	area_changed = !wlr_box_equal(&old, &geom);
 
-	bool size_changed = (old.width != geom.width || old.height != geom.height);
-	bool need_new_surface = size_changed || scale_changed;
-
-	/* Clean up old surface if size or scale changed */
-	if (need_new_surface)
-		drawable_unset_surface(d);
-
-	/* Create new surface if dimensions are valid and surface needs recreation */
-	if (need_new_surface && geom.width > 0 && geom.height > 0) {
-		/* Get scale for HiDPI support.
-		 * Use floorf to match what Cairo will actually draw with device_scale.
-		 * Using ceilf creates extra pixels that Cairo won't fully draw to,
-		 * causing antialiased edges with wrong alpha values. */
-		int scaled_width = (int)floorf(geom.width * scale);
-		int scaled_height = (int)floorf(geom.height * scale);
-		if (scaled_width < 1) scaled_width = 1;
-		if (scaled_height < 1) scaled_height = 1;
-
-		d->surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32,
-		                                         scaled_width, scaled_height);
-		if (cairo_surface_status(d->surface) == CAIRO_STATUS_SUCCESS) {
-			/* Set device scale so Cairo draws in logical coordinates */
-			cairo_surface_set_device_scale(d->surface, scale, scale);
-			d->surface_scale = scale;
-
-			/* Clear surface to transparent black.
-			 * Cairo should initialize ARGB32 surfaces to transparent, but
-			 * we do this explicitly to ensure no garbage alpha values. */
-			cairo_t *cr = cairo_create(d->surface);
-			cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
-			cairo_set_source_rgba(cr, 0, 0, 0, 0);
-			cairo_paint(cr);
-			cairo_destroy(cr);
-
-			d->refreshed = false;
-			/* Emit property::surface signal (AwesomeWM pattern) */
-			luaA_object_emit_signal(L, didx, "property::surface", 0);
-		} else {
-			cairo_surface_destroy(d->surface);
-			d->surface = NULL;
-		}
-	}
+	if ((old.width != geom.width || old.height != geom.height)
+			&& geom.width > 0 && geom.height > 0)
+		luaA_object_emit_signal(L, didx, "property::surface", 0);
 
 	/* Emit property signals (AwesomeWM pattern) */
 	if (area_changed)
@@ -434,57 +322,15 @@ luaA_drawable_set_geometry(lua_State *L, int didx, int x, int y, int width, int 
 	d->geometry.width = width;
 	d->geometry.height = height;
 
-	/* If size changed, recreate surface */
 	size_changed = (old_width != width || old_height != height);
-	if (size_changed) {
-		drawable_unset_surface(d);
+	if (size_changed && width > 0 && height > 0)
+		luaA_object_emit_signal(L, didx, "property::surface", 0);
 
-		/* Create new surface if we have valid dimensions */
-		if (width > 0 && height > 0) {
-			/* Get scale for HiDPI support.
-			 * Use floorf to match what Cairo will actually draw with device_scale. */
-			float scale = drawable_get_scale(d);
-			int scaled_width = (int)floorf(width * scale);
-			int scaled_height = (int)floorf(height * scale);
-			if (scaled_width < 1) scaled_width = 1;
-			if (scaled_height < 1) scaled_height = 1;
-
-			/* Create Cairo image surface at scaled resolution */
-			d->surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, scaled_width, scaled_height);
-			if (cairo_surface_status(d->surface) != CAIRO_STATUS_SUCCESS) {
-				cairo_surface_destroy(d->surface);
-				d->surface = NULL;
-			} else {
-				/* Set device scale so Cairo draws in logical coordinates */
-				cairo_surface_set_device_scale(d->surface, scale, scale);
-				d->surface_scale = scale;  /* Track scale for recreation on change */
-
-				/* Clear surface to transparent black.
-				 * Cairo should initialize ARGB32 surfaces to transparent, but
-				 * we do this explicitly to ensure no garbage alpha values. */
-				cairo_t *cr = cairo_create(d->surface);
-				cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
-				cairo_set_source_rgba(cr, 0, 0, 0, 0);
-				cairo_paint(cr);
-				cairo_destroy(cr);
-			}
-			d->refreshed = false;
-
-			/* Emit property::surface signal (matches AwesomeWM drawable.c:155)
-			 * This notifies wibox/drawable.lua:413 to trigger widget repaint */
-			luaA_object_emit_signal(L, didx, "property::surface", 0);
-
-			/* Buffer will be created in refresh callback when content is ready */
-		}
-	}
-
-	/* Emit signals (stub - Signal emission not required from drawable) */
-	/* In AwesomeWM this would emit property::geometry, property::x, etc. */
 }
 
 /** Get or set drawable geometry
  * With no args: Returns table with {x=, y=, width=, height=}
- * With table arg: Sets geometry and recreates surface if scale changed
+ * With table arg: Sets geometry and emits the redraw trigger
  */
 static int
 luaA_drawable_geometry(lua_State *L)
@@ -532,27 +378,6 @@ luaA_drawable_geometry(lua_State *L)
 	return 1;
 }
 
-/** Refresh drawable - mark content as ready to display
- * Calls the refresh callback to update the display
- */
-static int
-luaA_drawable_refresh(lua_State *L)
-{
-	drawable_t *d = (drawable_t *)lua_touserdata(L, 1);
-	if (!d) {
-		return luaL_error(L, "expected drawable, got %s", lua_typename(L, lua_type(L, 1)));
-	}
-
-	d->refreshed = true;
-
-	/* Call refresh callback if set */
-	if (d->refresh_callback) {
-		d->refresh_callback(d->refresh_data);
-	}
-
-	return 0;
-}
-
 bool
 drawable_widget_host(drawable_t *d, struct widget_host *out)
 {
@@ -567,25 +392,22 @@ drawable_widget_host(drawable_t *d, struct widget_host *out)
 
 /** Hand the renderer the converted widget tree, and solve it.
  * lua/wibox/drawable.lua calls this once per redraw with the tree
- * lua/wibox/clay.lua compiled, or with nil when nothing converted. The tree
- * is solved there and then (declare_widget_solve), which sizes every raster
- * leaf's surface, and the box of every widget node comes back for Lua to
- * draw the leaves and hit-test against. Returns false when nothing was
- * stored (no tree, no host, nothing solved), in which case the caller paints
- * every pixel itself; false with a reason ("budget" or "malformed") when the
- * tree was dropped for its size or its shape, in which case the owner's
- * content entry is cleared and the caller paints nothing.
+ * lua/wibox/clay.lua compiled. The tree is solved immediately through
+ * declare_widget_solve, and widget boxes return to Lua for placement and
+ * hit testing. Image entries reference their widget surfaces. Returns false
+ * when no tree, host or solved boxes are available, or false with a reason
+ * ("budget" or "malformed") when the tree is refused. These states show nothing.
  *
  * \param L The Lua VM state.
  * \param tree The node tree, or nil.
- * \return The leaf surface scale, or false.
+ * \return Whether a tree was stored and solved.
  * \return The boxes, drawin-local, one per widget node in preorder; or the
  * reason nothing shows.
  */
 static int
 luaA_drawable_clay_nodes(lua_State *L)
 {
-	static int boxes[WIDGET_NODES_MAX][4], dev[WIDGET_NODES_MAX][2];
+	static int boxes[WIDGET_NODES_MAX][4];
 	static const char *keys[] = { "x", "y", "width", "height" };
 	drawable_t *d = (drawable_t *)lua_touserdata(L, 1);
 	struct widget_host host = { 0 };
@@ -598,24 +420,19 @@ luaA_drawable_clay_nodes(lua_State *L)
 
 	if (!drawable_widget_host(d, &host)
 			|| !widget_nodes_set(L, host.tree, host.m, 2)
-			|| (n = declare_widget_solve(&host, boxes, dev)) == 0) {
+			|| (n = declare_widget_solve(&host, boxes)) == 0) {
 		lua_pushboolean(L, false);
 		if (host.tree && (host.tree->state == WIDGET_NODES_OVER_BUDGET
 				|| host.tree->state == WIDGET_NODES_MALFORMED)) {
-			struct image_entry *entry = d->owner_type == DRAWABLE_OWNER_DRAWIN
-				? &d->owner.drawin->content_entry
-				: client_titlebar_content(d->owner.client, d);
-			image_entry_set(entry, NULL);
-			declare_mark_all_dirty();
 			lua_pushstring(L, host.tree->state == WIDGET_NODES_OVER_BUDGET
 				? "budget" : "malformed");
 			return 2;
 		}
 		return 1;
 	}
-	widget_leaves_size(host.tree, dev);
+	widget_leaves_set(host.tree);
 
-	lua_pushnumber(L, d->surface_scale > 0 ? d->surface_scale : 1.0f);
+	lua_pushboolean(L, true);
 	lua_createtable(L, n, 0);
 	for (int i = 0; i < n; i++) {
 		lua_createtable(L, 0, 4);
@@ -630,7 +447,7 @@ luaA_drawable_clay_nodes(lua_State *L)
 
 /** The widget nodes under a drawable-local point, as Clay's pointer query
  * answers it (declare_widget_hits): the preorder index of each, from 1,
- * outermost first. Empty for a drawable that paints itself whole.
+ * outermost first. Empty for a drawable without a declared tree.
  * \param L The Lua VM state.
  * \param x The point, drawable-local.
  * \param y
@@ -655,53 +472,6 @@ luaA_drawable_clay_hits(lua_State *L)
 	return 1;
 }
 
-/** A leaf's surface, for Lua to draw into: a new reference, owned by the
- * wrapper Lua makes of it, as with drawable.surface.
- * \param L The Lua VM state.
- * \param i The leaf's index in the tree's preorder, from 1.
- * \return The surface, or nil past the last leaf.
- * \return Whether the surface is new and holds no pixels yet.
- */
-static int
-luaA_drawable_clay_leaf_surface(lua_State *L)
-{
-	drawable_t *drawable = (drawable_t *)lua_touserdata(L, 1);
-	lua_Integer i = luaL_checkinteger(L, 2);
-	bool fresh = false;
-	struct widget_host host;
-	cairo_surface_t *s = i >= 1 && drawable_widget_host(drawable, &host)
-		? widget_leaf_surface(host.tree, (size_t)i - 1, &fresh) : NULL;
-
-	if (!s) {
-		lua_pushnil(L);
-		return 1;
-	}
-	lua_pushlightuserdata(L, s);
-	lua_pushboolean(L, fresh);
-	return 2;
-}
-
-/** Mark the leaves Lua just drew, so the renderer re-rasters exactly those.
- * \param L The Lua VM state.
- * \param drawn A table whose keys are the indices of the redrawn leaves.
- */
-static int
-luaA_drawable_clay_leaves_drawn(lua_State *L)
-{
-	drawable_t *drawable = (drawable_t *)lua_touserdata(L, 1);
-
-	struct widget_host host;
-
-	if (lua_istable(L, 2) && drawable_widget_host(drawable, &host)
-			&& widget_leaves_drawn(L, host.tree, 2) && host.m->declare)
-		declare_output_mark_dirty(host.m->declare);
-	return 0;
-}
-
-/* ============================================================================
- * Lua Class Setup
- * ============================================================================ */
-
 /** Drawable constructor (called from Lua as capi.drawable()) */
 static int
 luaA_drawable_constructor(lua_State *L)
@@ -717,20 +487,6 @@ luaA_drawable_tostring(lua_State *L, lua_object_t *obj)
 {
 	drawable_t *d = (drawable_t *)obj;
 	lua_pushfstring(L, "drawable: %p %dx%d", (void*)d, d->geometry.width, d->geometry.height);
-	return 1;
-}
-
-/** Property getter: surface (class system signature) */
-static int
-luaA_drawable_get_surface(lua_State *L, lua_object_t *obj)
-{
-	drawable_t *d = (drawable_t *)obj;
-	if (d->surface) {
-		/* Return a new reference for Lua - increment Cairo refcount */
-		lua_pushlightuserdata(L, cairo_surface_reference(d->surface));
-		return 1;
-	}
-	lua_pushnil(L);
 	return 1;
 }
 
@@ -767,9 +523,6 @@ luaA_drawable_index(lua_State *L)
 	lua_pop(L, 2);
 
 	/* Check for properties */
-	if (strcmp(key, "surface") == 0) {
-		return luaA_drawable_get_surface(L, (lua_object_t *)d);
-	}
 	if (strcmp(key, "valid") == 0) {
 		return luaA_drawable_get_valid_prop(L, (lua_object_t *)d);
 	}
@@ -796,15 +549,11 @@ drawable_class_setup(lua_State *L)
 	};
 
 	static const struct luaL_Reg drawable_meta[] = {
-		{ "__gc", luaA_drawable_gc },
 		{ "__index", luaA_drawable_index },
 		{ "__newindex", luaA_drawable_newindex },
-		{ "refresh", luaA_drawable_refresh },
 		{ "geometry", luaA_drawable_geometry },
 		{ "_clay_nodes", luaA_drawable_clay_nodes },
 		{ "_clay_hits", luaA_drawable_clay_hits },
-		{ "_clay_leaf_surface", luaA_drawable_clay_leaf_surface },
-		{ "_clay_leaves_drawn", luaA_drawable_clay_leaves_drawn },
 		LUA_OBJECT_META(drawable)
 		{ NULL, NULL }
 	};
@@ -812,7 +561,7 @@ drawable_class_setup(lua_State *L)
 	/* Initialize drawable class using AwesomeWM class system */
 	luaA_class_setup(L, &drawable_class, "drawable", NULL,
 	                 (lua_class_allocator_t) drawable_allocator_wrapper,
-	                 (lua_class_collector_t) drawable_wipe,
+	                 NULL,
 	                 NULL,  /* no checker */
 	                 luaA_class_index_miss_property, luaA_class_newindex_miss_property,
 	                 drawable_methods, drawable_meta);
@@ -821,7 +570,6 @@ drawable_class_setup(lua_State *L)
 	luaA_class_set_tostring(&drawable_class, (lua_class_propfunc_t) luaA_drawable_tostring);
 
 	const lua_class_property_t properties[] = {
-		{ "surface", (lua_class_propfunc_t) luaA_drawable_get_surface, NULL, NULL },
 		{ "valid", (lua_class_propfunc_t) luaA_drawable_get_valid_prop, NULL, NULL },
 	};
 	luaA_class_add_properties(&drawable_class, properties, countof(properties));

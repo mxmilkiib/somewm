@@ -216,8 +216,8 @@ some_glib_poll(GPollFD *ufds, guint nfsd, gint timeout)
 	wl_display_flush_clients(dpy);
 
 	/* Drain wlroots idle sources before sleeping. wlr_output_schedule_frame()
-	 * (called by drawin_refresh_drawable() when a wibox redraws) queues the frame
-	 * as a wl_event_loop idle, and idles only run inside wl_event_loop_dispatch().
+	 * queues the frame as a wl_event_loop idle, and idles only run inside
+	 * wl_event_loop_dispatch().
 	 * That otherwise happens solely when the loop fd is readable from input or
 	 * client traffic (via wayland_source_dispatch), so a timer-driven redraw (e.g.
 	 * textclock / awful.widget.watch) updates the scene buffer but is never

@@ -13,8 +13,6 @@ typedef struct wlr_box area_t;  /* Already defined elsewhere, but repeated for c
 typedef struct drawin_t drawin_t;  /* Forward declare drawin */
 typedef struct client_t client_t;  /* Forward declare client */
 
-/* Refresh callback type - called when drawable content should be displayed */
-typedef void (*drawable_refresh_callback)(void *data);
 
 /* Drawable owner type - tracks what owns this drawable (AwesomeWM pattern) */
 typedef enum {
@@ -23,28 +21,15 @@ typedef enum {
 	DRAWABLE_OWNER_CLIENT   /* Owned by client titlebar */
 } drawable_owner_type_t;
 
-/* Drawable object - manages Cairo surface for rendering (migrating to AwesomeWM class system) */
+/* Drawable geometry and owner, using the AwesomeWM class system. */
 typedef struct drawable_t {
 	LUA_OBJECT_HEADER  /* Adds signals, refs, class - replaces signal_array_t */
-
-	/* Cairo surface for drawing */
-	cairo_surface_t *surface;
 
 	/* X11 pixmap stub (for AwesomeWM compatibility) - always 0 on Wayland */
 	uint32_t pixmap;
 
 	/* Geometry (AwesomeWM uses area_t instead of separate x/y/width/height) */
 	area_t geometry;
-
-	/* Refresh callback and data */
-	drawable_refresh_callback refresh_callback;
-	void *refresh_data;
-
-	/* Surface has been drawn to and is ready to display */
-	bool refreshed;
-
-	/* Scale factor the surface was created at (for HiDPI) */
-	float surface_scale;
 
 	/* Object validity flag - false when being garbage collected */
 	bool valid;
@@ -62,7 +47,7 @@ typedef struct drawable_t {
 extern lua_class_t drawable_class;
 
 /* Drawable class setup (AwesomeWM API) */
-drawable_t *drawable_allocator(lua_State *L, drawable_refresh_callback callback, void *data);
+drawable_t *drawable_allocator(lua_State *L);
 void drawable_set_geometry(lua_State *L, int didx, area_t geom);
 void drawable_class_setup(lua_State *L);
 

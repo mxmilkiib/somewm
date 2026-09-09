@@ -1,11 +1,4 @@
--- Pixel readback for the converted-widget tests: a box of a screen's content
--- as one string, single pixels out of it, and the comparison of two captures.
---
--- Two ways to draw one wibox have to land the same pixels: the converted tree
--- (Clay rectangles plus raster leaves) and the whole surface painted by cairo.
--- The drawable goes back to painting whole when it gains a shape or a
--- background image, so a test converts, captures, sets one of those, and
--- compares.
+-- Pixel readback, color leaves and capture comparisons for widget-tree tests.
 
 local ffi = require("ffi")
 
@@ -16,26 +9,18 @@ ffi.cdef [[
 ]]
 
 local base = require("wibox.widget.base")
-local gcolor = require("gears.color")
 local utils = require("_utils")
 
 local capture = {}
 
--- A widget the compile step can never convert, with a preferred size: as
--- wide as asked (or as offered, for math.huge), as tall as offered unless
--- given, so a fixed layout sizes it and an align or a place has something
--- to center. Draws one flat color.
+-- A flat color leaf with a preferred size, growing where no size is given.
 function capture.leaf_widget(width, height, color)
     local w = base.make_widget()
 
-    rawset(w, "fit", function(_, _, avail_w, avail_h)
-        return math.min(width, avail_w), math.min(height or avail_h, avail_h)
-    end)
-    rawset(w, "draw", function(_, _, cr, w2, h2)
-        cr:set_source(gcolor(color))
-        cr:rectangle(0, 0, w2, h2)
-        cr:fill()
-    end)
+    w._clay = { describe = function()
+        return { bg = require("wibox.clay").solid_rgba(color),
+            w = width == math.huge and "grow" or width, h = height or "grow" }
+    end, name = "leaf" }
     return w
 end
 
@@ -45,21 +30,6 @@ function capture.assert_box(got, want, what)
     local ok, err = pcall(utils.assert_geometry, got, want)
 
     assert(ok, what .. ": " .. tostring(err))
-end
-
--- A step that runs `setup` once and then waits for the readback to say the
--- tree did or did not convert. The fallbacks repaint a frame or two later,
--- so every one of these polls.
-function capture.step_until(get_bar, converted, setup, what)
-    return function(count)
-        if count == 1 then
-            setup()
-        end
-        if (#awesome._test_widget_boxes(get_bar().drawin) > 0) == converted then
-            return true
-        end
-        assert(count < 20, what)
-    end
 end
 
 -- R, G, B, A of one pixel of a content surface (screen.content,
@@ -126,9 +96,7 @@ function capture:assert_pixel(shot, x, y, hex, what)
             what, x, y, r, g, b, hex))
 end
 
--- A step body: the box looks the same now as in `captured`. Retried because
--- the repaint the fallback needs lands a frame or two later; after twenty
--- tries the first differing pixel is the failure.
+-- Compare the box with `captured`, allowing twenty frames for redraw.
 function capture:compare(count, captured, what)
     local shot = self:shot()
 

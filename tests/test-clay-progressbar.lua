@@ -105,10 +105,11 @@ local steps = {
             return nil
         end
         local line = awesome._clay_tree(s):match("[^\n]*wibox.widget.progressbar[^\n]*")
-        assert(line and line:find(" raster", 1, true), "the ticked progressbar did not raster")
-        assert(pixel(51, 20, "#00ff00"), "the raster centre is not green")
+        assert(not line, "wibox.widget.progressbar was not refused")
+        assert(#awesome._test_widget_boxes(bar.drawin) == 2, "the refused subtree still has boxes")
+        assert(pixel(51, 20, BG), "the centre does not show the bar background")
         bar.visible = false
-        io.stderr:write("[PASS] ticks return the progressbar to a raster with a green centre\n")
+        io.stderr:write("[PASS] ticks refuse the progressbar\n")
         return true
     end,
 }

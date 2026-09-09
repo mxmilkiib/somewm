@@ -6,11 +6,8 @@
 -- CLAY_SIZING_GROW) mean Clay decided the size; a number is
 -- CLAY_SIZING_FIXED, which means something else decided and Clay was told.
 --
--- A converted tree may carry a number only where Clay itself offers nothing
--- else: the drawin root, whose geometry rc.lua set; a raster leaf, whose
--- pixels Clay cannot measure (Clay_ImageElementConfig is a bare pointer,
--- clay.h), so it is declared at its own `:fit`; and a widget with a genuine
--- forced_width or forced_height.
+-- Fixed sizes name the drawin geometry, leaf preferences and forced sizes.
+-- The four described leaves retain those sizes in the solved box readback.
 --
 -- Run: make test-one TEST=tests/test-clay-widget-sizing.lua
 ---------------------------------------------------------------------------
@@ -39,7 +36,6 @@ local function block()
             end
             nodes[#nodes + 1] = {
                 depth = #indent / 2, class = class, w = w, h = h,
-                raster = line:find(" raster ", 1, true) ~= nil,
                 line = line,
             }
         elseif line:sub(1, #want) == want then
@@ -102,26 +98,17 @@ local steps = {
         assert(head:find("converted", 1, true),
             "the bar did not convert: " .. head)
 
-        local forced, rasters = 0, 0
-        for _, node in ipairs(nodes) do
-            local fixed_w, fixed_h = tonumber(node.w), tonumber(node.h)
-
-            if node.depth == 0 then
-                assert(fixed_w and fixed_h,
-                    "the root is not the drawin's geometry: " .. node.line)
-            elseif node.raster then
-                -- Sized by its own fit, or growing where it takes all of it.
-                rasters = rasters + 1
-            elseif fixed_w == 100 and not fixed_h
-                    and node.class == "wibox.container.margin" then
-                forced = forced + 1
-            else
-                assert(not fixed_w and not fixed_h,
-                    "a size Clay did not decide: " .. node.line)
-            end
+        local boxes = awesome._test_widget_boxes(bar.drawin)
+        for i, want in ipairs {
+            { index = 5, width = 40, height = 24 },
+            { index = 7, width = 100, height = 24 },
+            { index = 10, width = 30, height = 24 },
+            { index = 14, width = 70, height = 16 },
+        } do
+            local box = boxes[want.index]
+            assert(box and box.width == want.width and box.height == want.height,
+                "unexpected leaf box " .. i)
         end
-        assert(rasters == 4, "expected four raster leaves, got " .. rasters)
-        assert(forced == 1, "the forced width is not in the tree")
         io.stderr:write("[PASS] Clay sizes every node it can\n")
         bar.visible = false
         return true

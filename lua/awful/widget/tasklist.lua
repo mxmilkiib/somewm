@@ -726,19 +726,7 @@ function tasklist:get_count()
     return self._private.last_count
 end
 
-function tasklist:layout(_, width, height)
-    if self._private.base_layout then
-        return { base.place_widget_at(self._private.base_layout, 0, 0, width, height) }
-    end
-end
 
-function tasklist:fit(context, width, height)
-    if not self._private.base_layout then
-        return 0, 0
-    end
-
-    return base.fit_widget(self, context, self._private.base_layout, width, height)
-end
 
 for _, prop in ipairs { "screen", "filter", "update_function", "widget_template", "source"} do
     tasklist["set_"..prop] = function(self, value)

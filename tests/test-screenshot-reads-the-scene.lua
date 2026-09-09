@@ -3,9 +3,8 @@
 --
 -- root.content() and screen.content composite what the renderer drew:
 -- every node of the reconciled Clay tree. A drawin's pixels come from its
--- image leaf or its converted tree, never from its drawable surface, so a
--- wibox that converted after painting whole captures as it is drawn now,
--- not as its stale surface says. The wallpaper is the tree's wallpaper
+-- described tree. A refused widget leaves the drawable background visible.
+-- The wallpaper is the tree's wallpaper
 -- leaf, root.content(true) leaves it out for a transparent capture, and a
 -- translucent drawin captures at its opacity.
 --
@@ -41,47 +40,39 @@ local function is(hex, r, g, b)
         and near(b, tonumber(hex:sub(6, 7), 16))
 end
 
-local function converted()
-    return #awesome._test_widget_boxes(w.drawin) > 0
-end
+
 
 local steps = {
-    -- A wibox painting whole (its widget is one the tree cannot express):
-    -- red.
+    -- A refused widget leaves the red drawable background visible.
     function(count)
         if count == 1 then
+            local leaf = capture.leaf_widget(120, 40, "#ff0000")
+            rawset(leaf, "draw", function() end)
             w = wibox({ x = geo.x + 300, y = geo.y + 200, width = 120, height = 40,
                 bg = "#ff0000", visible = true,
-                widget = capture.leaf_widget(120, 40, "#ff0000") })
+                widget = leaf })
             cx, cy = geo.x + 360, geo.y + 220
             return nil
         end
-        if converted() then
-            return nil
-        end
         if is("#ff0000", screen_pixel(cx, cy)) and is("#ff0000", root_pixel(cx, cy)) then
-            io.stderr:write("[PASS] the whole-painted wibox captures red\n")
+            io.stderr:write("[PASS] a refused widget leaves the red background in the capture\n")
             return true
         end
         assert(count < 15, "the red wibox never reached the capture")
     end,
 
-    -- The same wibox converts and turns blue; its drawable surface still
-    -- holds the red pixels, and neither reader may show them.
+    -- Replacing the refused widget and background turns the capture blue.
     function(count)
         if count == 1 then
             w.widget = wibox.container.background(wibox.widget.textbox(""), "#0000ff")
             w.bg = "#0000ff"
             return nil
         end
-        if not converted() then
-            return nil
-        end
         local r, g, b = screen_pixel(cx, cy)
         local rr, rg, rb = root_pixel(cx, cy)
 
         if is("#0000ff", r, g, b) and is("#0000ff", rr, rg, rb) then
-            io.stderr:write("[PASS] the converted wibox captures blue, not its stale surface\n")
+            io.stderr:write("[PASS] the described wibox captures blue\n")
             return true
         end
         assert(count < 15, string.format(

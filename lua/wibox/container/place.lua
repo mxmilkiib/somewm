@@ -23,54 +23,8 @@ local align_fct = {
 }
 align_fct.top, align_fct.bottom = align_fct.left, align_fct.right
 
--- Shared with some subclasses like the `tiled` and `scaled` modules.
-function place:_layout(context, width, height)
-    local w, h = base.fit_widget(self, context, self._private.widget, width, height)
 
-    if self._private.content_fill_horizontal then
-        w = width
-    end
 
-    if self._private.content_fill_vertical then
-        h = height
-    end
-
-    local valign = self._private.valign or "center"
-    local halign = self._private.halign or "center"
-
-    local x, y = align_fct[halign](w, width), align_fct[valign](h, height)
-
-    -- Sub pixels makes everything blurry. This is now what people expect.
-    x, y = math.floor(x), math.floor(y)
-
-    return x, y, w, h
-end
-
--- Layout this layout
-function place:layout(context, width, height)
-
-    if not self._private.widget then
-        return
-    end
-
-    local x, y, w, h = self:_layout(context, width, height)
-
-    return { base.place_widget_at(self._private.widget, x, y, w, h) }
-end
-
--- Fit this layout into the given area
-function place:fit(context, width, height)
-    if not self._private.widget then
-        return 0, 0
-    end
-
-    local w, h = base.fit_widget(self, context, self._private.widget, width, height)
-
-    return (self._private.fill_horizontal or self._private.content_fill_horizontal)
-        and width or w,
-    (self._private.fill_vertical or self._private.content_fill_vertical)
-        and height or h
-end
 
 --- The widget to be placed.
 --
@@ -224,9 +178,6 @@ end
 local function describe_place(w)
     local p = w._private
 
-    if w.layout ~= place.layout then
-        return nil
-    end
 
     local node = { specs = {},
         align = { x = p.halign or "center", y = p.valign or "center" },
@@ -241,7 +192,7 @@ local function describe_place(w)
     return node
 end
 
-place._clay = { describe = describe_place, fit = place.fit }
+place._clay = { describe = describe_place }
 
 return setmetatable(place, place.mt)
 

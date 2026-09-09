@@ -1,15 +1,7 @@
--- Test: the bundled bar's layouts convert to Clay declarations and draw what
--- the layout engine draws.
---
--- The tree is the shape of somewmrc.lua's wibar: a stack of an align of two
--- fixed layouts and a background, and a centered place, with a widget the
--- compile step can never convert standing in for every textbox and imagebox.
--- Four things are checked: the tree converts; Clay's boxes, read back
--- through awesome._test_widget_boxes(), are where the engine used to put
--- the same widgets; the pointer over a gap between two leaves still reaches
--- the wibox; and the screen looks the same converted as it does painted
--- whole (a transparent background image puts the drawable back on the path
--- where cairo paints every pixel, and masks nothing away).
+-- Test the bundled bar layout's boxes, pixels and pointer targets.
+-- The stack holds an align with two fixed layouts and a background, plus
+-- a centered place. Described color leaves stand in for text and images.
+-- Fractional spacing refuses the stack; a surface bgimage keeps its tree.
 --
 -- Run: make test-one TEST=tests/test-clay-widget-layouts.lua
 
@@ -101,7 +93,6 @@ local steps = {
         local shot = cap:shot()
 
         assert_bar(shot, "the converted tree")
-        captured = shot
         io.stderr:write("[PASS] the converted tree draws where it should\n")
         return true
     end,
@@ -140,15 +131,16 @@ local steps = {
             "the middle's geometry is not Clay's box")
 
         -- Under the point: the stack, the align, the middle, then the place
-        -- and the clock over them, the clock through its own hierarchy.
+        -- and the clock over them, the clock as a described widget.
         local clock = bar.widget:get_children()[2]:get_children()[1]
         local under = bar._drawable:find_widgets(200, 12)
 
+        for _, result in ipairs(under) do assert(result.hierarchy == nil) end
         assert(#under == 5, "find_widgets found " .. #under .. " widgets, want 5")
         assert(under[1].widget == bar.widget, "find_widgets did not start at the stack")
         assert(under[3].widget == middle, "the middle is not third")
-        assert(under[5].widget == clock and under[5].hierarchy,
-            "the clock is not last, with its hierarchy")
+        assert(under[5].widget == clock,
+            "the clock is not last")
 
         -- Clay answers the query: the stack child over the middle is a
         -- floating element that passes the pointer through, so both are
@@ -174,46 +166,30 @@ local steps = {
         return true
     end,
 
-    -- A refusal only the compile step sees: a fractional stack spacing is
-    -- not a whole childGap, so nothing converts. Nothing asks for a
-    -- complete repaint on that path, and this surface holds no pixels at
-    -- all while the leaves are drawing, so it has to repaint every one.
-    capture.step_until(function() return bar end, false,
-        function() bar.widget.spacing = 0.5 end,
-        "a fractional spacing did not put the drawable back on cairo"),
-
+    -- Fractional spacing refuses the stack and all its children.
     function(count)
-        if pcall(assert_bar, cap:shot(), "the whole-painted bar") then
-            io.stderr:write("[PASS] leaving the converted path repaints whole\n")
-            return true
-        end
-        assert(count < 20, "the bar has holes after it stopped converting")
+        if count == 1 then bar.widget.spacing = 0.5; return nil end
+        assert(#awesome._test_widget_boxes(bar.drawin) == 1, "the stack was not refused")
+        io.stderr:write("[PASS] fractional spacing refuses the stack subtree\n")
+        return true
     end,
-
-    -- And back: the leaf surfaces are new, so every leaf paints whole even
-    -- where the dirty region does not reach it.
-    capture.step_until(function() return bar end, true,
-        function() bar.widget.spacing = 0 end,
-        "a whole spacing did not convert the tree again"),
-
     function(count)
-        if pcall(assert_bar, cap:shot(), "the reconverted bar") then
-            io.stderr:write("[PASS] returning to the tree paints every leaf\n")
-            return true
-        end
-        assert(count < 20, "a leaf is blank after the tree converted again")
+        if count == 1 then bar.widget.spacing = 0; return nil end
+        assert(#awesome._test_widget_boxes(bar.drawin) == 13, "the stack did not return")
+        assert_bar(cap:shot(), "the restored tree")
+        io.stderr:write("[PASS] whole spacing restores the stack subtree\n")
+        return true
     end,
-
-    -- The same tree painted whole: a transparent background image puts the
-    -- drawable back on the path where cairo paints every pixel and masks
-    -- nothing away.
-    capture.step_until(function() return bar end, false,
-        function()
+    function(count)
+        if count == 1 then
             bar.bgimage = cairo.ImageSurface(cairo.Format.ARGB32, 1, 1)
-        end, "a background image did not put the drawable back on cairo"),
-
-    function(count)
-        return cap:compare(count, captured, "a drawable painted whole")
+            return nil
+        end
+        assert(#awesome._test_widget_boxes(bar.drawin) == 13, "bgimage changed the widget count")
+        assert(awesome._clay_tree(s):find(" image ", 1, true), "bgimage has no image node")
+        assert_bar(cap:shot(), "the tree with bgimage")
+        io.stderr:write("[PASS] a surface bgimage keeps the widget tree\n")
+        return true
     end,
 
     function()

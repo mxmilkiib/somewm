@@ -37,7 +37,7 @@ local function nodes()
             end
             local x, y, w, h = line:match("box (%d+),(%d+) (%d+)x(%d+)")
             out[#out + 1] = { depth = #indent / 2, class = class,
-                raster = line:find(" raster ", 1, true) ~= nil, line = line,
+                image = line:find(" image ", 1, true) ~= nil, line = line,
                 box = x and { x = tonumber(x), y = tonumber(y),
                     width = tonumber(w), height = tonumber(h) } }
         elseif line:sub(1, #want) == want then
@@ -107,19 +107,19 @@ local steps = {
 
         local tb = textboxes(list)
 
-        assert(#tb == 4, "expected four textboxes, got " .. #tb)
-        assert(not tb[1].node.raster and tb[1].text,
+        assert(#tb == 3, "expected three textboxes, got " .. #tb)
+        assert(not tb[1].node.image and tb[1].text,
             "plain text did not become a text element: " .. tb[1].node.line)
         assert(tb[1].text.line:find('"Hello world"', 1, true),
             "the text element does not carry the text: " .. tb[1].text.line)
-        assert(not tb[2].node.raster and tb[2].text,
+        assert(not tb[2].node.image and tb[2].text,
             "a one-run markup did not become a text element: " .. tb[2].node.line)
         assert(tb[2].text.line:find('"Red & plain"', 1, true),
             "the markup's text is not unescaped: " .. tb[2].text.line)
-        assert(tb[3].node.raster, "rich markup converted: " .. tb[3].node.line)
-        assert(not tb[4].node.raster and not tb[4].text
-            and tb[4].node.box.width == 0,
-            "an empty textbox is not an empty element: " .. tb[4].node.line)
+        assert(#awesome._test_widget_boxes(bar.drawin) == 5, "the refused widget still has a box")
+        assert(not tb[3].node.image and not tb[3].text
+            and tb[3].node.box.width == 0,
+            "an empty textbox is not an empty element: " .. tb[3].node.line)
         -- Clay sized the textboxes: fit along, the whole bar across.
         assert(tb[1].node.line:find(" w=fit h=grow ", 1, true),
             "the textbox is not sized by Clay: " .. tb[1].node.line)

@@ -385,15 +385,7 @@ declare_titlebar(Client *c, client_titlebar_t bar, uint32_t id, int16_t z)
 	Clay__ConfigureOpenElementPtr(&e);
 	if (host.tree->nodes_len > 0)
 		declare_widget_tree(&host, z, leaf_userdata(handle, 1.0f));
-	else if (c->titlebar[bar].content.native) {
-		Clay_ElementDeclaration content = {
-			.id = Clay__HashString(CLAY_STRING("titlebar.image"), host.id, 0),
-			.layout.sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0) },
-			.image.imageData = &c->titlebar[bar].content,
-			.userData = leaf_userdata(handle, 1.0f),
-		};
-		declare_leaf(&content);
-	}
+
 	Clay__CloseElement();
 }
 
@@ -817,7 +809,7 @@ declare_widget_subtree(const struct widget_host *host, size_t i, Clay_ElementId 
 			e.cornerRadius = (Clay_CornerRadius) { host->radius,
 				host->radius, host->radius, host->radius };
 	}
-	if (n->raster && *leaf < d->leaves_len)
+	if (n->image && *leaf < d->leaves_len)
 		e.image.imageData = &d->leaves[(*leaf)++];
 	if (n->shape)
 		e.custom.customData = render_shape_tag(&d->shapes[n->shape - 1].shape);
@@ -874,9 +866,7 @@ declare_drawin(drawin_t *d, Monitor *m, int16_t z)
 		declare_leaf(&b);
 	}
 
-	/* A converted widget tree declares its own leaves, each carrying the
-	 * pixels of one subtree lua/wibox/clay.lua could not express, at the
-	 * box Clay solves for it. */
+	/* The widget tree declares the drawin's content. */
 	if (d->widgets.nodes_len > 0) {
 		struct widget_host host;
 
@@ -885,21 +875,14 @@ declare_drawin(drawin_t *d, Monitor *m, int16_t z)
 		return;
 	}
 
-	Clay_ElementDeclaration c = leaf_at(CLAY_STRING("drawin.image"), id, z,
-		x, y, d->width, d->height);
-	c.image.imageData = &d->content_entry;
-	c.userData = leaf_userdata(handle, opacity);
-	declare_leaf(&c);
 }
 
-/* Map-then-draw: a drawin only declares once its content entry holds pixels,
- * the same gate the old path applied by enabling the scene node after the
- * first refresh. */
+/* A visible drawin declares once its first compile stores a tree. */
 static bool
 declarable_drawin(drawin_t *d, Monitor *m)
 {
 	return d->visible
-		&& d->content_entry.native
+		&& d->widgets.nodes_len > 0
 		&& d->screen && d->screen->monitor == m;
 }
 
@@ -1018,13 +1001,10 @@ declare_scene(Monitor *m)
 /* The boxes of one subtree, in the preorder the tree table uses, rounded
  * against the root's own box so a box crossing into Lua is the whole
  * drawin-local pixel. Edges round, not the size, so two boxes that share an
- * edge in Clay share it here. With dev, each raster leaf's box in device
- * pixels as well, by the arithmetic rasterize_image (render.c) runs on the
- * same box, so the surface Lua draws into is the size the renderer shows it
- * at and is never resampled. */
+ * edge in the solved layout share it here. */
 static size_t
 widget_boxes_walk(struct widget_tree *d, size_t i, Clay_ElementId id, int (*boxes)[4],
-	int *n, Clay_BoundingBox root, int (*dev)[2], int *nleaf, float scale)
+	int *n, Clay_BoundingBox root)
 {
 	const struct widget_node *node = &d->nodes[i];
 	Clay_ElementData data = Clay_GetElementData(id);
@@ -1041,17 +1021,9 @@ widget_boxes_walk(struct widget_tree *d, size_t i, Clay_ElementId id, int (*boxe
 		boxes[*n][3] = (int)floorf(b.y + b.height - root.y + 0.5f) - y0;
 		(*n)++;
 	}
-	/* A painted leaf's device size; an image leaf brings its own pixels. */
-	if (dev && data.found && node->raster && !node->image) {
-		Clay_BoundingBox b = data.boundingBox;
-
-		dev[*nleaf][0] = render_device_len((int)b.x, (int)b.width, scale);
-		dev[*nleaf][1] = render_device_len((int)b.y, (int)b.height, scale);
-		(*nleaf)++;
-	}
 	for (uint16_t k = 0; k < node->children; k++)
 		next = widget_boxes_walk(d, next, widget_child_id(d, next, id, k),
-			boxes, n, root, dev, nleaf, scale);
+			boxes, n, root);
 	return next;
 }
 
@@ -1152,8 +1124,7 @@ declare_widget_boxes(const struct widget_host *host, int (*boxes)[4])
 	root_id = widget_root_id(host->id);
 	root = Clay_GetElementData(root_id);
 	if (root.found)
-		widget_boxes_walk(d, 0, root_id, boxes, &n, root.boundingBox,
-			NULL, NULL, 1);
+		widget_boxes_walk(d, 0, root_id, boxes, &n, root.boundingBox);
 	Clay_SetCurrentContext(previous);
 	return n;
 }
@@ -1161,8 +1132,8 @@ declare_widget_boxes(const struct widget_host *host, int (*boxes)[4])
 static void handle_clay_error(Clay_ErrorData error);
 
 /* Solve d's tree now, before any frame, and read every box back: what
- * drawable:_clay_nodes returns to Lua, which sizes the leaf surfaces and
- * draws and hit-tests against them. The solve runs in a context of its own
+ * drawable:_clay_nodes returns to Lua for placement and hit testing.
+ * The solve runs in a context of its own
  * holding only this tree: a partial layout in the output's context would
  * evict every other element's box from Clay's hashmap (clay.h, generation
  * eviction in Clay__AddHashMapItem), and the frame's own declare, solve and
@@ -1170,7 +1141,7 @@ static void handle_clay_error(Clay_ErrorData error);
  * at the drawin's output-local origin, so the device rounding matches the
  * renderer's to the pixel. */
 int
-declare_widget_solve(const struct widget_host *host, int (*boxes)[4], int (*dev)[2])
+declare_widget_solve(const struct widget_host *host, int (*boxes)[4])
 {
 	struct widget_tree *d = host->tree;
 	static Clay_Context *ctx;
@@ -1178,7 +1149,7 @@ declare_widget_solve(const struct widget_host *host, int (*boxes)[4], int (*dev)
 	Clay_Context *previous;
 	Clay_ElementId root_id;
 	Clay_ElementData root;
-	int n = 0, nleaf = 0;
+	int n = 0;
 	size_t leaf = 0;
 
 	if (!m || d->nodes_len == 0)
@@ -1207,8 +1178,7 @@ declare_widget_solve(const struct widget_host *host, int (*boxes)[4], int (*dev)
 	Clay_EndLayout();
 	root = Clay_GetElementData(root_id);
 	if (root.found)
-		widget_boxes_walk(d, 0, root_id, boxes, &n, root.boundingBox,
-			dev, &nleaf, m->wlr_output->scale);
+		widget_boxes_walk(d, 0, root_id, boxes, &n, root.boundingBox);
 	Clay_SetCurrentContext(previous);
 	in_frame = false;
 	return n;
@@ -1578,7 +1548,7 @@ dump_what(buffer_t *buf, uint32_t id, void *userdata)
 				id);
 		if (n && n != d->widgets.nodes)
 			buffer_addf(buf, "widget %s%s", n->cls ? n->cls : "-",
-				n->raster ? " raster" : "");
+				n->image ? " image" : "");
 		else
 			buffer_addf(buf, "drawin screen %d %dx%d+%d+%d",
 				d->screen ? d->screen->index : 0,
@@ -1679,9 +1649,7 @@ dump_widget_node(buffer_t *buf, const struct widget_host *host, size_t i, Clay_E
 		}
 		if (n->natural)
 			buffer_adds(buf, " natural");
-	} else if (n->raster)
-		buffer_adds(buf, " raster");
-	else if (n->shape)
+	} else if (n->shape)
 		buffer_adds(buf, " shape");
 	if (!n->widget && !n->text && !n->image)
 		buffer_adds(buf, " spacer");
@@ -1718,9 +1686,7 @@ dump_widget_node(buffer_t *buf, const struct widget_host *host, size_t i, Clay_E
 	return next;
 }
 
-/* Why a drawin paints itself whole, in the words widget.h names the reasons
- * with, so the dump answers the question rather than only reporting that one
- * image leaf drew. */
+/* Why a drawin has no compiled tree, using the states from widget.h. */
 static void
 dump_whole(buffer_t *buf, drawin_t *d)
 {
@@ -1748,12 +1714,11 @@ dump_drawin(buffer_t *buf, drawin_t *d)
 		d->screen ? d->screen->index : 0, d->width, d->height,
 		d->x, d->y);
 	if (d->widgets.nodes_len == 0) {
-		buffer_adds(buf, d->widgets.state == WIDGET_NODES_OVER_BUDGET
-			|| d->widgets.state == WIDGET_NODES_MALFORMED ? "nothing:" : "whole:");
+		buffer_adds(buf, "nothing:");
 		dump_whole(buf, d);
 		return;
 	}
-	buffer_addf(buf, "converted: %zu nodes, %zu raster",
+	buffer_addf(buf, "converted: %zu nodes, %zu images",
 		d->widgets.nodes_len, d->widgets.leaves_len);
 	if (d->shape_radius > 0)
 		buffer_addf(buf, ", radius %g", d->shape_radius);
@@ -1771,10 +1736,8 @@ dump_drawin(buffer_t *buf, drawin_t *d)
 		dump_widget_node(buf, &host, 0, widget_root_id(host.id), 0);
 }
 
-/* The drawins the band draws, converted or whole, on the same filters the
- * band's own declare pass applies, plus a drawin whose tree is over budget
- * or malformed: it shows nothing and has no content entry, and is listed so
- * the dump can say why. The lock band solves only while the session is
+/* Visible drawins on the band, including those without a compiled tree so
+ * the dump can explain why they show nothing. The lock band solves while the session is
  * locked; before that its drawins are the desktop band's, and listing them
  * here too would name them twice. */
 static void
@@ -1789,10 +1752,7 @@ dump_drawins(buffer_t *buf, Monitor *m, bool lock)
 				: (session_is_locked()
 					&& some_is_lock_drawin(d)))
 			continue;
-		if (!d->visible || !d->screen || d->screen->monitor != m
-				|| (!d->content_entry.native
-					&& d->widgets.state != WIDGET_NODES_OVER_BUDGET
-					&& d->widgets.state != WIDGET_NODES_MALFORMED))
+		if (!d->visible || !d->screen || d->screen->monitor != m)
 			continue;
 		dump_drawin(buf, d);
 	}
@@ -1812,17 +1772,13 @@ dump_titlebars(buffer_t *buf, Monitor *m)
 			struct widget_host host;
 			struct widget_tree *tree = &c->titlebar[bar].widgets;
 
-			if (!c->titlebar[bar].size || (!tree->nodes_len && !c->titlebar[bar].content.native)
+			if (!c->titlebar[bar].size || !tree->nodes_len
 					|| !client_titlebar_host(c, c->titlebar[bar].drawable, &host))
 				continue;
 			buffer_addf(buf, "  titlebar %s %s %dx%d+%d+%d ",
 				client_get_appid(c), names[bar], host.w, host.h,
 				host.x + m->m.x, host.y + m->m.y);
-			if (!tree->nodes_len) {
-				buffer_adds(buf, "whole:\n");
-				continue;
-			}
-			buffer_addf(buf, "converted: %zu nodes, %zu raster\n",
+			buffer_addf(buf, "converted: %zu nodes, %zu images\n",
 				tree->nodes_len, tree->leaves_len);
 			if (tree->declared)
 				dump_widget_node(buf, &host, 0, widget_root_id(host.id), 0);

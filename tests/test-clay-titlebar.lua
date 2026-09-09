@@ -83,7 +83,7 @@ runner.run_steps({
             assert(count < 20, "the converted top titlebar never reached its box")
             return
         end
-        assert(titlebar:find("0 raster", 1, true), "the titlebar has raster leaves")
+        assert(titlebar:find("0 images", 1, true), "the titlebar has image leaves")
         assert(find("BORDER", box(frame.x, frame.y, frame.width, frame.height)),
             "missing client border")
         assert(find("TEXT", string.format("box %d,%d ", frame.x + 4, frame.y + 4)),

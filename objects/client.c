@@ -1608,7 +1608,6 @@ client_wipe(client_t *c)
     for (int i = 0; i < CLIENT_TITLEBAR_COUNT; i++) {
         declare_handle_drop(c->titlebar[i].drawable);
         widget_nodes_clear(&c->titlebar[i].widgets);
-        image_entry_set(&c->titlebar[i].content, NULL);
     }
 
     shadow_leaves_clear(&c->shadow);
@@ -2971,7 +2970,6 @@ client_unmanage(client_t *c, client_unmanage_t reason)
 
         declare_handle_drop(c->titlebar[bar].drawable);
         widget_nodes_clear(&c->titlebar[bar].widgets);
-        image_entry_set(&c->titlebar[bar].content, NULL);
 
         /* Forget about the drawable */
         luaA_object_push(L, c);
@@ -3572,15 +3570,6 @@ titlebar_get_area(client_t *c, client_titlebar_t bar)
     return result;
 }
 
-struct image_entry *
-client_titlebar_content(client_t *c, drawable_t *d)
-{
-    for (client_titlebar_t bar = CLIENT_TITLEBAR_TOP; bar < CLIENT_TITLEBAR_COUNT; bar++)
-        if (c->titlebar[bar].drawable == d)
-            return &c->titlebar[bar].content;
-    return NULL;
-}
-
 bool
 client_titlebar_host(client_t *c, drawable_t *d, struct widget_host *out)
 {
@@ -3630,69 +3619,13 @@ client_get_drawable(client_t *c, int x, int y)
     return client_get_drawable_offset(c, &x, &y);
 }
 
-static void
-client_refresh_titlebar_partial(client_t *c, client_titlebar_t bar, int16_t x, int16_t y, uint16_t width, uint16_t height)
-{
-    drawable_t *d = c->titlebar[bar].drawable;
-    struct image_entry *entry = &c->titlebar[bar].content;
-
-    if (!d || !d->refreshed)
-        return;
-    if (c->titlebar[bar].widgets.nodes_len > 0)
-        image_entry_set(entry, NULL);
-    else if (d->surface) {
-        cairo_surface_flush(d->surface);
-        image_entry_set(entry, cairo_surface_reference(d->surface));
-    }
-    if (c->mon && c->mon->declare)
-        declare_output_mark_dirty(c->mon->declare);
-}
-
-#define HANDLE_TITLEBAR_REFRESH(name, index)                                                \
-static void                                                                                 \
-client_refresh_titlebar_ ## name(client_t *c)                                               \
-{                                                                                           \
-    area_t area = titlebar_get_area(c, index);                                              \
-    client_refresh_titlebar_partial(c, index, area.x, area.y, area.width, area.height);     \
-}
-HANDLE_TITLEBAR_REFRESH(top, CLIENT_TITLEBAR_TOP)
-HANDLE_TITLEBAR_REFRESH(right, CLIENT_TITLEBAR_RIGHT)
-HANDLE_TITLEBAR_REFRESH(bottom, CLIENT_TITLEBAR_BOTTOM)
-HANDLE_TITLEBAR_REFRESH(left, CLIENT_TITLEBAR_LEFT)
-
-/**
- * Refresh all titlebars that are in the specified rectangle
- */
-void
-client_refresh_partial(client_t *c, int16_t x, int16_t y, uint16_t width, uint16_t height)
-{
-    for (client_titlebar_t bar = CLIENT_TITLEBAR_TOP; bar < CLIENT_TITLEBAR_COUNT; bar++) {
-        client_refresh_titlebar_partial(c, bar, x, y, width, height);
-    }
-}
-
 static drawable_t *
 titlebar_get_drawable(lua_State *L, client_t *c, int cl_idx, client_titlebar_t bar)
 {
     if (c->titlebar[bar].drawable == NULL)
     {
         cl_idx = luaA_absindex(L, cl_idx);
-        switch (bar) {
-        case CLIENT_TITLEBAR_TOP:
-            drawable_allocator(L, (drawable_refresh_callback) client_refresh_titlebar_top, c);
-            break;
-        case CLIENT_TITLEBAR_BOTTOM:
-            drawable_allocator(L, (drawable_refresh_callback) client_refresh_titlebar_bottom, c);
-            break;
-        case CLIENT_TITLEBAR_RIGHT:
-            drawable_allocator(L, (drawable_refresh_callback) client_refresh_titlebar_right, c);
-            break;
-        case CLIENT_TITLEBAR_LEFT:
-            drawable_allocator(L, (drawable_refresh_callback) client_refresh_titlebar_left, c);
-            break;
-        default:
-            fatal("Unknown titlebar kind %d\n", (int) bar);
-        }
+        drawable_allocator(L);
         c->titlebar[bar].drawable = luaA_object_ref_item(L, cl_idx, -1);
 
         c->titlebar[bar].drawable->owner_type = DRAWABLE_OWNER_CLIENT;

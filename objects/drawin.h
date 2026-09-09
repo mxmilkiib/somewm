@@ -56,7 +56,7 @@ typedef struct drawin_t {
 	char *cursor;                  /* Mouse cursor name (e.g., "left_ptr") */
 
 	/* Surface scale override (somewm extension, not in AwesomeWM).
-	 * 0.0 = auto (use output scale), >0.0 = force this scale for drawable surface.
+	 * 0.0 = auto (use output scale), >0.0 = force this scale for masks and borders.
 	 * Avoids HiDPI CPU upscaling for content like screenshot overlays. */
 	float scale_override;
 
@@ -85,17 +85,13 @@ typedef struct drawin_t {
 	 * and the converted drawin draws unshaped. Set at every mask change. */
 	float shape_radius;
 
-	/* Renderer leaves (the Clay flip): stable image entries the declare
-	 * pass hands to the renderer as imageData. Each native surface is a
-	 * drawin-owned copy (masks applied), so a drawable resize can never
-	 * dangle the renderer's source; gen bumps whenever content changes. */
-	struct image_entry content_entry;
+	/* Stable border and shadow image entries, owned by the drawin. */
 	struct image_entry border_entry;
 	struct shadow_leaves shadow;
 
-	/* The converted widget tree (widget.h), in preorder, and its raster
-	 * leaves, in preorder too. NULL while the drawable paints itself whole,
-	 * which is every drawin lua/wibox/clay.lua finds nothing to convert in. */
+	/* The described widget tree (widget.h) and its image entries in
+	 * preorder. Empty until the drawable's first compile stores a tree,
+	 * which is what lets a visible drawin declare (declare.c). */
 	struct widget_tree widgets;
 } drawin_t;
 
@@ -140,16 +136,6 @@ void drawin_mark_dirty(drawin_t *drawin);
 
 /* Drawin refresh cycle (called from main event loop) */
 void drawin_refresh(void);
-
-/* Re-feed the content entry from the drawable's pixels. */
-void drawin_refresh_drawable(drawin_t *drawin);
-
-/* Apply an A1 or ARGB32 shape mask to a surface.
- * Returns a new surface scaled by the mask's coverage.
- * Caller must destroy the returned surface.
- * Returns NULL if no shape, an unsupported format, or allocation fails. */
-cairo_surface_t *drawin_apply_shape_mask(
-    cairo_surface_t *src, cairo_surface_t *shape);
 
 /* Object signal support
  * Note: luaA_object_emit_signal() is now declared in awm_luaobject.h

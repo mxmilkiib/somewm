@@ -49,7 +49,7 @@ local function nodes(d)
             end
             local x, y, w, h = line:match("box (%d+),(%d+) (%d+)x(%d+)")
             out[#out + 1] = { depth = #indent / 2, class = class, line = line,
-                raster = line:find(" raster ", 1, true) ~= nil,
+                image = line:find(" image ", 1, true) ~= nil,
                 box = x and { x = tonumber(x), y = tonumber(y),
                     width = tonumber(w), height = tonumber(h) } }
         elseif line:sub(1, #want) == want then
@@ -96,13 +96,13 @@ local steps = {
         end
         assert(head:find("converted", 1, true), "the box did not convert: " .. head)
 
-        local rasters = {}
+        local images = {}
         for _, node in ipairs(list) do
-            if node.raster then
-                rasters[#rasters + 1] = node.class
+            if node.image then
+                images[#images + 1] = node.class
             end
         end
-        assert(#rasters == 0, "widgets draw themselves: " .. table.concat(rasters, ", "))
+        assert(#images == 1, "expected one notification icon image: " .. table.concat(images, ", "))
 
         local limit = beautiful.notification_max_width or 500
         local constraint = first(list, "wibox.container.constraint")

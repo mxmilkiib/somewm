@@ -29,109 +29,10 @@ local clay = require("wibox.clay")
 local unpack = unpack or table.unpack -- luacheck: globals unpack (compatibility with Lua 5.1)
 local base  = require("wibox.widget.base")
 local table = table
-local pairs = pairs
 local gtable = require("gears.table")
 
 local fixed = {}
 
--- Layout a fixed layout. Each widget gets just the space it asks for.
--- @param context The context in which we are drawn.
--- @param width The available width.
--- @param height The available height.
-function fixed:layout(context, width, height)
-    local result = {}
-    local spacing = self._private.spacing or 0
-    local is_y = self._private.dir == "y"
-    local is_x = not is_y
-    local abspace = math.abs(spacing)
-    local spoffset = spacing < 0 and 0 or spacing
-    local widgets_nr = #self._private.widgets
-    local spacing_widget
-    local x, y = 0, 0
-
-    spacing_widget = spacing ~= 0 and self._private.spacing_widget or nil
-
-    for index, widget in pairs(self._private.widgets) do
-        local w, h, local_spacing = width - x, height - y, spacing
-
-        -- Some widget might be zero sized either because this is their
-        -- minimum space or just because they are really empty. In this case,
-        -- they must still be added to the layout. Otherwise, if their size
-        -- change and this layout is resizable, they are lost "forever" until
-        -- a full relayout is called on this fixed layout object.
-        local zero = false
-
-        if is_y then
-            if index ~= widgets_nr or not self._private.fill_space then
-                h = select(2, base.fit_widget(self, context, widget, w, h))
-                zero = h == 0
-            end
-
-            if y - spacing >= height then
-                -- pop the spacing widget added in previous iteration if used
-                if spacing_widget then
-                    table.remove(result)
-
-                    -- Avoid adding zero-sized widgets at an out-of-bound
-                    -- position.
-                    y = y - spacing
-                end
-
-                -- Never display "random" widgets as soon as a non-zero sized
-                -- one doesn't fit.
-                if not zero then
-                    break
-                end
-            end
-        else
-            if index ~= widgets_nr or not self._private.fill_space then
-                w = select(1, base.fit_widget(self, context, widget, w, h))
-                zero = w == 0
-            end
-
-            if x - spacing >= width then
-                -- pop the spacing widget added in previous iteration if used
-                if spacing_widget then
-                    table.remove(result)
-
-                    -- Avoid adding zero-sized widgets at an out-of-bound
-                    -- position.
-                    x = x - spacing
-                end
-
-                -- Never display "random" widgets as soon as a non-zero sized
-                -- one doesn't fit.
-                if not zero then
-                    break
-                end
-            end
-        end
-
-        if zero then
-            local_spacing = 0
-        end
-
-        -- Place widget, even if it has zero width/height. Otherwise
-        -- any layout change for zero-sized widget would become invisible.
-        table.insert(result, base.place_widget_at(widget, x, y, w, h))
-
-        x = is_x and x + w + local_spacing or x
-        y = is_y and y + h + local_spacing or y
-
-        -- Add the spacing widget (if needed)
-        if index < widgets_nr and spacing_widget then
-            table.insert(result, base.place_widget_at(
-                spacing_widget,
-                is_x and (x - spoffset) or x,
-                is_y and (y - spoffset) or y,
-                is_x and abspace or w,
-                is_y and abspace or h
-            ))
-        end
-    end
-
-    return result
-end
 
 --- Add some widgets to the given layout.
 --
@@ -332,67 +233,6 @@ function fixed:insert(index, widget)
     return true
 end
 
--- Fit the fixed layout into the given space.
--- @param context The context in which we are fit.
--- @param orig_width The available width.
--- @param orig_height The available height.
-function fixed:fit(context, orig_width, orig_height)
-    local width_left, height_left = orig_width, orig_height
-    local spacing = self._private.spacing or 0
-    local widgets_nr = #self._private.widgets
-    local is_y = self._private.dir == "y"
-    local used_max = 0
-
-    -- when no widgets exist the function can be called with orig_width or
-    -- orig_height equal to nil. Exit early in this case.
-    if widgets_nr == 0 then
-        return 0, 0
-    end
-
-    for k, v in pairs(self._private.widgets) do
-        local w, h = base.fit_widget(self, context, v, width_left, height_left)
-        local max
-
-        if is_y then
-            max = w
-            height_left = height_left - h
-        else
-            max = h
-            width_left = width_left - w
-        end
-
-        if max > used_max then
-            used_max = max
-        end
-
-        if k < widgets_nr then
-            if is_y then
-                height_left = height_left - spacing
-            else
-                width_left = width_left - spacing
-            end
-        end
-
-        if width_left <= 0 or height_left <= 0 then
-            -- this complicated two lines determine whether we're out-of-space
-            -- because of spacing, or if the last widget doesn't fit in
-            if is_y then
-                 height_left = k < widgets_nr and height_left + spacing or height_left
-                 height_left = height_left < 0 and 0 or height_left
-            else
-                 width_left = k < widgets_nr and width_left + spacing or width_left
-                 width_left = width_left < 0 and 0 or width_left
-            end
-            break
-        end
-    end
-
-    if is_y then
-        return used_max, orig_height - height_left
-    end
-
-    return orig_width - width_left, used_max
-end
 
 function fixed:reset()
     self._private.widgets = {}
@@ -481,11 +321,11 @@ end
 -- between the children rather than a gap.
 -- Returns the node and the axis names along and across the direction, or
 -- nil when the layout keeps drawing itself.
-local function describe_linear(w, class)
+local function describe_linear(w)
     local p = w._private
     local spacing = p.spacing or 0
 
-    if w.layout ~= class.layout or not clay.whole(spacing)
+    if not clay.whole(spacing)
             or (spacing ~= 0 and p.spacing_widget) then
         return nil
     end
@@ -503,7 +343,7 @@ end
 -- size (clay.h:3080-3082), where the engine skipped the spacing of a child
 -- whose `:fit` was zero.
 local function describe_fixed(w)
-    local node, along, across = describe_linear(w, fixed)
+    local node, along, across = describe_linear(w)
 
     if not node then
         return nil
@@ -524,7 +364,7 @@ end
 
 fixed.describe_linear = describe_linear
 
-fixed._clay = { describe = describe_fixed, fit = fixed.fit }
+fixed._clay = { describe = describe_fixed }
 
 return fixed
 

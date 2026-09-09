@@ -31,11 +31,10 @@ extern void signal_array_wipe(signal_array_t *arr);
 /* Forward declarations for workarea updates */
 extern void screen_update_workarea(screen_t *screen);
 
-/* Forward declaration for drawable refresh callback */
 
-/** Get the effective scale for a drawin's drawable surface.
+/** Get the effective scale for drawin masks and borders.
  * Returns scale_override if set (>0), otherwise the output scale.
- * Used by drawable_get_scale() and direct scale queries in drawin.c.
+ * Used by mask, border and explicit scale queries.
  */
 static float
 drawin_get_effective_scale(drawin_t *d)
@@ -150,152 +149,6 @@ shape_a1_get(const unsigned char *data, int stride, int x, int y)
 #endif
 }
 
-/** Apply a shape mask to a cairo surface.
- * Returns a copy of src with each pixel scaled by the shape's coverage,
- * or NULL if either surface is unusable or the shape is neither A1 nor
- * ARGB32. Caller must destroy the returned surface.
- *
- * Both mask formats are in use: gears.surface.apply_shape_bounding and
- * AwesomeWM's wibox:_apply_shape produce A1, while somewm's own
- * _apply_shape and awful.mouse.snap produce ARGB32 for anti-aliased
- * edges. Reading one as the other walks off the end of the buffer,
- * since A1 rows are ~32x smaller.
- */
-cairo_surface_t *
-drawin_apply_shape_mask(cairo_surface_t *src, cairo_surface_t *shape)
-{
-	cairo_surface_t *dst;
-	cairo_format_t shape_format;
-	unsigned char *src_data, *dst_data, *shape_data;
-	int src_stride, dst_stride, shape_stride;
-	int width, height, shape_width, shape_height;
-	int x, y;
-
-	if (!src || !shape)
-		return NULL;
-
-	/* Check if surfaces are still valid (not finished by GC) */
-	if (cairo_surface_status(src) != CAIRO_STATUS_SUCCESS ||
-	    cairo_surface_status(shape) != CAIRO_STATUS_SUCCESS)
-		return NULL;
-
-	shape_format = cairo_image_surface_get_format(shape);
-	if (shape_format != CAIRO_FORMAT_A1 && shape_format != CAIRO_FORMAT_ARGB32) {
-		warn("drawin: ignoring shape mask in unsupported cairo format %d",
-		     shape_format);
-		return NULL;
-	}
-
-	cairo_surface_flush(src);
-	cairo_surface_flush(shape);
-
-	width = cairo_image_surface_get_width(src);
-	height = cairo_image_surface_get_height(src);
-	shape_width = cairo_image_surface_get_width(shape);
-	shape_height = cairo_image_surface_get_height(shape);
-
-	dst = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
-	if (cairo_surface_status(dst) != CAIRO_STATUS_SUCCESS) {
-		cairo_surface_destroy(dst);
-		return NULL;
-	}
-
-	src_data = cairo_image_surface_get_data(src);
-	dst_data = cairo_image_surface_get_data(dst);
-	shape_data = cairo_image_surface_get_data(shape);
-
-	/* Check for NULL data pointers (surface may have been finished by GC) */
-	if (!src_data || !dst_data || !shape_data) {
-		cairo_surface_destroy(dst);
-		return NULL;
-	}
-
-	src_stride = cairo_image_surface_get_stride(src);
-	dst_stride = cairo_image_surface_get_stride(dst);
-	shape_stride = cairo_image_surface_get_stride(shape);
-
-	/* Copy pixels, applying shape alpha mask.
-	 * Note: The shape surface may be at logical scale while the source
-	 * surface is at physical (HiDPI) scale. We need to scale coordinates
-	 * when looking up shape alpha. */
-	for (y = 0; y < height; y++) {
-		uint32_t *src_row = (uint32_t *)(src_data + y * src_stride);
-		uint32_t *dst_row = (uint32_t *)(dst_data + y * dst_stride);
-
-		/* Map physical y to logical shape y */
-		int shape_y = (shape_height > 0) ? (y * shape_height / height) : 0;
-
-		for (x = 0; x < width; x++) {
-			uint8_t shape_alpha = 0;
-
-			/* Map physical x to logical shape x */
-			int shape_x = (shape_width > 0) ? (x * shape_width / width) : 0;
-
-			/* Check if this pixel is within shape bounds.
-			 * Outside shape bounds = alpha 0 (transparent) */
-			if (shape_x < shape_width && shape_y < shape_height) {
-				if (shape_format == CAIRO_FORMAT_A1) {
-					/* 1 bit per pixel, fully in or fully out */
-					shape_alpha = shape_a1_get(shape_data, shape_stride,
-								   shape_x, shape_y) ? 255 : 0;
-				} else {
-					/* ARGB32: 4 bytes per pixel, alpha is byte 3 (on little-endian) */
-					int pixel_offset = (shape_y * shape_stride) + (shape_x * 4);
-					shape_alpha = shape_data[pixel_offset + 3];
-				}
-			}
-
-			if (shape_alpha == 255) {
-				/* Fully opaque - copy directly */
-				dst_row[x] = src_row[x];
-			} else if (shape_alpha == 0) {
-				/* Fully transparent. Cairo uses premultiplied
-				 * alpha, so RGB must be zeroed too. */
-				dst_row[x] = 0;
-			} else {
-				/* Partial alpha - blend (premultiplied alpha) */
-				uint32_t pixel = src_row[x];
-				uint8_t b = (pixel >> 0) & 0xFF;
-				uint8_t g = (pixel >> 8) & 0xFF;
-				uint8_t r = (pixel >> 16) & 0xFF;
-				uint8_t a = (pixel >> 24) & 0xFF;
-
-				/* Multiply all channels by shape_alpha/255 */
-				b = (b * shape_alpha) / 255;
-				g = (g * shape_alpha) / 255;
-				r = (r * shape_alpha) / 255;
-				a = (a * shape_alpha) / 255;
-
-				dst_row[x] = ((uint32_t)a << 24) | (r << 16) | (g << 8) | b;
-			}
-		}
-	}
-
-	cairo_surface_mark_dirty(dst);
-	return dst;
-}
-
-static cairo_surface_t *drawin_copy_surface(cairo_surface_t *src);
-
-/* Paint src onto cr's target one pixel to one pixel. A drawable surface
- * carries a device scale (set below so Lua draws in logical coordinates) and
- * cairo honours it on the source pattern, which would land a HiDPI surface in
- * the top-left 1/scale of the destination and drop the rest. Undoing it on the
- * context makes this the plain pixel copy an image_entry is expected to hold,
- * matching what drawin_apply_shape_mask already produces. */
-static void
-drawin_paint_pixels(cairo_t *cr, cairo_surface_t *src)
-{
-	double sx = 1.0, sy = 1.0;
-
-	cairo_surface_get_device_scale(src, &sx, &sy);
-	if (sx > 0.0 && sy > 0.0)
-		cairo_scale(cr, sx, sy);
-	cairo_set_source_surface(cr, src, 0, 0);
-	cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
-	cairo_paint(cr);
-}
-
 void
 drawin_mark_dirty(drawin_t *drawin)
 {
@@ -320,96 +173,6 @@ drawin_widget_host(drawin_t *d, struct widget_host *out)
 		.radius = d->shape_radius,
 	};
 	return true;
-}
-
-void
-drawin_refresh_drawable(drawin_t *drawin)
-{
-	drawable_t *d;
-	struct image_entry *entry;
-	cairo_surface_t *clipped_surface = NULL;
-	cairo_surface_t *masked_surface = NULL;
-	cairo_surface_t *work_surface = NULL;
-
-	if (!drawin || !drawin->drawable) {
-		return;
-	}
-
-	d = drawin->drawable;
-
-	/* Ensure we have a Cairo surface with content */
-	if (!d->surface || !d->refreshed) {
-		return;
-	}
-
-	/* A converted tree draws through its leaves (widget.c): the drawable
-	 * surface holds nothing for the renderer, and the entry only has to
-	 * exist for the declare filter. The frame path is woken by whichever
-	 * of the tree and the leaves changed, not from here. */
-	if (drawin->widgets.nodes_len > 0 && drawin->content_entry.native)
-		return;
-
-	work_surface = d->surface;
-
-	/* Clear stale shape surfaces that were finished by Lua GC */
-	if (drawin->shape_clip &&
-	    cairo_surface_status(drawin->shape_clip) != CAIRO_STATUS_SUCCESS) {
-		cairo_surface_destroy(drawin->shape_clip);
-		drawin->shape_clip = NULL;
-	}
-	if (drawin->shape_bounding &&
-	    cairo_surface_status(drawin->shape_bounding) != CAIRO_STATUS_SUCCESS) {
-		cairo_surface_destroy(drawin->shape_bounding);
-		drawin->shape_bounding = NULL;
-	}
-
-	/* Apply shape_clip first (clips the drawable content area)
-	 * In AwesomeWM, shape_clip restricts what's visible within the content area */
-	if (drawin->shape_clip) {
-		clipped_surface = drawin_apply_shape_mask(work_surface, drawin->shape_clip);
-		if (clipped_surface)
-			work_surface = clipped_surface;
-	}
-
-	/* Apply shape_bounding mask (clips the whole window including border)
-	 * This is applied after shape_clip, chaining off its result if any */
-	if (drawin->shape_bounding) {
-		masked_surface = drawin_apply_shape_mask(work_surface, drawin->shape_bounding);
-		if (masked_surface)
-			work_surface = masked_surface;
-	}
-
-	/* Feed the renderer's content entry the final pixels: the masked copy
-	 * when masks applied (its ownership moves to the entry), else an owned
-	 * copy of the drawable surface, repainted in place when sizes match. */
-	entry = &drawin->content_entry;
-	if (work_surface != d->surface) {
-		if (clipped_surface && clipped_surface != work_surface)
-			cairo_surface_destroy(clipped_surface);
-		image_entry_set(entry, work_surface);
-	} else {
-		int cw = cairo_image_surface_get_width(d->surface);
-		int ch = cairo_image_surface_get_height(d->surface);
-
-		if (entry->native && entry->width == cw && entry->height == ch) {
-			/* Same size: repaint the owned copy in place instead of
-			 * reallocating a full surface every refresh. */
-			cairo_t *cr = cairo_create(entry->native);
-			drawin_paint_pixels(cr, d->surface);
-			cairo_destroy(cr);
-			entry->gen++;
-		} else {
-			image_entry_set(entry, drawin_copy_surface(d->surface));
-		}
-	}
-	if (!entry->native)
-		return;
-	cairo_surface_flush(entry->native);
-
-	/* Wake the frame path: the gen bump above changed declared content.
-	 * Map-then-draw holds through the declare filter, which skips a
-	 * drawin until its entry has pixels. */
-	drawin_mark_dirty(drawin);
 }
 
 /** Assign screen to drawin based on its position
@@ -511,7 +274,7 @@ drawin_allocator(lua_State *L)
 
 	/* Create drawable object for rendering (AwesomeWM pattern)
 	 * Stack: [drawin] */
-	drawable_allocator(L, (drawable_refresh_callback)drawin_refresh_drawable, drawin);
+	drawable_allocator(L);
 	/* Stack: [drawin, drawable] */
 
 	/* Store drawable in drawin's uservalue table (AwesomeWM: drawin.c:430)
@@ -545,7 +308,7 @@ drawin_wipe(drawin_t *w)
 	 * NULL, and the entry surfaces the declare pass hands out. */
 	declare_handle_drop(w);
 	widget_nodes_clear(&w->widgets);
-	image_entry_set(&w->content_entry, NULL);
+
 	image_entry_set(&w->border_entry, NULL);
 	shadow_leaves_clear(&w->shadow);
 
@@ -967,7 +730,7 @@ drawin_moveresize(lua_State *L, int udx, int x, int y, int width, int height)
 		drawin->height = height;
 	drawin->geometry_dirty = true;
 
-	/* Propagate geometry to drawable (this creates the Cairo surface) */
+	/* Propagate geometry and emit the drawable resize trigger. */
 	if (drawin->drawable) {
 		drawable_t *d = drawin->drawable;
 		int old_dwidth = d->geometry.width;
@@ -978,44 +741,10 @@ drawin_moveresize(lua_State *L, int udx, int x, int y, int width, int height)
 		d->geometry.width = drawin->width;
 		d->geometry.height = drawin->height;
 
-		/* If size changed, recreate surface */
 		if (old_dwidth != drawin->width || old_dheight != drawin->height) {
-			/* Clean up old surface */
-			if (d->surface) {
-				cairo_surface_finish(d->surface);
-				cairo_surface_destroy(d->surface);
-				d->surface = NULL;
-			}
-
-			/* Create new surface if we have valid dimensions */
-			if (drawin->width > 0 && drawin->height > 0) {
-				/* Get scale for HiDPI support.
-				 * Use floorf to match what Cairo will actually draw with device_scale. */
-				float scale = drawin_get_effective_scale(drawin);
-				int scaled_width = (int)floorf(drawin->width * scale);
-				int scaled_height = (int)floorf(drawin->height * scale);
-				if (scaled_width < 1) scaled_width = 1;
-				if (scaled_height < 1) scaled_height = 1;
-
-				d->surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, scaled_width, scaled_height);
-				if (cairo_surface_status(d->surface) != CAIRO_STATUS_SUCCESS) {
-					cairo_surface_destroy(d->surface);
-					d->surface = NULL;
-				} else {
-					/* Set device scale so Cairo draws in logical coordinates */
-					cairo_surface_set_device_scale(d->surface, scale, scale);
-					d->surface_scale = scale;
-
-					/* Emit property::surface signal on drawable
-					 * AwesomeWM pattern: push from drawin's uservalue table */
-					luaA_object_push_item(L, udx, drawin->drawable);
-					luaA_object_emit_signal(L, -1, "property::surface", 0);
-					lua_pop(L, 1);
-				}
-				/* Note: Don't call refresh_callback here!
-				 * AwesomeWM pattern: Lua draws on surface, then calls drawable:refresh()
-				 * which triggers refresh_callback. Calling it here would copy an empty surface. */
-			}
+			luaA_object_push_item(L, udx, drawin->drawable);
+			luaA_object_emit_signal(L, -1, "property::surface", 0);
+			lua_pop(L, 1);
 		}
 	}
 
@@ -1103,25 +832,8 @@ drawin_set_visible(lua_State *L, int udx, bool v)
 		/* Trigger restacking - AwesomeWM calls stack_windows() when mapping drawin */
 		stack_windows();
 
-		/* Ensure drawable has surface before signal (AwesomeWM drawin.c:343-344)
-		 * This is critical: Lua's do_redraw() needs a surface to draw to.
-		 * Without this, the refresh callback never fires and popups don't show.
-		 *
-		 * Also check if scale has changed since surface was created. This handles
-		 * on-demand popups (launcher, menubar, hotkeys_popup) that weren't visible
-		 * when scale changed - they need surface recreation when shown. */
-		if (drawin->drawable) {
-			drawable_t *d = drawin->drawable;
-			float current_scale = drawin_get_effective_scale(drawin);
-
-			/* Recreate surface if: no surface, scale unknown (0), or scale changed */
-			bool need_recreate = !d->surface ||
-			                     d->surface_scale == 0 ||
-			                     d->surface_scale != current_scale;
-			if (need_recreate) {
-				drawin_update_drawing(L, udx);
-			}
-		}
+		if (drawin->drawable)
+			drawin_update_drawing(L, udx);
 
 		/* Wayland-specific: if drawin was invisible during a screen geometry
 		 * change (e.g., scale change), its geometry may be stale. Auto-shrink
@@ -1160,20 +872,9 @@ drawin_set_visible(lua_State *L, int udx, bool v)
 		screen_update_workarea(drawin->screen);
 	}
 
-	/* Map-then-draw, through the declare filter: a hidden drawin drops out
-	 * of the next declare; a shown one enters it once its content entry
-	 * has pixels, so a not-yet-drawn popup cannot smear. */
-	if (!v) {
-		declare_mark_all_dirty();
-	} else if (drawin->drawable) {
-		drawable_t *d = drawin->drawable;
+	/* Visibility changes update the declared tree. */
+	declare_mark_all_dirty();
 
-		/* Content already drawn: re-feed the entry (it may have been
-		 * dropped) and dirty the output in one step. Otherwise Lua's
-		 * drawable:refresh() callback does the same when it draws. */
-		if (d->surface && d->refreshed)
-			drawin_refresh_drawable(drawin);
-	}
 }
 
 /** Set strut and update workarea */
@@ -1335,7 +1036,7 @@ luaA_drawin_gc(lua_State *L)
 		 * next frame */
 		declare_handle_drop(drawin);
 		widget_nodes_clear(&drawin->widgets);
-		image_entry_set(&drawin->content_entry, NULL);
+
 		image_entry_set(&drawin->border_entry, NULL);
 		shadow_leaves_clear(&drawin->shadow);
 		declare_mark_all_dirty();
@@ -1738,9 +1439,16 @@ drawin_copy_surface(cairo_surface_t *src)
 		return NULL;
 	}
 
-	/* Copy the content */
+	/* Copy one source pixel to one destination pixel, compensating for
+	 * any source device scale. */
 	cr = cairo_create(dst);
-	drawin_paint_pixels(cr, src);
+	double sx = 1.0, sy = 1.0;
+	cairo_surface_get_device_scale(src, &sx, &sy);
+	if (sx > 0.0 && sy > 0.0)
+		cairo_scale(cr, sx, sy);
+	cairo_set_source_surface(cr, src, 0, 0);
+	cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+	cairo_paint(cr);
 	cairo_destroy(cr);
 
 	return dst;
@@ -1777,7 +1485,7 @@ luaA_drawin_set_shape_bounding(lua_State *L, drawin_t *drawin)
 
 	/* Trigger redraw to apply shape (Wayland equivalent of xwindow_set_shape) */
 	if (drawin->visible)
-		drawin_refresh_drawable(drawin);
+		drawin_mark_dirty(drawin);
 
 	/* Trigger border refresh to apply shape to border */
 	drawin->border_need_update = true;
@@ -1828,7 +1536,7 @@ luaA_drawin_set_shape_clip(lua_State *L, drawin_t *drawin)
 
 	/* Trigger redraw to apply shape (Wayland equivalent of xwindow_set_shape) */
 	if (drawin->visible)
-		drawin_refresh_drawable(drawin);
+		drawin_mark_dirty(drawin);
 
 	luaA_object_emit_signal(L, -3, "property::shape_clip", 0);
 	return 0;

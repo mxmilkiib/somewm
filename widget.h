@@ -59,9 +59,8 @@ enum widget_sizing {
  * The tree is stored in preorder: a node's subtree is the `children` nodes
  * that follow it, each with its own subtree. A node is pure description: what
  * it is (direction, sizing, gap, alignment, padding, colors, radius), never
- * where it is. A raster leaf carries a widget subtree the compile step could
- * not express, drawn by Lua into a surface of its own (the drawin's
- * widget_leaves, numbered in preorder too).
+ * where it is. Image leaves reference widget surfaces through the owner's
+ * image entries, also numbered in preorder.
  *
  * Colors are straight alpha, 0-1, as everywhere else on this side; an alpha
  * of zero means the node draws no fill or no ring. */
@@ -89,9 +88,7 @@ struct widget_node {
 	float offset[2];     /* a floating node's offset from the parent's top left,
 	                      * Clay_FloatingElementConfig.offset */
 	bool floating;       /* attached to the parent's top left, off the flow */
-	bool raster;         /* an image leaf */
-	/* A raster leaf whose pixels are the widget's own cairo surface (an
-	 * imagebox's image), referenced rather than painted by Lua. */
+	/* The widget's own cairo surface, referenced by an image entry. */
 	const void *image;
 	uint8_t filter;      /* cairo_filter_t + 1, 0 keeps cairo's default */
 	bool natural;
@@ -150,7 +147,7 @@ struct widget_node {
 #define WIDGET_SCROLLS_OUTPUT_MAX 10
 
 /* What the last widget_nodes_set() answered, kept so the tree dump can say
- * why a drawin paints itself whole rather than only that it does. Zero is a
+ * why a drawin shows nothing. Zero is a
  * drawin no redraw has compiled yet, so a field that was never written reads
  * as the fact it stands for. */
 enum widget_nodes_state {
@@ -162,27 +159,12 @@ enum widget_nodes_state {
 	WIDGET_NODES_OVER_BUDGET,
 };
 
-/* Replace the stored tree with the compiled table at idx. False with NONE
- * paints whole; MALFORMED or OVER_BUDGET shows nothing. */
+/* Replace the stored tree with the compiled table at idx.
+ * NONE, MALFORMED and OVER_BUDGET show nothing. */
 bool widget_nodes_set(lua_State *L, struct widget_tree *d, Monitor *m, int idx);
 void widget_nodes_clear(struct widget_tree *d);
 
-/* Size each painted leaf's surface to the device size the solve gave it
- * (declare_widget_solve, in the order of the leaves that are not images),
- * and point each image leaf's entry at the widget's surface. Leaf surfaces
- * hold device pixels with no device scale set, like every other image
- * entry; a kept surface keeps its pixels, so Lua repaints only what its
- * dirty region says. */
-void widget_leaves_size(struct widget_tree *d, int (*dev)[2]);
-
-/* A new reference to leaf i's surface, for Lua to draw into and own the
- * reference of (the drawable.surface convention); NULL past the last leaf.
- * fresh says whether the surface is new since it was last handed out, so
- * holds no pixels yet. */
-cairo_surface_t *widget_leaf_surface(struct widget_tree *d, size_t i, bool *fresh);
-
-/* Bump the generation of every leaf whose index is a key in the table at
- * idx, so the renderer re-rasters exactly the leaves Lua redrew. */
-bool widget_leaves_drawn(lua_State *L, struct widget_tree *d, int idx);
+/* Point image entries at their widget surfaces. */
+void widget_leaves_set(struct widget_tree *d);
 
 #endif
