@@ -17,6 +17,7 @@ local shape     = require("gears.shape"      )
 local gtable    = require( "gears.table"     )
 local color     = require( "gears.color"     )
 local beautiful = require("beautiful"        )
+local clay      = require("wibox.clay"       )
 
 local default_outline_width  = 2
 
@@ -293,6 +294,56 @@ end
 function radialprogressbar.mt:__call(...)
     return new(...)
 end
+
+local function describe_radialprogressbar(w)
+    if w.layout ~= radialprogressbar.layout
+            or w.before_draw_children ~= radialprogressbar.before_draw_children
+            or w.after_draw_children ~= radialprogressbar.after_draw_children then
+        return nil
+    end
+
+    local border = clay.solid_rgba(w:get_border_color() or "#0000ff")
+    local progress = clay.solid_rgba(w:get_color() or "#ff00ff")
+    if not border or not progress then
+        return nil
+    end
+
+    local bw = w._private.border_width or
+        beautiful.radialprogressbar_border_width or default_outline_width
+    local percent = w._percent or 0
+    local padding = w._private.paddings or {}
+    local pad = { bw / 2 + (padding.left or 0), bw / 2 + (padding.right or 0),
+        bw / 2 + (padding.top or 0), bw / 2 + (padding.bottom or 0) }
+    for _, v in ipairs(pad) do
+        if not clay.whole(v) then
+            return nil
+        end
+    end
+
+    -- render.c rounded_rect_path clamps PILL to half the shorter side,
+    -- cutting the child to the same pill as before_draw_children.
+    local PILL = 1e6
+    local node = { pad = pad, specs = {
+        { w = "grow", h = "grow", radius = PILL,
+            children = clay.whole_box(w._private.widget) },
+        { float = true, w = "grow", h = "grow", stroke = border, stroke_width = bw,
+            shape = function(width, height)
+                local wa = outline_workarea(w, width, height)
+                return clay.shape_ops(shape.rounded_bar, wa.width, wa.height, wa.x, wa.y)
+            end },
+        { float = true, w = "grow", h = "grow", stroke = progress, stroke_width = bw,
+            shape = function(width, height)
+                local wa = outline_workarea(w, width, height)
+                return clay.shape_ops(shape.radial_progress, wa.width, wa.height, wa.x, wa.y, percent)
+            end },
+    } }
+    if not w._private.widget then
+        node.w, node.h = "grow", "grow"
+    end
+    return node
+end
+
+radialprogressbar._clay = { describe = describe_radialprogressbar, fit = radialprogressbar.fit }
 
 return setmetatable(radialprogressbar, radialprogressbar.mt)
 

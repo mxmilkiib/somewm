@@ -665,87 +665,6 @@ function background.mt:__call(...)
     return new(...)
 end
 
---- The corner radius a shape stands for, or nil for one Clay cannot name.
--- A shape is an arbitrary painter: the two gears shapes that are rectangles
--- are known by identity, and any other function by the path it draws;
--- `rounded_bar` and the rest keep drawing themselves.
-
--- A context for a shape function to draw its path on, for the path alone.
-local probe = cairo.Context(cairo.ImageSurface(cairo.Format.A8, 1, 1))
-
-local function shape_path(shape, w, h, r)
-    probe:new_path()
-    shape(probe, w, h, r)
-    return probe:copy_path()
-end
-
-local function same_path(a, b)
-    if a.num_data ~= b.num_data then
-        return false
-    end
-
-    local next_b = b:pairs()
-
-    for kind, points in a:pairs() do
-        local kind_b, points_b = next_b()
-
-        if kind ~= kind_b then
-            return false
-        end
-        for i, point in ipairs(points) do
-            if point.x ~= points_b[i].x or point.y ~= points_b[i].y then
-                return false
-            end
-        end
-    end
-    return true
-end
-
---- The radius a shape function draws when its path is
--- gears.shape.rounded_rect's, which is what a theme's `function(cr, w, h)
--- gears.shape.rounded_rect(cr, w, h, r) end` draws: the same path at two
--- sizes, with the radius read off the path's first point (0, r). Cached
--- per function; false for one that draws anything else.
-local shape_radii = setmetatable({}, { __mode = "k" })
-
-local function closure_radius(shape)
-    local r = shape_radii[shape]
-
-    if r == nil then
-        local w, h = 160, 96
-        local path = shape_path(shape, w, h)
-        local kind, points = path:pairs()()
-
-        r = false
-        if kind == "MOVE_TO" and points[1].x == 0 then
-            local radius = points[1].y
-
-            if same_path(path, shape_path(gshape.rounded_rect, w, h, radius))
-                    and same_path(shape_path(shape, 2 * w, 2 * h),
-                        shape_path(gshape.rounded_rect, 2 * w, 2 * h, radius)) then
-                r = radius
-            end
-        end
-        shape_radii[shape] = r
-    end
-    return r or nil
-end
-
-local function shape_radius(shape, args)
-    if shape == nil or shape == gshape.rectangle then
-        return 0
-    end
-    if shape == gshape.rounded_rect then
-        local r = args and args[1] or 10
-
-        return (type(r) == "number" and r >= 0) and r or nil
-    end
-    if type(shape) == "function" then
-        return closure_radius(shape)
-    end
-    return nil
-end
-
 --- wibox.container.background -> a rectangle color, a corner radius and a
 -- border.
 --
@@ -772,7 +691,7 @@ local function describe_background(w)
         return nil
     end
 
-    local radius = shape_radius(p.shape, p.shape_args)
+    local radius = clay.shape_radius(p.shape, p.shape_args)
 
     if not radius then
         return nil

@@ -28,6 +28,7 @@ void declare_output_mark_dirty(struct declare_output *dout);
 /* Mark every output dirty: for facts without one owning output (stacking
  * order, banning, a drawin whose screen assignment may be stale). */
 void declare_mark_all_dirty(void);
+bool declare_in_frame(void);
 
 /* Run the declare pass for every dirty output now; called from the poll
  * function each loop iteration so input hit-testing reads a current scene

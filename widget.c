@@ -81,7 +81,8 @@ read_number(lua_State *L, int idx, const char *name, double min, double max,
 
 /* One axis of sizing, as Clay names it: "fit" or absent for
  * CLAY_SIZING_FIT, Clay's default (README, clay.h:290), "grow" for
- * CLAY_SIZING_GROW, a number for CLAY_SIZING_FIXED. */
+ * CLAY_SIZING_GROW, a number for CLAY_SIZING_FIXED, or { percent = p }
+ * for CLAY_SIZING_PERCENT (third_party/clay.h:72,294-295). */
 static bool
 read_sizing(lua_State *L, int idx, const char *name, uint8_t *sizing,
 	float *size)
@@ -94,6 +95,15 @@ read_sizing(lua_State *L, int idx, const char *name, uint8_t *sizing,
 		*sizing = WIDGET_SIZING_FIXED;
 		*size = (float)lua_tonumber(L, -1);
 		ok = *size >= 0;
+	} else if (lua_istable(L, -1)) {
+		lua_getfield(L, -1, "percent");
+		double p = lua_tonumber(L, -1);
+
+		/* Reject outside 0-1 before Clay's error (third_party/clay.h:2030-2033). */
+		ok = lua_type(L, -1) == LUA_TNUMBER && p >= 0 && p <= 1;
+		*sizing = WIDGET_SIZING_PERCENT;
+		*size = (float)p;
+		lua_pop(L, 1);
 	} else if (lua_isnil(L, -1)) {
 		*sizing = WIDGET_SIZING_FIT;
 	} else if ((s = lua_tostring(L, -1)) && strcmp(s, "fit") == 0) {
@@ -224,11 +234,21 @@ read_node(lua_State *L, int idx, struct widget_node *n)
 	if (lua_isstring(L, -1))
 		n->cls = intern_class(lua_tostring(L, -1));
 	lua_pop(L, 1);
+	lua_getfield(L, idx, "shape");
+	ok = lua_isnil(L, -1) || lua_isfunction(L, -1);
+	n->shape = lua_isfunction(L, -1) ? 1 : 0;
+	lua_pop(L, 1);
+	if (!ok)
+		return false;
 	lua_getfield(L, idx, "text");
 	ok = lua_isnil(L, -1);
 	lua_pop(L, 1);
 	if (!ok)
-		return read_text(L, idx, n);
+		return !n->shape && read_text(L, idx, n);
+	if (!read_quad(L, idx, "fill", n->fill)
+			|| !read_quad(L, idx, "stroke", n->stroke)
+			|| !read_number(L, idx, "stroke_width", 0, 1e6, &n->stroke_width))
+		return false;
 	if (!read_quad(L, idx, "pad", pad) || !read_quad(L, idx, "bw", bw)
 			|| !read_quad(L, idx, "bg", n->bg)
 			|| !read_quad(L, idx, "border", n->border))
@@ -242,6 +262,8 @@ read_node(lua_State *L, int idx, struct widget_node *n)
 	}
 
 	if (!read_number(L, idx, "radius", 0, 1e6, &n->radius)
+			|| !read_number(L, idx, "x", -1e6, 1e6, &n->offset[0])
+			|| !read_number(L, idx, "y", -1e6, 1e6, &n->offset[1])
 			|| !read_number(L, idx, "gap", 0, UINT16_MAX, &gap)
 			|| !read_number(L, idx, "wmin", 0, 1e6, &n->min[0])
 			|| !read_number(L, idx, "hmin", 0, 1e6, &n->min[1])
@@ -280,6 +302,21 @@ read_node(lua_State *L, int idx, struct widget_node *n)
 	lua_pop(L, 1);
 	if (n->image && !read_number(L, idx, "aspect", 0, 1e6, &n->aspect))
 		ok = false;
+	if (n->image) {
+		static const char *const filters[] = {
+			"fast", "good", "best", "nearest", "bilinear"
+		};
+
+		lua_getfield(L, idx, "filter");
+		bool has_filter = !lua_isnil(L, -1);
+		lua_pop(L, 1);
+		if (has_filter) {
+			if (read_word(L, idx, "filter", filters, 5, &n->filter))
+				n->filter++;
+			else
+				ok = false;
+		}
+	}
 	lua_getfield(L, idx, "spacer");
 	n->widget = !lua_toboolean(L, -1);
 	lua_pop(L, 1);
@@ -295,7 +332,7 @@ read_node(lua_State *L, int idx, struct widget_node *n)
  * is refused. */
 static bool
 read_tree(lua_State *L, int idx, struct widget_node *nodes, size_t *len,
-	size_t *leaves, unsigned clip_by, unsigned *clips)
+	size_t *leaves, unsigned clip_by, unsigned *clips, int shapes)
 {
 	struct widget_node *n;
 	size_t count;
@@ -310,12 +347,19 @@ read_tree(lua_State *L, int idx, struct widget_node *nodes, size_t *len,
 	memset(n, 0, sizeof(*n));
 	if (!read_node(L, idx, n))
 		return false;
+	if (n->shape) {
+		if (n->raster)
+			return false;
+		n->shape = (uint16_t)luaA_rawlen(L, shapes) + 1;
+		lua_getfield(L, idx, "shape");
+		lua_rawseti(L, shapes, n->shape);
+	}
 	if (n->raster)
 		(*leaves)++;
 	n->clip_by = (uint8_t)clip_by;
 
 	lua_getfield(L, idx, "children");
-	ok = lua_isnil(L, -1) || (lua_istable(L, -1) && !n->raster && !n->text);
+	ok = lua_isnil(L, -1) || (lua_istable(L, -1) && (!n->raster || n->image) && !n->text && !n->shape);
 	count = ok ? luaA_rawlen(L, -1) : 0;
 	n->children = (uint16_t)count;
 	if (ok && (*len == 1 || (n->radius > 0 && count > 0))) {
@@ -326,7 +370,7 @@ read_tree(lua_State *L, int idx, struct widget_node *nodes, size_t *len,
 	}
 	for (size_t i = 0; ok && i < count; i++) {
 		lua_rawgeti(L, -1, (int)i + 1);
-		ok = read_tree(L, lua_gettop(L), nodes, len, leaves, clip_by, clips);
+		ok = read_tree(L, lua_gettop(L), nodes, len, leaves, clip_by, clips, shapes);
 		lua_pop(L, 1);
 	}
 	lua_pop(L, 1);
@@ -363,6 +407,10 @@ widget_leaves_size(drawin_t *d, int (*dev)[2])
 		if (!n->raster)
 			continue;
 		entry = &d->widget_leaves[leaf++];
+		if (entry->filter != n->filter) {
+			entry->filter = n->filter;
+			entry->gen++;
+		}
 		/* The widget's own surface: referenced, and a new reference only
 		 * when it is another surface, so its generation moves with it. */
 		if (n->image) {
@@ -386,6 +434,10 @@ widget_leaves_size(drawin_t *d, int (*dev)[2])
 void
 widget_nodes_clear(drawin_t *d)
 {
+	for (size_t i = 0; i < d->widget_shapes_len; i++)
+		luaL_unref(globalconf.L, LUA_REGISTRYINDEX, d->widget_shapes[i].ref);
+	p_delete(&d->widget_shapes);
+	d->widget_shapes_len = 0;
 	for (size_t i = 0; i < d->widget_leaves_len; i++)
 		image_entry_set(&d->widget_leaves[i], NULL);
 	p_delete(&d->widget_leaves);
@@ -424,6 +476,8 @@ nodes_drop(drawin_t *d, enum widget_nodes_state why)
 void
 widget_nodes_gate(lua_State *L, drawin_t *d, int udx)
 {
+	if (declare_in_frame())
+		luaL_error(L, "widget tree changed from inside a frame");
 	bool refused = widget_nodes_refused(d) != 0;
 
 	if (refused == d->widget_nodes_refused)
@@ -472,6 +526,8 @@ over_budget(drawin_t *d, size_t len)
 bool
 widget_nodes_set(lua_State *L, drawin_t *d, int idx)
 {
+	if (declare_in_frame())
+		luaL_error(L, "widget tree changed from inside a frame");
 	/* One scratch tree for every drawin: a redraw reads into it and
 	 * usually finds the stored tree unchanged. */
 	static struct widget_node nodes[WIDGET_NODES_MAX];
@@ -487,13 +543,50 @@ widget_nodes_set(lua_State *L, drawin_t *d, int idx)
 	/* read_tree refuses a tree of its own cap's size before reading a node
 	 * of it, so a full scratch tree and a tree past the clip scopes are
 	 * the two failures that are a size and not a malformed table. */
-	if (!read_tree(L, idx, nodes, &len, &leaves, 0, &clips))
-		return nodes_drop(d, len == WIDGET_NODES_MAX
-			|| clips > WIDGET_CLIPS_MAX
+	lua_newtable(L);
+	int shapes = lua_gettop(L);
+	bool ok = read_tree(L, idx, nodes, &len, &leaves, 0, &clips, shapes);
+	if (!ok || over_budget(d, len)) {
+		lua_pop(L, 1);
+		return nodes_drop(d, ok ? WIDGET_NODES_OVER_BUDGET
+			: len == WIDGET_NODES_MAX || clips > WIDGET_CLIPS_MAX
 			? WIDGET_NODES_OVER_BUDGET : WIDGET_NODES_MALFORMED);
-	if (over_budget(d, len))
-		return nodes_drop(d, WIDGET_NODES_OVER_BUDGET);
+	}
 	leaves_count(d, leaves);
+	size_t count = luaA_rawlen(L, shapes);
+	bool shapes_changed = count != d->widget_shapes_len;
+	if (shapes_changed) {
+		for (size_t i = count; i < d->widget_shapes_len; i++)
+			luaL_unref(L, LUA_REGISTRYINDEX, d->widget_shapes[i].ref);
+		p_realloc(&d->widget_shapes, count);
+		for (size_t i = d->widget_shapes_len; i < count; i++)
+			d->widget_shapes[i] = (struct widget_shape) { .ref = LUA_NOREF };
+		d->widget_shapes_len = count;
+	}
+	for (size_t i = 0; i < len; i++) {
+		struct widget_node *n = &nodes[i];
+		if (!n->shape)
+			continue;
+		struct widget_shape *slot = &d->widget_shapes[n->shape - 1];
+		lua_rawgeti(L, shapes, n->shape);
+		lua_rawgeti(L, LUA_REGISTRYINDEX, slot->ref);
+		bool same = lua_rawequal(L, -1, -2);
+		lua_pop(L, 1);
+		if (same) {
+			lua_pop(L, 1);
+		} else {
+			luaL_unref(L, LUA_REGISTRYINDEX, slot->ref);
+			slot->ref = luaL_ref(L, LUA_REGISTRYINDEX);
+			slot->shape.gen++;
+			shapes_changed = true;
+		}
+		memcpy(slot->shape.fill, n->fill, sizeof(n->fill));
+		memcpy(slot->shape.stroke, n->stroke, sizeof(n->stroke));
+		slot->shape.stroke_width = n->stroke_width;
+	}
+	lua_pop(L, 1);
+	if (shapes_changed)
+		drawin_mark_dirty(d);
 
 	d->widget_nodes_state = WIDGET_NODES_CONVERTED;
 	if (d->widget_nodes_len == len

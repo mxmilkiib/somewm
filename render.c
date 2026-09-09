@@ -147,6 +147,9 @@ struct rnode {
 	bool border_tile[4];
 	/* IMAGE: the decode generation last rasterized, so a reload re-rasters. */
 	uint64_t img_gen;
+	struct render_shape shape;
+	float *shape_ops;
+	size_t shape_ops_len;
 	/* The scale this node's raster was drawn at: the fourth raster cache key
 	 * (content, font, size, scale). Clay solves logical, so a scale change alone
 	 * leaves the box identical; without this a runtime set_scale would keep the
@@ -202,6 +205,7 @@ struct render_state {
 	 * nodes, and buffers allocated by the current reconcile pass. */
 	size_t raster_bytes;
 	int buffers_created;
+	bool shape_overflow_logged;
 	/* A kind-swap (rounded <-> square rect or border) destroyed and recreated
 	 * a node under an unchanged command key this pass. The recreated scene
 	 * node was appended at the top of its sibling list, so the restack must
@@ -383,6 +387,7 @@ static struct rnode *rnode_add(struct render_state *rs, uint64_t key) {
 static void rnode_remove(struct render_state *rs, struct rnode *n,
 		const struct render_client_hooks *hooks) {
 	free(n->text);
+	free(n->shape_ops);
 	rs->raster_bytes -= n->raster_bytes;
 	if (n->borrowed) {
 		hooks->release(hooks->data, n->handle, rs);
@@ -1256,15 +1261,19 @@ static struct cairo_buffer *rasterize_image(Clay_RenderCommand *cmd,
 		cairo_clip(cr);
 	}
 	cairo_scale(cr, (double)w / entry->width, (double)h / entry->height);
+	cairo_pattern_t *pattern = cairo_pattern_create_for_surface(entry->native);
+	if (entry->filter > 0)
+		cairo_pattern_set_filter(pattern, entry->filter - 1);
 	Clay_Color ink = cmd->renderData.image.backgroundColor;
 	if (ink.a > 0) {
 		cairo_set_source_rgba(cr, clay_srgb(ink.r), clay_srgb(ink.g),
 			clay_srgb(ink.b), clay_srgb(ink.a));
-		cairo_mask_surface(cr, entry->native, 0, 0);
+		cairo_mask(cr, pattern);
 	} else {
-		cairo_set_source_surface(cr, entry->native, 0, 0);
+		cairo_set_source(cr, pattern);
 		cairo_paint(cr);
 	}
+	cairo_pattern_destroy(pattern);
 
 	cairo_destroy(cr);
 	cairo_surface_flush(cb->surface);
@@ -1370,6 +1379,143 @@ static int reconcile_image(struct render_state *rs, struct rnode *n,
 
 	/* Crop to the clip, exactly as reconcile_text does (buffer is ceil(box)
 	 * sized, so the source box is in box pixels). */
+	muts += rnode_apply_clip(n, sb, cmd, rbox, rs->scale, raster_changed);
+	return muts;
+}
+
+/* The same retained path drives painting and input, in logical pixels. */
+static void shape_path(cairo_t *cr, const float *ops, size_t len) {
+	for (size_t i = 0; i < len; ) {
+		float op = ops[i++];
+		size_t count = op == 0 || op == 1 ? 2 : op == 2 ? 6 : 0;
+		if ((op != 0 && op != 1 && op != 2 && op != 3) || count > len - i) {
+			cairo_new_path(cr);
+			return;
+		}
+		const float *p = ops + i;
+		if (op == 0)
+			cairo_move_to(cr, p[0], p[1]);
+		else if (op == 1)
+			cairo_line_to(cr, p[0], p[1]);
+		else if (op == 2)
+			cairo_curve_to(cr, p[0], p[1], p[2], p[3], p[4], p[5]);
+		else
+			cairo_close_path(cr);
+		i += count;
+	}
+}
+
+static bool shape_point_accepts_input(struct wlr_scene_buffer *sb,
+		double *sx, double *sy) {
+	static cairo_t *cr;
+	struct rnode *n = rnode_owning(&sb->node, NULL);
+	if (n == NULL || !rnode_point_in_arcs(n, *sx, *sy))
+		return false;
+	if (cr == NULL) {
+		cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_A8, 1, 1);
+		cr = cairo_create(surface);
+		cairo_surface_destroy(surface);
+	}
+	shape_path(cr, n->shape_ops, n->shape_ops_len);
+	double x = *sx + n->rbox.x - n->box.x;
+	double y = *sy + n->rbox.y - n->box.y;
+	bool hit = false;
+	if (n->shape.fill[3] > 0)
+		hit = cairo_in_fill(cr, x, y);
+	else if (n->shape.stroke[3] > 0 && n->shape.stroke_width > 0) {
+		cairo_set_line_width(cr, n->shape.stroke_width);
+		hit = cairo_in_stroke(cr, x, y);
+	}
+	cairo_new_path(cr);
+	return hit;
+}
+
+static struct cairo_buffer *rasterize_shape(Clay_RenderCommand *cmd,
+		const struct render_shape *shape, const float *ops, size_t len,
+		float scale, const struct clip_round *mask) {
+	int w = device_len((int)cmd->boundingBox.x, (int)cmd->boundingBox.width, scale);
+	int h = device_len((int)cmd->boundingBox.y, (int)cmd->boundingBox.height, scale);
+	if (len == 0 || w < 1 || h < 1)
+		return NULL;
+	struct cairo_buffer *cb = cairo_buffer_create(w, h);
+	if (cb == NULL)
+		return NULL;
+	cairo_t *cr = cairo_create(cb->surface);
+	apply_clip_round(cr, cmd->boundingBox, mask, scale);
+	cairo_scale(cr, scale, scale);
+	shape_path(cr, ops, len);
+	if (shape->fill[3] > 0) {
+		const float *c = shape->fill;
+		cairo_set_source_rgba(cr, c[0], c[1], c[2], c[3]);
+		cairo_fill_preserve(cr);
+	}
+	if (shape->stroke[3] > 0 && shape->stroke_width > 0) {
+		const float *c = shape->stroke;
+		cairo_set_source_rgba(cr, c[0], c[1], c[2], c[3]);
+		cairo_set_line_width(cr, shape->stroke_width);
+		cairo_stroke(cr);
+	} else {
+		cairo_new_path(cr);
+	}
+	cairo_destroy(cr);
+	cairo_surface_flush(cb->surface);
+	return cb;
+}
+
+static int reconcile_shape(struct render_state *rs, struct rnode *n,
+		Clay_RenderCommand *cmd, Clay_BoundingBox rbox,
+		const struct clip_round *mask, const struct render_client_hooks *hooks) {
+	static float ops[4096];
+	struct render_shape *shape = render_shape_of(cmd->renderData.custom.customData);
+	/* Lua may run in the hook: all raster inputs are copied before it. */
+	struct render_shape value = *shape;
+	int muts = 0;
+	bool is_new = n->node == NULL;
+	if (is_new) {
+		struct wlr_scene_buffer *sb = wlr_scene_buffer_create(rs->tree, NULL);
+		sb->point_accepts_input = shape_point_accepts_input;
+		n->node = &sb->node;
+	}
+	struct wlr_scene_buffer *sb = wlr_scene_buffer_from_node(n->node);
+	bool raster_changed = is_new ||
+		!box_size_equal(n->box, cmd->boundingBox) ||
+		n->raster_scale != rs->scale ||
+		n->data.custom.customData != cmd->renderData.custom.customData ||
+		n->shape.gen != value.gen ||
+		memcmp(n->shape.fill, value.fill, sizeof(value.fill)) != 0 ||
+		memcmp(n->shape.stroke, value.stroke, sizeof(value.stroke)) != 0 ||
+		memcmp(&n->shape.stroke_width, &value.stroke_width, sizeof(value.stroke_width)) != 0 ||
+		clip_round_changed(&n->mask, mask);
+	if (raster_changed) {
+		size_t cap = sizeof(ops) / sizeof(*ops);
+		size_t len = hooks && hooks->shape_ops ? hooks->shape_ops(hooks->data,
+			shape, cmd->boundingBox.width, cmd->boundingBox.height, ops, cap) : 0;
+		if (len > cap) {
+			if (!rs->shape_overflow_logged) {
+				wlr_log(WLR_ERROR, "shape path exceeds %zu floats", cap);
+				rs->shape_overflow_logged = true;
+			}
+			len = 0;
+		}
+		free(n->shape_ops);
+		n->shape_ops = len ? malloc(len * sizeof(*ops)) : NULL;
+		n->shape_ops_len = n->shape_ops ? len : 0;
+		if (n->shape_ops)
+			memcpy(n->shape_ops, ops, len * sizeof(*ops));
+		n->shape = value;
+		rnode_set_raster(rs, n, sb, rasterize_shape(cmd, &value,
+			n->shape_ops, n->shape_ops_len, rs->scale, mask));
+		n->raster_scale = rs->scale;
+		clip_round_keep(&n->mask, mask);
+		muts++;
+	}
+	float opacity = render_userdata_opacity(cmd->userData);
+	if (opacity != n->opacity) {
+		wlr_scene_buffer_set_opacity(sb, opacity);
+		n->opacity = opacity;
+		if (!is_new)
+			muts++;
+	}
 	muts += rnode_apply_clip(n, sb, cmd, rbox, rs->scale, raster_changed);
 	return muts;
 }
@@ -1661,9 +1807,11 @@ int render_reconcile(struct render_state *rs, Clay_RenderCommandArray commands,
 		 * clipped. Only the rastered leaves crop via rbox. */
 		bool clip_mark = cmd->commandType == CLAY_RENDER_COMMAND_TYPE_CUSTOM &&
 			cmd->renderData.custom.customData == RENDER_CLIP_MARK;
+		bool shape = cmd->commandType == CLAY_RENDER_COMMAND_TYPE_CUSTOM &&
+			!clip_mark && ((uintptr_t)cmd->renderData.custom.customData & RENDER_SHAPE_TAG);
 		bool clippable = cmd->commandType == CLAY_RENDER_COMMAND_TYPE_RECTANGLE ||
 			cmd->commandType == CLAY_RENDER_COMMAND_TYPE_TEXT ||
-			cmd->commandType == CLAY_RENDER_COMMAND_TYPE_IMAGE || clip_mark;
+			cmd->commandType == CLAY_RENDER_COMMAND_TYPE_IMAGE || clip_mark || shape;
 		Clay_BoundingBox rbox = (clip_top != NULL && clippable) ?
 			box_intersect(cmd->boundingBox, *clip_top) : cmd->boundingBox;
 		/* The arc of the nearest rounded clip, for a raster that reaches a
@@ -1693,6 +1841,10 @@ int render_reconcile(struct render_state *rs, Clay_RenderCommandArray commands,
 				muts += reconcile_clip_mark(rs, n, rbox);
 				scope_open(rs, cmd->userData, rbox, scope,
 					cmd->renderData.custom.cornerRadius.topLeft);
+				break;
+			}
+			if (shape) {
+				muts += reconcile_shape(rs, n, cmd, rbox, mask, hooks);
 				break;
 			}
 			muts += reconcile_surface(rs, n, cmd, hooks);
@@ -1890,6 +2042,7 @@ void render_destroy(struct render_state *rs,
 			hooks->release(hooks->data, rs->nodes[i].handle, rs);
 		}
 		free(rs->nodes[i].text);
+		free(rs->nodes[i].shape_ops);
 	}
 	wlr_scene_node_destroy(&rs->tree->node);
 	for (struct render_state **p = &render_states; *p != NULL; p = &(*p)->next) {

@@ -27,6 +27,7 @@ local color = require("gears.color")
 local gtable = require("gears.table")
 local base = require("wibox.widget.base")
 local beautiful = require("beautiful")
+local clay = require("wibox.clay")
 
 local graph = { mt = {} }
 
@@ -537,17 +538,25 @@ local function graph_choose_coordinate_system(self, scaling_values, drawn_values
     return min_value, max_value, baseline_y
 end
 
-local function graph_draw_values(self, cr, _, height, drawn_values_num)
+local function graph_emit_value(self, cr, x, value_y, base_y, pristine_transform)
+    local step_shape = self._private.step_shape
+    local step_width = self._private.step_width or prop_fallbacks.step_width
+    if step_shape then
+        cr:translate(x, value_y)
+        step_shape(cr, step_width, base_y - value_y)
+        cr:set_matrix(pristine_transform)
+    else
+        cr:rectangle(x, value_y, step_width, base_y - value_y)
+    end
+end
+
+local function graph_walk_values(self, cr, height, drawn_values_num, visit)
     local values = self._private.values
 
     local step_shape = self._private.step_shape
     local step_spacing = self._private.step_spacing or prop_fallbacks.step_spacing
     local step_width = self._private.step_width or prop_fallbacks.step_width
 
-    -- Cache methods used in the inner loop for a 3x performance boost
-    local cairo_rectangle = cr.rectangle
-    local cairo_translate = cr.translate
-    local cairo_set_matrix = cr.set_matrix
     local map_coords = graph_map_value_to_widget_coordinates
 
     -- Preserve the transform centered at the top-left corner of the graph
@@ -569,9 +578,8 @@ local function graph_draw_values(self, cr, _, height, drawn_values_num)
 
     for group_idx, group_values in ipairs(drawn_values) do
         if graph_should_draw_data_group(self, group_idx) then
-            -- Set the data series' color early, in case the user
-            -- wants to do their own painting inside step_shape()
-            cr:set_source(color(self:pick_data_group_color(group_idx)))
+            -- A nil x marks the start of a group, including an empty group.
+            visit(group_idx)
 
             for i = 1, math_min(#group_values, drawn_values_num) do
                 local value = group_values[i]
@@ -591,15 +599,7 @@ local function graph_draw_values(self, cr, _, height, drawn_values_num)
                         prev_y[i] = value_y
                     end
 
-                    if step_shape then
-                        -- Shift to the bar beginning
-                        cairo_translate(cr, x, value_y)
-                        step_shape(cr, step_width, base_y - value_y)
-                        -- Undo the shift
-                        cairo_set_matrix(cr, pristine_transform)
-                    else
-                        cairo_rectangle(cr, x, value_y, step_width, base_y - value_y)
-                    end
+                    visit(group_idx, x, value_y, base_y, pristine_transform)
                 end
 
                 if not not_nan and nan_x then
@@ -608,17 +608,39 @@ local function graph_draw_values(self, cr, _, height, drawn_values_num)
                 end
             end
 
-            -- Paint the data series
-            cr:fill()
+            -- A nil group and x mark the end of a group.
+            visit(nil)
         end
     end
 
     if nan_x and #nan_x > 0 then
-        cr:set_source(color(self._private.nan_color or prop_fallbacks.nan_color))
         for _, x in ipairs(nan_x) do
-            -- Draw full-height rectangle with nan_color to indicate NaN
-            cairo_rectangle(cr, x, 0, step_width, height)
+            visit(nil, x)
         end
+    end
+end
+
+local function graph_draw_values(self, cr, _, height, drawn_values_num)
+    local nan_started = false
+    local step_width = self._private.step_width or prop_fallbacks.step_width
+    graph_walk_values(self, cr, height, drawn_values_num, function(group_idx, x, value_y, base_y, transform)
+        if x == nil then
+            if group_idx then
+                cr:set_source(color(self:pick_data_group_color(group_idx)))
+            else
+                cr:fill()
+            end
+        elseif group_idx then
+            graph_emit_value(self, cr, x, value_y, base_y, transform)
+        else
+            if not nan_started then
+                cr:set_source(color(self._private.nan_color or prop_fallbacks.nan_color))
+                nan_started = true
+            end
+            cr:rectangle(x, 0, step_width, height)
+        end
+    end)
+    if nan_started then
         cr:fill()
     end
 end
@@ -664,6 +686,90 @@ end
 function graph:fit(_, width, height)
     return width, height
 end
+
+local function describe_graph(w)
+    if w.draw ~= graph.draw then
+        return nil
+    end
+    local p = w._private
+    local bg = clay.solid_rgba(p.background_color or prop_fallbacks.background_color)
+    local bw = p.border_width or prop_fallbacks.border_width
+    if not bg or not clay.whole(bw) then
+        return nil
+    end
+    local node = { w = "grow", h = "grow", bg = bg, specs = {} }
+    if bw > 0 then
+        node.border = clay.solid_rgba(p.border_color or prop_fallbacks.border_color)
+        if not node.border then
+            return nil
+        end
+        node.bw = { bw, bw, bw, bw }
+    end
+
+    local has_nan = false
+    -- Floating grow leaves take the parent's box (third_party/clay.h:2224-2237),
+    -- anchor at its bounding box (:2634-2636), and paint in order (:2603-2615).
+    for g, values in ipairs(p.values) do
+        if graph_should_draw_data_group(w, g) then
+            local fill = clay.solid_rgba(w:pick_data_group_color(g))
+            if not fill then
+                return nil
+            end
+            for _, value in ipairs(values) do
+                if value ~= value then
+                    has_nan = true
+                    break
+                end
+            end
+            node.specs[#node.specs + 1] = {
+                float = true, w = "grow", h = "grow", fill = fill,
+                shape = function(width, height)
+                    local values_width, values_height = width - 2 * bw, height - 2 * bw
+                    local n = w:compute_drawn_values_num(values_width)
+                    graph_gather_drawn_values_num_stats(w, n)
+                    if n == 0 then
+                        return {}
+                    end
+                    return clay.shape_ops(function(cr)
+                        graph_walk_values(w, cr, values_height, n, function(group_idx, x, value_y, base_y, transform)
+                            if group_idx == g and x ~= nil then
+                                graph_emit_value(w, cr, x, value_y, base_y, transform)
+                            end
+                        end)
+                    end, values_width, values_height, bw, bw)
+                end,
+            }
+        end
+    end
+    if p.nan_indication and has_nan then
+        local fill = clay.solid_rgba(p.nan_color or prop_fallbacks.nan_color)
+        if not fill then
+            return nil
+        end
+        node.specs[#node.specs + 1] = {
+            float = true, w = "grow", h = "grow", fill = fill,
+            shape = function(width, height)
+                local values_width, values_height = width - 2 * bw, height - 2 * bw
+                local n = w:compute_drawn_values_num(values_width)
+                graph_gather_drawn_values_num_stats(w, n)
+                if n == 0 then
+                    return {}
+                end
+                local step_width = p.step_width or prop_fallbacks.step_width
+                return clay.shape_ops(function(cr)
+                    graph_walk_values(w, cr, values_height, n, function(group_idx, x)
+                        if group_idx == nil and x ~= nil then
+                            cr:rectangle(x, 0, step_width, values_height)
+                        end
+                    end)
+                end, values_width, values_height, bw, bw)
+            end,
+        }
+    end
+    return node
+end
+
+graph._clay = { describe = describe_graph, fit = graph.fit }
 
 --- Determine how many values should be drawn for a given widget width.
 --

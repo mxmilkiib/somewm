@@ -13,9 +13,11 @@
 local setmetatable = setmetatable
 local type = type
 local color = require("gears.color")
+local gmatrix = require("gears.matrix")
 local gtable = require("gears.table")
 local beautiful = require("beautiful")
 local base = require("wibox.widget.base")
+local clay = require("wibox.clay")
 local shape = require("gears.shape")
 local capi = {
     mouse        = mouse,
@@ -525,6 +527,113 @@ function slider:fit(_, width, height)
     return width, height
 end
 
+local function describe_slider(w)
+    local p = w._private
+    if w.draw ~= slider.draw then
+        return nil
+    end
+    local bbw = p.bar_border_width or beautiful.slider_bar_border_width or 0
+    if bbw > 0 then
+        return nil
+    end
+
+    local bar_color = p.bar_color or beautiful.slider_bar_color
+    local active = p.bar_active_color or beautiful.slider_bar_active_color
+    local handle_color = p.handle_color or beautiful.slider_handle_color
+    local handle_border_color = p.handle_border_color or beautiful.slider_handle_border_color
+    local background = clay.solid_rgba(bar_color)
+    local active_fill = clay.solid_rgba(active)
+    local handle_fill = clay.solid_rgba(handle_color)
+    local handle_stroke = clay.solid_rgba(handle_border_color)
+    if (bar_color and not background) or (active and not active_fill)
+            or (handle_color and not handle_fill) or (handle_border_color and not handle_stroke) then
+        return nil
+    end
+
+    local margins = p.bar_margins or beautiful.slider_bar_margins
+    local bar_h = p.bar_height or (not margins and beautiful.slider_bar_height)
+    local bar_margins, handle_margins = {}, {}
+    for i, prop in ipairs { "bar_margins", "handle_margins" } do
+        local value = p[prop] or beautiful["slider_" .. prop]
+        local sides = i == 1 and bar_margins or handle_margins
+        for j, side in ipairs { "left", "right", "top", "bottom" } do
+            local v = type(value) == "number" and value or (value and value[side] or 0)
+            if not clay.whole(v) then
+                return nil
+            end
+            sides[j] = v
+        end
+    end
+    if bar_h and not clay.whole(bar_h) then
+        return nil
+    end
+
+    local hw = p.handle_width or beautiful.slider_handle_width
+    local hbw = p.handle_border_width or beautiful.slider_handle_border_width or 0
+    local draws_active = type(bar_color) == "string" and type(active) == "string"
+    if draws_active and not hw and bar_h then
+        return nil
+    end
+    if draws_active and not handle_color then
+        return nil
+    end
+    local bar_shape = p.bar_shape or beautiful.slider_bar_shape or properties.bar_shape
+    local radius = clay.shape_radius(bar_shape)
+    if draws_active and radius == nil then
+        return nil
+    end
+
+    local value = p.value or p.min or 0
+    local maximum = p.maximum or properties.maximum
+    local minimum = p.minimum or properties.minimum
+    local range = maximum - minimum
+    local rate = range > 0 and (value - minimum) / range or 0
+    local handle_shape = p.handle_shape or beautiful.slider_handle_shape or properties.handle_shape
+    handle_fill = handle_fill or background or { 0, 0, 0, 1 }
+    handle_stroke = handle_stroke or handle_fill
+
+    local bar = { w = "grow", h = bar_h or "grow" }
+    if radius then
+        bar.bg, bar.radius = background, radius
+    else
+        bar.fill = background
+        bar.shape = function(width, height)
+            return clay.shape_ops(bar_shape, width, height)
+        end
+    end
+    if draws_active then
+        bar.children = { { w = "grow", h = "grow", fill = active_fill,
+            shape = function(width, height)
+                local slider_height = height + bar_margins[3] + bar_margins[4]
+                local handle_width = hw or math.floor(slider_height / 2)
+                local baw = math.floor(rate * width - (handle_width - hbw / 2) * (rate - 0.5))
+                if baw <= 0 then
+                    return {}
+                end
+                return clay.shape_ops(shape.rectangle, 0.99 * baw, height)
+            end } }
+    end
+    -- Floating grow elements take their parent's box (third_party/clay.h:2224-2237)
+    -- and paint in declaration order at equal zIndex (:2603-2615).
+    return { w = "grow", h = "grow", specs = {
+        { float = true, w = "grow", h = "grow", pad = bar_margins,
+            align = { y = margins and "top" or "center" }, children = { bar } },
+        { float = true, w = "grow", h = "grow", fill = handle_fill,
+            stroke = hbw > 0 and handle_stroke or nil, stroke_width = hbw,
+            shape = function(width, height)
+                local handle_width = hw or math.floor(height / 2)
+                local handle_height = height
+                local xo, yo = handle_margins[1], handle_margins[3]
+                handle_width = handle_width - handle_margins[1] - handle_margins[2]
+                handle_height = handle_height - handle_margins[3] - handle_margins[4]
+                local rel = math.floor(rate * (width - handle_width))
+                return clay.shape_ops(handle_shape, handle_width, handle_height, xo + rel, yo)
+            end },
+    } }
+end
+
+slider._clay = { describe = describe_slider, fit = slider.fit }
+
 -- Move the handle to the correct location
 local function move_handle(self, width, x, _)
     local min, _, interval = get_extremums(self)
@@ -534,8 +643,6 @@ end
 local function mouse_press(self, x, y, button_id, _, geo)
     if button_id ~= 1 then return end
 
-    local matrix_from_device = geo.hierarchy:get_matrix_from_device()
-
     -- Sigh. geo.width/geo.height is in device space. We need it in our own
     -- coordinate system
     local width = geo.widget_width
@@ -544,7 +651,9 @@ local function mouse_press(self, x, y, button_id, _, geo)
 
     -- Calculate a matrix transforming from screen coordinates into widget coordinates
     local wgeo = geo.drawable.drawable:geometry()
-    local matrix = matrix_from_device:translate(-wgeo.x, -wgeo.y)
+    local matrix = geo.hierarchy
+        and geo.hierarchy:get_matrix_from_device():translate(-wgeo.x, -wgeo.y)
+        or gmatrix.create_translate(-wgeo.x - geo.x, -wgeo.y - geo.y)
 
     local handle_cursor = self._private.handle_cursor
         or beautiful.slider_handle_cursor

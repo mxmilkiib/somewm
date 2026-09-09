@@ -17,6 +17,7 @@ local base      = require( "wibox.widget.base" )
 local beautiful = require( "beautiful"         )
 local shape     = require( "gears.shape"       )
 local gtable    = require( "gears.table"       )
+local clay      = require( "wibox.clay"        )
 
 local checkbox = {}
 
@@ -259,6 +260,58 @@ local function fit(_, _, w, h)
     local size = math.min(w, h)
     return size, size
 end
+
+local function describe_checkbox(w, _, st)
+    if rawget(w, "draw") ~= draw then
+        return nil
+    end
+
+    local main_color = w:get_color()
+    local bg = w:get_bg()
+    local border_color = w:get_border_color()
+    local check_color = w:get_check_color()
+    local check_border_color = w:get_check_border_color()
+    local main = clay.solid_rgba(main_color)
+    local background = clay.solid_rgba(bg)
+    local border = clay.solid_rgba(border_color)
+    local check_fill = clay.solid_rgba(check_color)
+    local check_border = clay.solid_rgba(check_border_color)
+    if (main_color and not main) or (bg and not background)
+            or (border_color and not border) or (check_color and not check_fill)
+            or (check_border_color and not check_border) then
+        return nil
+    end
+
+    local background_shape = w:get_shape() or shape.rectangle
+    local border_width = w:get_border_width() or 1
+    local stroke = border or main or { 0, 0, 0, 1 }
+    local outline = { w = "grow", h = "grow", fill = background,
+        stroke = border_width > 0 and stroke or nil, stroke_width = border_width,
+        shape = function(width, height)
+            local size = math.min(width, height)
+            local wa = outline_workarea(w, size, size)
+            return clay.shape_ops(background_shape, wa.width, wa.height, wa.x, wa.y)
+        end }
+    local check
+    if w._private.checked then
+        local check_shape = w:get_check_shape() or background_shape
+        local check_border_width = w:get_check_border_width() or 0
+        check = { float = true, w = "grow", h = "grow",
+            fill = check_fill or main or stroke,
+            stroke = check_border_width > 0 and (check_border or { 0, 0, 0, 1 }) or nil,
+            stroke_width = check_border_width,
+            shape = function(width, height)
+                local size = math.min(width, height)
+                local wa = content_workarea(w, size, size)
+                return clay.shape_ops(check_shape, wa.width, wa.height, wa.x, wa.y)
+            end }
+    end
+    local node = { specs = { outline, check } }
+    clay.size_leaf(node, w, st.context, st.width, st.height)
+    return node
+end
+
+checkbox._clay = { describe = describe_checkbox, fit = fit }
 
 --- If the checkbox is checked.
 -- @property checked

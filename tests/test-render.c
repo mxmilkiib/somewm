@@ -956,6 +956,50 @@ static void test_clip_source_matches_the_buffer_grid(void) {
 	fixture_finish(&f, &no_hooks);
 }
 
+static size_t triangle_ops(void *data, const struct render_shape *shape,
+		float w, float h, float *ops, size_t cap) {
+	static const float path[] = { 0, 0, 0, 1, 40, 0, 1, 0, 40, 3 };
+	CHECK(cap >= sizeof(path) / sizeof(*path));
+	memcpy(ops, path, sizeof(path));
+	return sizeof(path) / sizeof(*path);
+}
+
+static void test_shape_leaf(void) {
+	struct fixture f;
+	fixture_init(&f);
+	struct render_shape shape = { .gen = 1, .fill = { 1, 0, 0, 1 } };
+	struct render_client_hooks hooks = no_hooks;
+	hooks.shape_ops = triangle_ops;
+	Clay_RenderCommand cmd = cmd_custom(1,
+		(uint64_t)(uintptr_t)render_shape_tag(&shape), 0, 0, 40, 40);
+	CHECK(render_reconcile(f.rs, commands_of(&cmd, 1), &hooks, no_bounds) > 0);
+	struct wlr_scene_node *node = child_at(render_tree(f.parent), 0);
+	CHECK_EQ(node->type, WLR_SCENE_NODE_BUFFER);
+	CHECK(render_raster_bytes(f.rs) > 0);
+	CHECK_EQ(render_buffers_created(f.rs), 1);
+	CHECK_EQ(render_reconcile(f.rs, commands_of(&cmd, 1), &hooks, no_bounds), 0);
+	CHECK_EQ(render_buffers_created(f.rs), 0);
+	struct wlr_scene_buffer *sb = wlr_scene_buffer_from_node(node);
+	double x = 5, y = 5;
+	CHECK(sb->point_accepts_input(sb, &x, &y));
+	x = 35;
+	y = 35;
+	CHECK(!sb->point_accepts_input(sb, &x, &y));
+	cmd.boundingBox.width = 50;
+	CHECK(render_reconcile(f.rs, commands_of(&cmd, 1), &hooks, no_bounds) > 0);
+	CHECK_EQ(render_buffers_created(f.rs), 1);
+	shape.gen++;
+	CHECK_EQ(render_reconcile(f.rs, commands_of(&cmd, 1), &hooks, no_bounds), 1);
+	CHECK_EQ(render_buffers_created(f.rs), 1);
+	fixture_finish(&f, &hooks);
+
+	fixture_init(&f);
+	CHECK(render_reconcile(f.rs, commands_of(&cmd, 1), &no_hooks, no_bounds) > 0);
+	CHECK_EQ(render_raster_bytes(f.rs), 0);
+	CHECK_EQ(render_reconcile(f.rs, commands_of(&cmd, 1), &no_hooks, no_bounds), 0);
+	fixture_finish(&f, &no_hooks);
+}
+
 static void test_verifier_catches_divergence(void) {
 #ifndef SOMEWM_RENDER_VERIFY
 	fprintf(stderr, "skipped: built without SOMEWM_RENDER_VERIFY\n");
@@ -1005,6 +1049,7 @@ int main(void) {
 		{ "text rasters once per change", test_text_rasters_once_per_change },
 		{ "text crops to its clip", test_text_crops_to_its_clip },
 		{ "image rerasters on generation bump", test_image_rerasters_on_generation_bump },
+		{ "shape leaf", test_shape_leaf },
 		{ "font interning", test_font_interning },
 		{ "measure is monotonic", test_measure_is_monotonic },
 		{ "border ring has no gap or overlap", test_border_ring_has_no_gap_or_overlap },

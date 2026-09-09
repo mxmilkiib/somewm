@@ -47,6 +47,7 @@ local imagebox = require("wibox.widget.imagebox")
 local base     = require("wibox.widget.base")
 local gsurface = require("gears.surface")
 local cairo    = require("lgi").cairo
+local clay     = require("wibox.clay")
 
 local components = {
     "top_left", "top", "top_right", "right", "bottom_right", "bottom",
@@ -1055,5 +1056,125 @@ local function new(_, args)
 
     return ret
 end
+
+local function describe_border(w, _, st)
+    local p = w._private
+
+    if p.pending_border_images then
+        init_border_images(w)
+    end
+    if w.layout ~= module.layout or w.draw ~= module.draw
+            or p.honor_borders == false or p.ontop == false
+            or p.border_merging or p.expand_corners or p.border_image_dpi then
+        return nil
+    end
+    for _, mode in ipairs(fit_types) do
+        if p[mode .. "_fit_policy"] ~= "fit" then
+            return nil
+        end
+    end
+
+    local paddings = p.paddings or {}
+    local pad = {}
+
+    for i, side in ipairs { "left", "right", "top", "bottom" } do
+        if not clay.whole((p.borders or {})[side]) then
+            return nil
+        end
+        local value = paddings[side] or 0
+
+        if not clay.whole(value) then
+            return nil
+        end
+        pad[i] = p.widget and value or 0
+    end
+
+    local boxes = compute_borders(w, st.context, st.width, st.height)
+    local m = { left = boxes.top_left[1], top = boxes.top_left[2],
+        right = boxes.top_right[1], bottom = boxes.bottom_left[2] }
+
+    if not p.slice then
+        local box = { w = "grow", h = "grow",
+            pad = { m.left + pad[1], m.right + pad[2],
+                m.top + pad[3], m.bottom + pad[4] },
+            children = clay.whole_box(p.widget) }
+        local bg = setup_background(w, st.context)
+
+        if bg then
+            local image = bg._private
+
+            if image.handle or not image.image
+                    or image.default.width == 0 or image.default.height == 0 then
+                return nil
+            end
+            box.image, box.class, box.refit = image.image._native, "image", false
+            box.filter = image.scaling_quality
+        end
+        return { specs = { box } }
+    end
+
+    slice(w, st.context, boxes)
+    local images = p.border_image_widgets or {}
+    local slices = p.slice_cache and p.slice_cache[st.context.dpi] or {}
+    local checked = {}
+
+    for _, group in ipairs { images, slices } do
+        for _, ib in pairs(group) do
+            if not checked[ib] then
+                local image = ib._private
+
+                if image.handle or not image.image
+                        or image.default.width == 0 or image.default.height == 0 then
+                    return nil
+                end
+                checked[ib] = true
+            end
+        end
+    end
+
+    -- FIT counts child content and padding (third_party/clay.h:1791-1880).
+    -- GROW fills the cross axis (third_party/clay.h:2394-2412).
+    local node = { dir = "y", specs = {} }
+    local widgets = p.border_widgets or {}
+    local rows = {
+        { m.top, "top_left", "top", "top_right" },
+        { "grow", "left", "fill", "right" },
+        { m.bottom, "bottom_left", "bottom", "bottom_right" },
+    }
+
+    for _, positions in ipairs(rows) do
+        if positions[1] ~= 0 then
+            local row = { dir = "x", w = "grow", h = positions[1], children = {} }
+
+            for i, width in ipairs { m.left, "grow", m.right } do
+                if width ~= 0 then
+                    local position = positions[i + 1]
+                    local cell = { w = width, h = "grow" }
+
+                    if position ~= "fill" or p.fill then
+                        local ib = images[position] or slices[position]
+
+                        if widgets[position] then
+                            cell.children = clay.whole_box(widgets[position])
+                        elseif ib then
+                            cell.image, cell.class = ib._private.image._native, "image"
+                            cell.filter = ib._private.scaling_quality
+                            cell.refit = false
+                        end
+                    end
+                    if position == "fill" then
+                        cell.pad = p.widget and pad or nil
+                        cell.children = clay.whole_box(p.widget)
+                    end
+                    row.children[#row.children + 1] = cell
+                end
+            end
+            node.specs[#node.specs + 1] = row
+        end
+    end
+    return node
+end
+
+module._clay = { describe = describe_border, fit = module.fit }
 
 return setmetatable(module, {__call=new})

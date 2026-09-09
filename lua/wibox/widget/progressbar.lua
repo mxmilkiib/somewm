@@ -43,6 +43,7 @@ local color = require("gears.color")
 local beautiful = require("beautiful")
 local shape = require("gears.shape")
 local gtable = require("gears.table")
+local clay = require("wibox.clay")
 
 local progressbar = { mt = {} }
 
@@ -533,6 +534,101 @@ end
 function progressbar:fit(_, width, height)
     return width, height
 end
+
+local function describe_progressbar(w)
+    local p = w._private
+    if w.draw ~= progressbar.draw then
+        return nil
+    end
+    if p.ticks then
+        return nil
+    end
+    local bar_border_color = p.bar_border_color or beautiful.progressbar_bar_border_color
+    local bar_border_width = p.bar_border_width or beautiful.progressbar_bar_border_width
+        or p.border_width or beautiful.progressbar_border_width or 0
+    if bar_border_color and bar_border_width > 0 then
+        return nil
+    end
+
+    local foreground = clay.solid_rgba(p.color or beautiful.progressbar_fg or "#ff0000")
+    local background = clay.solid_rgba(p.background_color or beautiful.progressbar_bg or "#ff0000aa")
+    local bcol = p.border_color or beautiful.progressbar_border_color
+    local border = bcol and clay.solid_rgba(bcol)
+    if not foreground or not background or (bcol and not border) then
+        return nil
+    end
+    local bw = p.border_width or beautiful.progressbar_border_width or 0
+    bw = bcol and bw or 0
+    local clip = p.clip ~= false and beautiful.progressbar_clip ~= false
+    local margins, paddings = {}, {}
+    for i, prop in ipairs { "margins", "paddings" } do
+        local value = p[prop] or beautiful["progressbar_" .. prop]
+        local sides = i == 1 and margins or paddings
+        for j, side in ipairs { "left", "right", "top", "bottom" } do
+            local v = type(value) == "number" and value or (value and value[side] or 0)
+            if not clay.whole(v) then
+                return nil
+            end
+            sides[j] = v
+        end
+    end
+
+    local bg_shape = p.shape or beautiful.progressbar_shape or shape.rectangle
+    local radius = clay.shape_radius(bg_shape)
+    -- The inset cairo stroke has a rounder outer corner than the shape radius.
+    if radius and radius > 0 and bw > 0 then
+        return nil
+    end
+    if radius == nil and clip then
+        return nil
+    end
+    local bar_shape = p.bar_shape or beautiful.progressbar_bar_shape or shape.rectangle
+    local bar_radius = clay.shape_radius(bar_shape)
+    local max = p.max_value
+    local value = math.min(max, math.max(0, p.value))
+    -- Clay rejects percentages over 1 (third_party/clay.h:2030-2033).
+    local ratio = max > 0 and math.max(0, math.min(1, value / max)) or 0
+    local bg = { w = "grow", h = "grow" }
+    if radius then
+        bg.bg, bg.radius = background, radius
+        if bw > 0 then
+            bg.border, bg.bw = border, { bw, bw, bw, bw }
+        end
+    else
+        bg.fill, bg.stroke, bg.stroke_width = background, border, bw
+        bg.shape = function(width, height)
+            return clay.shape_ops(bg_shape, width - bw, height - bw, bw / 2, bw / 2)
+        end
+    end
+    local bar
+    if ratio > 0 then
+        bar = { w = { percent = ratio }, h = "grow" }
+        if bar_radius then
+            bar.bg, bar.radius = foreground, bar_radius
+        else
+            bar.fill = foreground
+            bar.shape = function(width, height)
+                return clay.shape_ops(bar_shape, width, height)
+            end
+        end
+    end
+    -- Percent contributes no fit content (third_party/clay.h:2273), and
+    -- uses its grow parent's size minus padding and gaps (:2292-2293).
+    if clip then
+        bg.pad = { bw + paddings[1], bw + paddings[2],
+            bw + paddings[3], bw + paddings[4] }
+        bg.children = { bar }
+        return { w = "grow", h = "grow", pad = margins, specs = { bg } }
+    end
+    -- Floating grow elements take their parent's box (third_party/clay.h:2224-2237)
+    -- and paint in declaration order at equal zIndex (:2603-2615).
+    return { w = "grow", h = "grow", specs = {
+        { float = true, w = "grow", h = "grow", pad = margins, children = { bg } },
+        { float = true, w = "grow", h = "grow", pad = paddings, children = { bar } },
+    } }
+end
+
+progressbar._clay = { describe = describe_progressbar, fit = progressbar.fit }
 
 --- Set the progressbar value.
 --

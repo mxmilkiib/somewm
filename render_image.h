@@ -15,6 +15,7 @@ struct image_entry {
 	cairo_surface_t *native;
 	int width, height;
 	uint64_t gen;
+	uint8_t filter;      /* cairo_filter_t + 1, 0 keeps cairo's default */
 	/* A surface made for one box and not yet painted: whoever draws into
 	 * it paints it whole once, wherever their dirty region reaches. */
 	bool fresh;

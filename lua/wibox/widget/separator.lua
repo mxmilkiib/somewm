@@ -27,6 +27,9 @@ local base      = require( "wibox.widget.base" )
 local color     = require( "gears.color"       )
 local gtable    = require( "gears.table"       )
 
+local gshape = require("gears.shape")
+local clay = require("wibox.clay")
+
 local separator = {}
 
 --- The separator's orientation.
@@ -191,6 +194,69 @@ end
 local function fit(_, _, width, height)
     return width, height
 end
+
+local function describe_separator(w)
+    local p = w._private
+    local s = p.shape or beautiful.separator_shape
+    if rawget(w, "draw") ~= draw or p.draw or beautiful.separator_draw then
+        return nil
+    end
+    local col = p.color or beautiful.separator_color
+    local fill = clay.solid_rgba(col)
+    if col and not fill then
+        return nil
+    end
+    fill = fill or { 0, 0, 0, 1 }
+    if not s then
+        local thickness = p.thickness or beautiful.separator_thickness or 1
+        local orientation = p.orientation
+        -- Clay rejects percentages over 1 (third_party/clay.h:2030-2033).
+        local span_ratio = math.max(0, math.min(1, w.span_ratio or 1))
+        local child
+        if orientation == "horizontal" then
+            child = { w = { percent = span_ratio }, h = thickness, bg = fill }
+        elseif orientation == "vertical" then
+            child = { w = thickness, h = { percent = span_ratio }, bg = fill }
+        else
+            child = { w = "grow", h = "grow", fill = fill,
+                shape = function(width, height)
+                    if width > height then
+                        local lw = width * span_ratio
+                        return clay.shape_ops(gshape.rectangle, lw, thickness,
+                            (width - lw) / 2, height / 2 - thickness / 2)
+                    end
+                    local lh = height * span_ratio
+                    return clay.shape_ops(gshape.rectangle, thickness, lh,
+                        width / 2 - thickness / 2, (height - lh) / 2)
+                end }
+        end
+        -- Percent contributes no fit content (third_party/clay.h:2273),
+        -- and uses the parent's size minus padding and gaps (:2292-2293).
+        return { w = "grow", h = "grow", align = { x = "center", y = "center" },
+            specs = { child } }
+    end
+    local bw = p.border_width or beautiful.separator_border_width or 0
+    local bc = p.border_color or beautiful.separator_border_color
+    local stroke
+    if bw > 0 then
+        if bc then
+            stroke = clay.solid_rgba(bc)
+            if not stroke then
+                return nil
+            end
+        else
+            fill = nil
+        end
+    end
+    return { w = "grow", h = "grow", specs = {
+        { w = "grow", h = "grow", fill = fill, stroke = stroke, stroke_width = bw,
+            shape = function(width, height)
+                return clay.shape_ops(s, width - bw, height - bw, bw / 2, bw / 2)
+            end },
+    } }
+end
+
+separator._clay = { describe = describe_separator, fit = fit }
 
 for _, prop in ipairs {"orientation", "color", "thickness", "span_ratio",
                        "border_width", "border_color", "shape" } do

@@ -11,7 +11,13 @@
 #include "common/luaclass.h"  /* For lua_class_t */
 #include "common/luaobject.h"  /* For LUA_OBJECT_FUNCS macro */
 #include "shadow.h"           /* For shadow_config_t, shadow_nodes_t */
+#include "../render.h"
 #include "../render_image.h"  /* For struct image_entry */
+
+struct widget_shape {
+	struct render_shape shape;
+	int ref;
+};
 
 /* Forward declarations */
 struct screen_t;
@@ -99,6 +105,8 @@ typedef struct drawin_t {
 	size_t widget_nodes_len;
 	struct image_entry *widget_leaves;
 	size_t widget_leaves_len;
+	struct widget_shape *widget_shapes;
+	size_t widget_shapes_len;
 	char *widget_text;
 	size_t widget_text_len;
 	/* Whether widget_nodes_refused() named any reason, so a setter that

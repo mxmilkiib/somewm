@@ -9,14 +9,15 @@
 --
 -- The walk descends the widget tree itself, not a laid-out hierarchy: Clay
 -- is the only solver of a converted tree, and no box is computed here. A
--- node is pure description, and its sizing is Clay's own, one of the three
+-- node is pure description, and its sizing is Clay's own, one of the four
 -- types clay.h names: `fit` wraps the content, which is Clay's default
 -- (CLAY_SIZING_FIT), `grow` fills the parent (CLAY_SIZING_GROW), and a
--- number is told (CLAY_SIZING_FIXED). A container says which of the first
--- two each child gets, in place of the `:fit` question the layout engine
--- asked; a widget's own preference (a forced size, a place that fills)
--- refines fit and never overrides grow, since fit is the content size and
--- that preference is the content.
+-- number is told (CLAY_SIZING_FIXED), and a table `{ percent = p }` is a
+-- share of the parent (CLAY_SIZING_PERCENT, clay.h:72, 294-295). A
+-- container says which of the first two each child gets, in place of the
+-- `:fit` question the layout engine asked; a widget's own preference (a
+-- forced size, a place that fills) refines fit and never overrides grow,
+-- since fit is the content size and that preference is the content.
 --
 -- A raster leaf is the one node the walk sizes. Clay measures nothing but
 -- text (Clay_SetMeasureTextFunction), and an image element is a bare
@@ -31,9 +32,107 @@
 local base = require("wibox.widget.base")
 local beautiful = require("beautiful")
 local gcolor = require("gears.color")
+local gshape = require("gears.shape")
 local gsurface = require("gears.surface")
 
+local cairo = require("lgi").cairo
 local clay = {}
+local probe = cairo.Context(cairo.ImageSurface(cairo.Format.A8, 1, 1))
+
+--- Record a shape path in logical pixels, offset by dx and dy.
+function clay.shape_ops(shape, w, h, dx, dy, ...)
+    probe:new_path()
+    local ops = {}
+    local kinds = { MOVE_TO = 0, LINE_TO = 1, CURVE_TO = 2, CLOSE_PATH = 3 }
+    local function append_path()
+        for kind, points in probe:copy_path():pairs() do
+            ops[#ops + 1] = kinds[kind]
+            for _, point in ipairs(points) do
+                ops[#ops + 1] = point.x + (dx or 0)
+                ops[#ops + 1] = point.y + (dy or 0)
+            end
+        end
+    end
+    local recorder = setmetatable({}, { __index = function(_, name)
+        if name == "stroke" or name == "fill" then
+            return function()
+                append_path()
+                probe:new_path()
+            end
+        elseif name == "stroke_preserve" or name == "fill_preserve" then
+            return append_path
+        end
+        return function(_, ...)
+            return probe[name](probe, ...)
+        end
+    end })
+    shape(recorder, w, h, ...)
+    append_path()
+    return ops
+end
+
+--- The corner radius a shape stands for, or nil for one Clay cannot name.
+-- A shape is an arbitrary painter: the two gears shapes that are rectangles
+-- are known by identity, and any other function by the path it draws;
+-- `rounded_bar` and the rest keep drawing themselves.
+
+local function same_path(a, b)
+    if #a ~= #b then
+        return false
+    end
+    for i, value in ipairs(a) do
+        if value ~= b[i] then
+            return false
+        end
+    end
+    return true
+end
+
+--- The radius a shape function draws when its path is
+-- gears.shape.rounded_rect's, which is what a theme's `function(cr, w, h)
+-- gears.shape.rounded_rect(cr, w, h, r) end` draws: the same path at two
+-- sizes, with the radius read off the path's first point (0, r). Cached
+-- per function; false for one that draws anything else.
+local shape_radii = setmetatable({}, { __mode = "k" })
+
+local function closure_radius(shape)
+    local r = shape_radii[shape]
+
+    if r == nil then
+        local w, h = 160, 96
+        local path = clay.shape_ops(shape, w, h)
+
+        r = false
+        if path[1] == 0 and path[2] == 0 then
+            local radius = path[3]
+
+            if same_path(path, clay.shape_ops(gshape.rounded_rect, w, h, 0, 0, radius))
+                    and same_path(clay.shape_ops(shape, 2 * w, 2 * h),
+                        clay.shape_ops(gshape.rounded_rect, 2 * w, 2 * h, 0, 0, radius)) then
+                r = radius
+            end
+        end
+        shape_radii[shape] = r
+    end
+    return r or nil
+end
+
+local function shape_radius(shape, args)
+    if shape == nil or shape == gshape.rectangle then
+        return 0
+    end
+    if shape == gshape.rounded_rect then
+        local r = args and args[1] or 10
+
+        return (type(r) == "number" and r >= 0) and r or nil
+    end
+    if type(shape) == "function" then
+        return closure_radius(shape)
+    end
+    return nil
+end
+
+clay.shape_radius = shape_radius
 
 --- The straight-alpha components of a solid color pattern, or nil for a
 -- gradient, a surface pattern, or no color at all. A Clay color is one flat
@@ -306,14 +405,14 @@ local function compile_specs(st, specs, parent, fg)
         else
             node = spec
             node.spacer = true
-            node.children = spec.children
-                and compile_specs(st, spec.children, parent, fg) or nil
             -- An image leaf takes its place among the leaves, with no
             -- hierarchy to draw it: the renderer shows its surface.
             if spec.image then
                 node.leaf = #st.leaves + 1
                 st.leaves[node.leaf] = { image = true, node = node }
             end
+            node.children = spec.children
+                and compile_specs(st, spec.children, parent, fg) or nil
         end
         nodes[i] = node
     end

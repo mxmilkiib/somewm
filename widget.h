@@ -17,6 +17,7 @@ enum widget_sizing {
 	WIDGET_SIZING_FIT = 0,
 	WIDGET_SIZING_GROW,
 	WIDGET_SIZING_FIXED,
+	WIDGET_SIZING_PERCENT,
 };
 
 /* One converted widget node, as lua/wibox/clay.lua describes it.
@@ -43,7 +44,7 @@ struct widget_node {
 	float border[4];
 	float radius;
 	uint8_t sizing[2];   /* enum widget_sizing per axis */
-	float size[2];       /* the fixed size, for WIDGET_SIZING_FIXED */
+	float size[2];       /* the fixed size or percent */
 	float min[2];        /* Clay_SizingMinMax for fit and grow: the floor,
 	                      * and the ceiling, 0 for none, which is Clay's own
 	                      * convention (clay.h:1936) */
@@ -51,6 +52,8 @@ struct widget_node {
 	uint8_t align[2];    /* child alignment per axis, Clay_LayoutAlignmentX/Y */
 	uint16_t gap;        /* between children, along the direction */
 	bool vertical;       /* children top to bottom, else left to right */
+	float offset[2];     /* a floating node's offset from the parent's top left,
+	                      * Clay_FloatingElementConfig.offset */
 	bool floating;       /* attached to the parent's top left, off the flow */
 	bool raster;         /* an image leaf */
 	/* A raster leaf whose pixels are the widget's own cairo surface (an
@@ -58,6 +61,11 @@ struct widget_node {
 	 * aspect ratio Clay keeps (Clay_AspectRatioElementConfig). */
 	const void *image;
 	float aspect;
+	uint8_t filter;      /* cairo_filter_t + 1, 0 keeps cairo's default */
+	uint16_t shape;
+	float fill[4];
+	float stroke[4];
+	float stroke_width;
 	bool widget;         /* stands for a widget, so has a box Lua reads back */
 	uint16_t children;
 	/* The clip scope this node opens, numbered within the drawin from 1,

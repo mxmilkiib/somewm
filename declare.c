@@ -40,6 +40,8 @@
 #include "widget.h"
 #include "window.h"
 #include "common/buffer.h"
+#include "common/lualib.h"
+#include "luaa.h"
 #include "common/util.h"
 #include "objects/client.h"
 #include "objects/drawin.h"
@@ -79,10 +81,46 @@ struct declare_output {
  * neither of which can exist before then. */
 static struct render_client_hooks client_hooks;
 
+static bool in_frame;
+
+bool
+declare_in_frame(void)
+{
+	return in_frame;
+}
+
+static size_t
+shape_ops(void *data, const struct render_shape *shape, float w, float h,
+	float *ops, size_t cap)
+{
+	lua_State *L = globalconf.L;
+	int ref = ((const struct widget_shape *)shape)->ref;
+	lua_pushnumber(L, w);
+	lua_pushnumber(L, h);
+	lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+	if (!luaA_dofunction(L, 2, 1))
+		return 0;
+	size_t len = lua_istable(L, -1) ? luaA_rawlen(L, -1) : 0;
+	for (size_t i = 0; i < len; i++) {
+		lua_rawgeti(L, -1, i + 1);
+		bool number = lua_type(L, -1) == LUA_TNUMBER;
+		if (number && i < cap)
+			ops[i] = (float)lua_tonumber(L, -1);
+		lua_pop(L, 1);
+		if (!number) {
+			len = 0;
+			break;
+		}
+	}
+	lua_pop(L, 1);
+	return len;
+}
+
 void
 declare_set_client_hooks(const struct render_client_hooks *hooks)
 {
 	client_hooks = *hooks;
+	client_hooks.shape_ops = shape_ops;
 }
 
 /* --- the handle registry --- */
@@ -578,6 +616,9 @@ widget_sizing(const struct widget_node *n, int axis)
 	switch (n->sizing[axis]) {
 	case WIDGET_SIZING_FIXED:
 		return CLAY_SIZING_FIXED(n->size[axis]);
+	case WIDGET_SIZING_PERCENT:
+		/* Percent has no min/max clamps (third_party/clay.h:1863-1871). */
+		return CLAY_SIZING_PERCENT(n->size[axis]);
 	case WIDGET_SIZING_GROW:
 		return CLAY_SIZING_GROW(n->min[axis], n->max[axis]);
 	default:
@@ -603,7 +644,7 @@ widget_node_decl(const struct widget_node *n, Clay_ElementId id, int16_t z,
 		.userData = userdata,
 	};
 
-	if (n->bg[3] > 0)
+	if (!n->shape && n->bg[3] > 0)
 		e.backgroundColor = clay_color(n->bg);
 	else if (n->clip_opens)
 		/* A transparent root, or a rounded container with no fill, still
@@ -620,6 +661,7 @@ widget_node_decl(const struct widget_node *n, Clay_ElementId id, int16_t z,
 		/* A stack child: off the flow, at the parent's top left, in the
 		 * drawin's band (a floating element is its own tree root, sorted
 		 * by zIndex and then declaration order, clay.h:2603-2615). */
+		e.floating.offset = (Clay_Vector2) { n->offset[0], n->offset[1] };
 		e.floating.attachTo = CLAY_ATTACH_TO_PARENT;
 		e.floating.zIndex = z;
 		/* A stack child lies over its siblings and passes the pointer
@@ -684,6 +726,8 @@ declare_widget_subtree(drawin_t *d, size_t i, Clay_ElementId id, int16_t z,
 	}
 	if (n->raster && *leaf < d->widget_leaves_len)
 		e.image.imageData = &d->widget_leaves[(*leaf)++];
+	if (n->shape)
+		e.custom.customData = render_shape_tag(&d->widget_shapes[n->shape - 1].shape);
 	if (n->image)
 		e.aspectRatio = (Clay_AspectRatioElementConfig) { n->aspect };
 
@@ -1046,6 +1090,7 @@ declare_widget_solve(drawin_t *d, int (*boxes)[4], int (*dev)[2])
 
 	if (!m || d->widget_nodes_len == 0)
 		return 0;
+	in_frame = true;
 	if (!ctx) {
 		uint32_t arena_size = Clay_MinMemorySize();
 
@@ -1070,6 +1115,7 @@ declare_widget_solve(drawin_t *d, int (*boxes)[4], int (*dev)[2])
 		widget_boxes_walk(d, 0, root_id, boxes, &n, root.boundingBox,
 			dev, &nleaf, m->wlr_output->scale);
 	Clay_SetCurrentContext(previous);
+	in_frame = false;
 	return n;
 }
 
@@ -1307,6 +1353,7 @@ declare_output_frame(struct declare_output *dout, Monitor *m, bool lock_active)
 
 	if (!dout->dirty)
 		return -1;
+	in_frame = true;
 	dout->dirty = false;
 
 	/* While lua-locked, this output solves its lock scene instead; the
@@ -1337,6 +1384,7 @@ declare_output_frame(struct declare_output *dout, Monitor *m, bool lock_active)
 	band->reconcile_us = now_us() - solved;
 	band->solve_us = solved - declared;
 	band->declare_us = declared - band->declare_us;
+	in_frame = false;
 	return band->mutations;
 }
 
@@ -1475,14 +1523,19 @@ dump_node(void *user, const struct render_node_view *v)
 }
 
 /* One axis of a node's sizing, as the tree declares it, not as it solved:
- * a number is CLAY_SIZING_FIXED, fit and grow are Clay's other two types,
- * with the floor and ceiling when the node set them. A fixed root is the
+ * a number is CLAY_SIZING_FIXED, percent prints times 100 then % as in
+ * Clay's inspector (third_party/clay.h:3320-3322), and fit and grow carry
+ * the floor and ceiling when the node set them. A fixed root is the
  * drawin's geometry whatever the node says (declare_widget_subtree). */
 static void
 dump_sizing(buffer_t *buf, const struct widget_node *n, int axis)
 {
 	if (n->sizing[axis] == WIDGET_SIZING_FIXED) {
 		buffer_addf(buf, "%g", n->size[axis]);
+		return;
+	}
+	if (n->sizing[axis] == WIDGET_SIZING_PERCENT) {
+		buffer_addf(buf, "%g%%", n->size[axis] * 100);
 		return;
 	}
 	buffer_adds(buf, n->sizing[axis] == WIDGET_SIZING_GROW ? "grow" : "fit");
@@ -1510,12 +1563,20 @@ dump_widget_node(buffer_t *buf, drawin_t *d, size_t i, Clay_ElementId id,
 
 	buffer_addf(buf, "    %08x %*s%s", id.id, depth * 2, "",
 		n->cls ? n->cls : "-");
-	if (n->image)
+	if (n->image) {
 		buffer_addf(buf, " image %dx%d", cairo_image_surface_get_width(
 			(cairo_surface_t *)n->image),
 			cairo_image_surface_get_height((cairo_surface_t *)n->image));
-	else if (n->raster)
+		if (n->filter) {
+			static const char *const filters[] = {
+				"fast", "good", "best", "nearest", "bilinear"
+			};
+			buffer_addf(buf, " filter=%s", filters[n->filter - 1]);
+		}
+	} else if (n->raster)
 		buffer_adds(buf, " raster");
+	else if (n->shape)
+		buffer_adds(buf, " shape");
 	if (!n->widget && !n->text && !n->image)
 		buffer_adds(buf, " spacer");
 	if (n->clip_opens)

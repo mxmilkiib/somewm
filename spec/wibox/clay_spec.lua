@@ -63,6 +63,18 @@ local function chain(tree)
 end
 
 describe("wibox.clay", function()
+    it("records both lines when a shape strokes between them", function()
+        local ops = wclay.shape_ops(function(cr)
+            cr:move_to(1, 2)
+            cr:line_to(3, 4)
+            cr:stroke()
+            cr:move_to(5, 6)
+            cr:line_to(7, 8)
+        end, 10, 10)
+
+        assert.is_same({ 0, 1, 2, 1, 3, 4, 0, 5, 6, 1, 7, 8 }, ops)
+    end)
+
     it("refuses a drawable whose own background is not a solid color", function()
         assert.is_nil(compile(nil, margin(leaf_widget(), 1, 1, 1, 1), BG))
         assert.is_nil(compile(

@@ -16,6 +16,7 @@ local shape     = require("gears.shape"      )
 local gtable    = require( "gears.table"     )
 local color     = require( "gears.color"     )
 local beautiful = require("beautiful"        )
+local clay      = require("wibox.clay"       )
 
 
 local arcchart = { mt = {} }
@@ -389,6 +390,121 @@ end
 function arcchart.mt:__call(...)
     return new(...)
 end
+
+local function describe_arcchart(w, fg, st)
+    if w.layout ~= arcchart.layout
+            or w.before_draw_children ~= arcchart.before_draw_children
+            or w.after_draw_children ~= arcchart.after_draw_children then
+        return nil
+    end
+
+    local values = w:get_values() or {}
+    local border_width = w:get_border_width() or 0
+    local thickness = math.max(border_width, w:get_thickness() or 5)
+    local offset = thickness + 2 * border_width
+    local bg = w:get_bg()
+    local background = clay.solid_rgba(bg)
+    local border_color = w:get_border_color()
+    local border = clay.solid_rgba(border_color or "#000000")
+    if (bg and not background) or (border_color and not border) then
+        return nil
+    end
+    local colors = w:get_colors() or {}
+    local fills = {}
+    for k, col in pairs(colors) do
+        fills[k] = clay.solid_rgba(col)
+        if col and not fills[k] then
+            return nil
+        end
+    end
+
+    local padding = w._private.paddings or {}
+    local left, right = padding.left or 0, padding.right or 0
+    local top, bottom = padding.top or 0, padding.bottom or 0
+    if left + right ~= top + bottom then
+        return nil
+    end
+    local pad = { offset + left, offset + right, offset + top, offset + bottom }
+    for _, v in ipairs(pad) do
+        if not clay.whole(v) then
+            return nil
+        end
+    end
+
+    local sum = 0
+    for _, v in ipairs(values) do
+        sum = sum + v
+    end
+    local max_val = math.max(w:get_max_value() or sum, sum)
+    local use_rounded_edges = sum ~= max_val and w:get_rounded_edge()
+    local offset_angle = w:get_start_angle() or math.pi
+
+    -- The content square is the smaller side of the box the drawable offers,
+    -- as fit answers it, less the insets; centre alignment places it where
+    -- content_workarea does. render.c rounded_rect_path clamps PILL to half
+    -- its side, so its clip scope is the circle before_draw_children cuts to.
+    local PILL = 1e6
+    local size = math.min(st.width, st.height)
+    local node = { pad = pad, align = { x = "center", y = "center" }, specs = {
+        { w = math.max(0, size - left - right - 2 * offset),
+            h = math.max(0, size - top - bottom - 2 * offset),
+            radius = PILL, children = clay.whole_box(w._private.widget) },
+    } }
+    local specs = node.specs
+    if bg then
+        specs[#specs + 1] = {
+            float = true, w = "grow", h = "grow", stroke = background,
+            stroke_width = thickness + 2 * border_width,
+            shape = function(width, height)
+                return clay.shape_ops(shape.circle, width - offset, height - offset,
+                    offset / 2, offset / 2)
+            end,
+        }
+    end
+    local start_angle = offset_angle
+    local fill
+    if max_val ~= 0 then
+        for k, v in ipairs(values) do
+            local end_angle = start_angle + (v * 2 * math.pi) / max_val
+            local arc_start, arc_end = math.pi - end_angle, math.pi - start_angle
+            local start_rounded = use_rounded_edges and k == #values
+            local end_rounded = use_rounded_edges and k == 1
+            fill = fills[k] or fill or clay.solid_rgba(fg)
+            if not fill then
+                return nil
+            end
+            specs[#specs + 1] = {
+                float = true, w = "grow", h = "grow", fill = fill,
+                shape = function(width, height)
+                    local wa = outline_workarea(width, height)
+                    return clay.shape_ops(shape.arc, wa.width - border_width,
+                        wa.height - border_width, wa.x + border_width / 2,
+                        wa.y + border_width / 2, thickness + border_width,
+                        arc_start, arc_end, start_rounded, end_rounded)
+                end,
+            }
+            start_angle = end_angle
+        end
+        if border_width > 0 and #values > 0 then
+            specs[#specs + 1] = {
+                float = true, w = "grow", h = "grow", stroke = border,
+                stroke_width = border_width,
+                shape = function(width, height)
+                    local wa = outline_workarea(width, height)
+                    return clay.shape_ops(shape.arc, wa.width - border_width,
+                        wa.height - border_width, wa.x + border_width / 2,
+                        wa.y + border_width / 2, thickness + border_width,
+                        math.pi - start_angle, math.pi - offset_angle,
+                        use_rounded_edges, use_rounded_edges)
+                end,
+            }
+        end
+    end
+    clay.size_leaf(node, w, st.context, st.width, st.height)
+    return node
+end
+
+arcchart._clay = { describe = describe_arcchart, fit = arcchart.fit }
 
 return setmetatable(arcchart, arcchart.mt)
 

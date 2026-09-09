@@ -12,6 +12,13 @@ struct wlr_scene_node;
 
 struct render_state;
 
+struct render_shape {
+	uint64_t gen;
+	float fill[4];
+	float stroke[4];
+	float stroke_width;
+};
+
 /* How the renderer reaches client surfaces. resolve returns the client's
  * scene tree for a handle, or NULL if the client is gone (then the
  * renderer must not touch any stored pointer). configure asks the client
@@ -47,6 +54,10 @@ struct render_client_hooks {
 	 * from the scene's input path, never during reconcile; optional (a NULL
 	 * accepts_input accepts everywhere). */
 	bool (*accepts_input)(void *data, void *userdata, double x, double y);
+	/* Path floats for the solved logical box, 0 for no path. A count above
+	 * cap reports overflow. NULL draws no shape leaves. */
+	size_t (*shape_ops)(void *data, const struct render_shape *shape,
+		float w, float h, float *ops, size_t cap);
 	void *data;
 };
 
@@ -116,6 +127,18 @@ int render_device_len(int origin, int len, float scale);
  * RECTANGLE only for a fill, clay.h:2780, and a CUSTOM command regardless,
  * clay.h:2875). All ones, a value no handle takes. */
 #define RENDER_CLIP_MARK ((void *)(uintptr_t)UINT64_MAX)
+#define RENDER_SHAPE_TAG (UINT64_C(1) << 63)
+
+static inline void *render_shape_tag(struct render_shape *shape)
+{
+	return (void *)((uintptr_t)shape | RENDER_SHAPE_TAG);
+}
+
+static inline struct render_shape *render_shape_of(void *data)
+{
+	return (struct render_shape *)((uintptr_t)data & ~RENDER_SHAPE_TAG);
+}
+
 #define RENDER_UD_OPACITY_SHIFT 40
 #define RENDER_UD_OPENS_SHIFT 48
 #define RENDER_UD_CLIP_SHIFT 56

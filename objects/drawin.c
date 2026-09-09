@@ -1076,6 +1076,8 @@ luaA_drawin_set_geometry(lua_State *L, drawin_t *drawin, int x, int y, int width
 static void
 drawin_set_visible(lua_State *L, int udx, bool v)
 {
+	if (declare_in_frame())
+		luaL_error(L, "drawin visibility changed from inside a frame");
 	drawin_t *drawin = luaA_checkudata(L, udx, &drawin_class);
 	if (drawin->visible == v)
 		return;  /* No change */

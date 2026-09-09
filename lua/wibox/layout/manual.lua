@@ -249,6 +249,31 @@ local function new_manual(...)
     return ret
 end
 
+local function describe_manual(w)
+    if w.layout ~= manual_layout.layout then
+        return nil
+    end
+    local node = { w = "grow", h = "grow", specs = {} }
+    for k, child in ipairs(w._private.widgets) do
+        local pt = w._private.pos[k] or { x = 0, y = 0 }
+        if type(pt) == "function" or (getmetatable(pt) or {}).__call then
+            return nil
+        end
+        for _, key in ipairs { "x", "y", "width", "height" } do
+            local value = pt[key]
+            if value ~= nil and (type(value) ~= "number"
+                    or ((key == "width" or key == "height") and value < 0)) then
+                return nil
+            end
+        end
+        node.specs[k] = { float = true, x = pt.x, y = pt.y, w = pt.width, h = pt.height,
+            children = { { widget = child, w = "grow", h = "grow" } } }
+    end
+    return node
+end
+
+manual_layout._clay = { describe = describe_manual, fit = manual_layout.fit }
+
 --@DOC_fixed_COMMON@
 
 return setmetatable(manual_layout, {__call=function(_,...) return new_manual(...) end})
