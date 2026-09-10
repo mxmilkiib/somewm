@@ -89,8 +89,10 @@ mousegrabber_handleevent(lua_State *L, int x, int y, uint16_t mask)
 void
 mousegrabber_hot_reload(lua_State *L)
 {
-    if (mousegrabber_active)
-        cursor_set_xcursor("default");
+    struct wlr_cursor *cursor = some_get_cursor();
+
+    if (cursor && cursor_mgr && mousegrabber_active)
+        some_apply_cursor("default");
 
     free(mousegrabber_cursor_name);
     mousegrabber_cursor_name = NULL;
@@ -108,7 +110,10 @@ int
 luaA_mousegrabber_stop(lua_State *L)
 {
     /* Restore default cursor */
-    cursor_set_xcursor("default");
+    cursor = some_get_cursor();
+    if (cursor && cursor_mgr) {
+        some_apply_cursor("default");
+    }
 
     /* Free cursor name if set */
     if (mousegrabber_cursor_name) {
@@ -184,7 +189,9 @@ luaA_mousegrabber_run(lua_State *L)
             free(mousegrabber_cursor_name);
         }
         mousegrabber_cursor_name = strdup(cursor_name);
-        cursor_set_xcursor(cursor_name);
+
+        /* Set the cursor */
+        some_apply_cursor(cursor_name);
     }
 
     /* Mark mousegrabber as active */
