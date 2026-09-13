@@ -279,6 +279,309 @@ local function get_item_icon(item, size)
 end
 
 
+    local item = self._private.item
+    if not item then return end
+
+    local is_hovered = self._private.is_hovered
+
+    -- Get per-icon style overrides (check item-specific first, then beautiful defaults)
+    local hover_bg = get_icon_style(item, "hover_bg") or beautiful.systray_hover_bg
+    local hover_scale_val = get_icon_style(item, "hover_scale") or beautiful.systray_hover_scale or 1.0
+
+    -- Draw hover background if set
+    if is_hovered and hover_bg then
+        cr:set_source(gcolor(hover_bg))
+        cr:rectangle(0, 0, width, height)
+        cr:fill()
+    end
+
+    -- Apply hover scale transform (scale from center)
+    local hover_scale = is_hovered and hover_scale_val or 1.0
+    if hover_scale ~= 1.0 then
+        cr:save()
+        -- Scale around center: translate to center, scale, translate back
+        cr:translate(width / 2, height / 2)
+        cr:scale(hover_scale, hover_scale)
+        cr:translate(-width / 2, -height / 2)
+    end
+
+    -- Draw urgent background if urgent (status or overlay triggers)
+    if is_item_urgent(item) then
+        local urgent_bg = get_icon_style(item, "urgent_bg") or beautiful.systray_urgent_bg
+        if urgent_bg then
+            cr:set_source(gcolor(urgent_bg))
+            cr:rectangle(0, 0, width, height)
+            cr:fill()
+        end
+    end
+
+    local icon_drawn = false
+
+    -- Check for per-icon icon_override first
+    local icon_override = get_icon_style(item, "icon_override")
+    if icon_override then
+        -- Cache the loaded surface so we don't re-scan the icon theme
+        -- and re-read from disk on every redraw (e.g. on hover).
+        if self._private.override_cache_name ~= icon_override then
+            self._private.override_cache_name = icon_override
+            self._private.override_surface = nil
+            local override_path = lookup_icon_by_name(icon_override, math.floor(math.min(width, height)))
+            if override_path then
+                self._private.override_surface = surface.load_silently(override_path)
+            end
+        end
+        local icon_surface = self._private.override_surface
+        if icon_surface then
+            local iw = cairo.ImageSurface.get_width(icon_surface)
+            local ih = cairo.ImageSurface.get_height(icon_surface)
+            if iw > 0 and ih > 0 then
+                local scale = math.min(width / iw, height / ih)
+                local dx = (width - iw * scale) / 2
+                local dy = (height - ih * scale) / 2
+                cr:save()
+                cr:translate(dx, dy)
+                cr:scale(scale, scale)
+                cr:set_source_surface(icon_surface, 0, 0)
+                cr:paint()
+                cr:restore()
+                icon_drawn = true
+            end
+        end
+    end
+
+    -- Use the C method to draw the icon directly (for pixmap icons)
+    -- This avoids the lightuserdata -> lgi surface conversion issue
+    if not icon_drawn then
+        local ok, result = pcall(function()
+            return item:draw_icon(cr._native or cr, width, height)
+        end)
+        icon_drawn = ok and result
+    end
+
+    -- If no pixmap, use the cached icon surface (pre-loaded by _update_icon)
+    if not icon_drawn then
+        local icon_surface = self._private.current_icon_surface
+        if icon_surface then
+            local iw = cairo.ImageSurface.get_width(icon_surface)
+            local ih = cairo.ImageSurface.get_height(icon_surface)
+            if iw > 0 and ih > 0 then
+                local scale = math.min(width / iw, height / ih)
+                local dx = (width - iw * scale) / 2
+                local dy = (height - ih * scale) / 2
+                cr:save()
+                cr:translate(dx, dy)
+                cr:scale(scale, scale)
+                cr:set_source_surface(icon_surface, 0, 0)
+                cr:paint()
+                cr:restore()
+                icon_drawn = true
+            end
+        end
+    end
+
+    -- Fallback: draw placeholder if nothing else worked
+    if not icon_drawn then
+        cr:set_source_rgb(0.3, 0.3, 0.3)
+        cr:rectangle(2, 2, width - 4, height - 4)
+        cr:fill()
+    end
+
+    -- Restore from hover scale transform
+    if hover_scale ~= 1.0 then
+        cr:restore()
+    end
+
+    -- Draw overlay icon if present
+    local show_overlay = beautiful.systray_show_overlay
+    if show_overlay == nil then show_overlay = true end  -- default to true
+
+    if show_overlay and item.overlay_icon then
+        -- Get overlay geometry (position and size)
+        local overlay_x, overlay_y, overlay_size = get_overlay_geometry(item, width, height)
+
+        -- Get overlay styling
+        local overlay_bg = get_icon_style(item, "overlay_bg") or beautiful.systray_overlay_bg
+        local overlay_shape = get_icon_style(item, "overlay_shape") or beautiful.systray_overlay_shape or "circle"
+        local overlay_padding = get_icon_style(item, "overlay_padding") or beautiful.systray_overlay_padding or 2
+
+        -- Draw overlay background if configured
+        if overlay_bg then
+            cr:save()
+            cr:set_source(gcolor(overlay_bg))
+
+            local bg_x = overlay_x - overlay_padding
+            local bg_y = overlay_y - overlay_padding
+            local bg_size = overlay_size + overlay_padding * 2
+
+            if overlay_shape == "circle" then
+                local radius = bg_size / 2
+                cr:arc(bg_x + radius, bg_y + radius, radius, 0, 2 * math.pi)
+                cr:fill()
+            elseif overlay_shape == "rounded_rect" then
+                local corner_radius = bg_size / 4
+                -- Draw rounded rectangle
+                cr:new_sub_path()
+                cr:arc(bg_x + bg_size - corner_radius, bg_y + corner_radius, corner_radius, -math.pi/2, 0)
+                cr:arc(bg_x + bg_size - corner_radius, bg_y + bg_size - corner_radius, corner_radius, 0, math.pi/2)
+                cr:arc(bg_x + corner_radius, bg_y + bg_size - corner_radius, corner_radius, math.pi/2, math.pi)
+                cr:arc(bg_x + corner_radius, bg_y + corner_radius, corner_radius, math.pi, 3*math.pi/2)
+                cr:close_path()
+                cr:fill()
+            else  -- "rect" or default
+                cr:rectangle(bg_x, bg_y, bg_size, bg_size)
+                cr:fill()
+            end
+
+            cr:restore()
+        end
+
+        -- Draw the overlay icon
+        local ok = pcall(function()
+            item:draw_overlay(cr._native or cr, overlay_x, overlay_y, overlay_size)
+        end)
+        -- If C draw_overlay failed, try icon_name lookup (cached)
+        if not ok and item.overlay_icon_name and item.overlay_icon_name ~= "" then
+            if self._private.overlay_cache_name ~= item.overlay_icon_name then
+                self._private.overlay_cache_name = item.overlay_icon_name
+                self._private.overlay_surface = nil
+                local overlay_path = lookup_icon_by_name(item.overlay_icon_name, overlay_size, item.icon_theme_path)
+                if overlay_path then
+                    self._private.overlay_surface = surface.load_silently(overlay_path)
+                end
+            end
+            local overlay_surface = self._private.overlay_surface
+            if overlay_surface then
+                local ow = cairo.ImageSurface.get_width(overlay_surface)
+                local oh = cairo.ImageSurface.get_height(overlay_surface)
+                if ow > 0 and oh > 0 then
+                    local scale = overlay_size / math.max(ow, oh)
+                    cr:save()
+                    cr:translate(overlay_x, overlay_y)
+                    cr:scale(scale, scale)
+                    cr:set_source_surface(overlay_surface, 0, 0)
+                    cr:paint()
+                    cr:restore()
+                end
+            end
+        end
+    end
+
+    -- Draw urgent indicator when urgent (status or overlay triggers)
+    local urgent_style = get_icon_style(item, "urgent_style") or beautiful.systray_urgent_style or "none"
+    if is_item_urgent(item) and urgent_style ~= "none" then
+        local urgent_color = get_icon_style(item, "urgent_color") or beautiful.systray_urgent_color or "#ff3333"
+        local outline_color = get_icon_style(item, "urgent_outline_color") or beautiful.systray_urgent_outline_color or "#ffffff"
+
+        if urgent_style == "dot" then
+            -- Get configurable size
+            local size_config = get_icon_style(item, "urgent_size")
+            if size_config == nil then
+                size_config = beautiful.systray_urgent_size or 0.25
+            end
+
+            local dot_size
+            if size_config <= 1 then
+                dot_size = math.floor(math.min(width, height) * size_config)
+            else
+                dot_size = math.floor(size_config)
+            end
+            dot_size = math.max(6, dot_size)
+
+            -- Get configurable position
+            local position = get_icon_style(item, "urgent_position")
+            if position == nil then
+                position = beautiful.systray_urgent_position or "top_right"
+            end
+
+            local dot_x, dot_y
+            local padding = 1
+            if position == "top_right" then
+                dot_x = width - dot_size - padding
+                dot_y = padding
+            elseif position == "top_left" then
+                dot_x = padding
+                dot_y = padding
+            elseif position == "bottom_right" then
+                dot_x = width - dot_size - padding
+                dot_y = height - dot_size - padding
+            elseif position == "bottom_left" then
+                dot_x = padding
+                dot_y = height - dot_size - padding
+            else
+                -- Default to top_right
+                dot_x = width - dot_size - padding
+                dot_y = padding
+            end
+
+            -- Get shape function (default to circle)
+            local shape = get_icon_style(item, "urgent_shape")
+            if shape == nil then
+                shape = beautiful.systray_urgent_shape or gshape.circle
+            end
+
+            -- Draw outline for visibility
+            cr:save()
+            cr:translate(dot_x - 1, dot_y - 1)
+            cr:set_source(gcolor(outline_color))
+            shape(cr, dot_size + 2, dot_size + 2)
+            cr:fill()
+            cr:restore()
+
+            -- Draw urgent indicator
+            cr:save()
+            cr:translate(dot_x, dot_y)
+            cr:set_source(gcolor(urgent_color))
+            shape(cr, dot_size, dot_size)
+            cr:fill()
+            cr:restore()
+
+        elseif urgent_style == "ring" then
+            -- Get shape function (default to circle)
+            local shape = get_icon_style(item, "urgent_shape")
+            if shape == nil then
+                shape = beautiful.systray_urgent_shape or gshape.circle
+            end
+
+            -- Draw ring around the icon using shape
+            local ring_width = 2
+            local inset = ring_width
+            cr:save()
+            cr:translate(inset, inset)
+            cr:set_source(gcolor(urgent_color))
+            cr:set_line_width(ring_width)
+            shape(cr, width - inset * 2, height - inset * 2)
+            cr:stroke()
+            cr:restore()
+
+        elseif urgent_style == "glow" then
+            -- Draw glow effect (colored border)
+            local glow_size = 3
+            cr:set_source(gcolor(urgent_color))
+            cr:rectangle(0, 0, width, glow_size)  -- top
+            cr:rectangle(0, height - glow_size, width, glow_size)  -- bottom
+            cr:rectangle(0, 0, glow_size, height)  -- left
+            cr:rectangle(width - glow_size, 0, glow_size, height)  -- right
+            cr:fill()
+        end
+    end
+end
+
+--- Fit the widget to available space.
+-- @method fit
+-- @hidden
+function systray_icon:fit(context, width, height)
+    -- Every icon gets the same base_size square; :draw scales the source
+    -- pixmap into it, so a large or non-square icon letterboxes instead of
+    -- widening its slot.
+    local size = self._private.forced_size or 24
+
+    -- Respect forced_width/height
+    local w = self._private.forced_width or size
+    local h = self._private.forced_height or size
+
+    local result_w, result_h = math.min(w, width), math.min(h, height)
+    return result_w, result_h
+end
 
 --- Update the current icon.
 -- @method _update_icon
@@ -287,6 +590,7 @@ function systray_icon:_update_icon()
     local item = self._private.item
     if not item then
         self._private.current_icon = nil
+        self._private.current_icon_surface = nil
         return
     end
 
@@ -294,7 +598,21 @@ function systray_icon:_update_icon()
                  self._private.forced_width or
                  self._private.forced_height or 24
 
-    self._private.current_icon = get_item_icon(item, size)
+    local icon = get_item_icon(item, size)
+    self._private.current_icon = icon
+
+    -- Pre-load the cairo surface so draw() doesn't re-do the icon-theme
+    -- lookup + disk read on every redraw.  get_item_icon returns either a
+    -- cairo.Surface (pixmap case, also drawn via the C path) or a path
+    -- string (icon-name case); resolve the latter to a surface here.
+    if type(icon) == "string" then
+        self._private.current_icon_surface = surface.load_silently(icon)
+    elseif icon then
+        self._private.current_icon_surface = icon
+    else
+        self._private.current_icon_surface = nil
+    end
+
     self:emit_signal("widget::redraw_needed")
 end
 
