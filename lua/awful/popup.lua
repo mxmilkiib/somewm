@@ -372,8 +372,23 @@ end
 -- remain the completed frame's; chained attachments resolve in declaration.
 function popup:_apply_size_now()
     if not self.widget then return end
-    self._drawable:draw()
-    set_position(self)
+
+    local w, h = wibox.widget.base.fit_widget(
+        self.widget,
+        {dpi= self.screen and self.screen.dpi or xresources.get_dpi()},
+        self.widget,
+        self._private.maximum_width  or 9999,
+        self._private.maximum_height or 9999
+    )
+
+    -- It is important to do it for the obscure reason that calling `w:geometry()`
+    -- is actually mutating the state due to quantum determinism thanks to XCB
+    -- async nature... It is only true the very first time `w:geometry()` is
+    -- called
+    self.width  = math.max(1, math.ceil(w or 1))
+    self.height = math.max(1, math.ceil(h or 1))
+
+    apply_size(self, w, h, skip_set ~= false)
 end
 
 function popup:set_widget(wid)
