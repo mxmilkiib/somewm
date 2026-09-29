@@ -640,11 +640,17 @@ buttonpress(struct wl_listener *listener, void *data)
 				int rel_x = (int)cursor->x - drawin->x;
 				int rel_y = (int)cursor->y - drawin->y;
 
-				/* Emit button release signals (AwesomeWM-compatible) */
-				if (luaA_drawin_button_check(drawin, rel_x, rel_y, event->button,
-				                             CLEANMASK(mods), false)) {
-					return;
-				}
+				/* Emit button release signals (AwesomeWM-compatible).
+				 * NEVER return here: the press that began this implicit grab
+				 * was already delivered to a surface, so its release must
+				 * always reach wlr_seat_pointer_notify_button() below.
+				 * luaA_drawin_button_check() counts a matched binding as
+				 * handled even when no Lua release handler exists - treating
+				 * that as consumption strands the client's implicit grab
+				 * (button stays logically down, all pointer input confines to
+				 * the grabbed surface forever). Releases are observers only. */
+				luaA_drawin_button_check(drawin, rel_x, rel_y, event->button,
+				                         CLEANMASK(mods), false);
 			} else if (c) {
 				/* Released on client - check client button bindings */
 				int rel_x = (int)cursor->x - c->geometry.x;
@@ -664,12 +670,12 @@ buttonpress(struct wl_listener *listener, void *data)
 				/* Released on empty space - check root button bindings */
 				lua_State *L = globalconf_get_lua_State();
 
-				/* Check root button bindings for release event */
-				if (luaA_root_button_check(L, event->button, CLEANMASK(mods),
-				                           cursor->x, cursor->y, false) > 0) {
-					/* Root button release binding matched and handled */
-					return;
-				}
+				/* Check root button bindings for release event. Observers
+				 * only, same reason as the drawin branch above: a matched
+				 * binding must not strand the pressed surface's implicit
+				 * grab by swallowing the release. */
+				luaA_root_button_check(L, event->button, CLEANMASK(mods),
+				                       cursor->x, cursor->y, false);
 			}
 		}
 		break;
