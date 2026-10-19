@@ -164,6 +164,11 @@ stack_client_relative(Client *c, Client *previous)
 		return;
 
 	if (previous && previous->scene) {
+		/* Node == Sibling aborts inside wlroots. Can happen with a
+		 * transient_for self-reference or a duplicated stack entry. */
+		if (&c->scene->node == &previous->scene->node)
+			return;
+
 		/* Ensure both nodes share the same scene parent.
 		 * In X11, stacking is flat (xcb_configure_window works on any two windows).
 		 * In wlroots, wlr_scene_node_place_above requires shared parents.
@@ -195,9 +200,11 @@ stack_transients_above(Client *c, Client *previous)
 	stack_client_relative(c, previous);
 	previous = c;
 
-	/* Then stack all transients above it */
+	/* Then stack all transients above it.
+	 * *node != c skips a transient_for self-reference, which would
+	 * otherwise recurse with previous == c and trip the scene assert. */
 	foreach(node, globalconf.stack) {
-		if ((*node)->transient_for == c) {
+		if (*node != c && (*node)->transient_for == c) {
 			/* Recursively stack this transient and its transients */
 			previous = stack_transients_above(*node, previous);
 		}
