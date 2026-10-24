@@ -166,7 +166,6 @@ stack_place(Client *c, Client **old, const bool *rides, int len)
 {
 	if (stack_has(c))
 		return;
-
 	client_array_append(&globalconf.stack, c);
 	for (int i = 0; i < len; i++)
 		if (rides[i] && old[i]->transient_for == c)

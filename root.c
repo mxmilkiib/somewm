@@ -57,7 +57,6 @@ extern struct wlr_cursor *cursor;
 extern struct wlr_xcursor_manager *cursor_mgr;
 extern struct wlr_seat *seat;
 extern char* selected_root_cursor;
-extern float cursor_scale;
 
 /* External function to find surface at coordinates (from somewm.c) */
 extern void xytonode(double x, double y, struct wlr_surface **psurface,
@@ -638,16 +637,35 @@ luaA_root_cursor(lua_State *L)
 	 * "watch" on an output with no focused client — e.g. the internal screen
 	 * after a reload — until pointer motion triggered the motion handler. */
 	if(some_get_focused_client() == NULL || some_object_under_cursor() == NULL) {
-		some_apply_cursor(cursor_name);
+		cursor_set_xcursor(cursor_name);
 	}
 	return 0;
 }
 
+/* Private transport for awful.accessibility; the Lua module owns policy. */
+static int
+luaA_root_cursor_magnify(lua_State *L)
+{
+    if (lua_gettop(L)) {
+        double scale = luaL_checknumber(L, 1);
+        double duration = luaL_optnumber(L, 2, 0);
+        luaL_argcheck(L, isfinite(scale) && scale >= 1 && scale <= 16, 1,
+            "scale must be finite and between 1 and 16");
+        luaL_argcheck(L, isfinite(duration) && duration >= 0 && duration <= 60, 2,
+            "duration must be finite and between 0 and 60");
+        /* A client owns its uploaded cursor, including a hidden cursor. */
+        if (!cursor_image.name) scale = 1;
+        declare_cursor_magnify(scale, duration);
+    }
+    lua_pushnumber(L, declare_cursor_magnification());
+    return 1;
+}
+
 /** root.cursor_scale([scale]) - Get or set the cursor magnification scale.
  * Called with no arguments, returns the current scale (1.0 = normal size).
- * Called with a scale >= 1.0, magnifies the cursor by that factor using a
- * pre-loaded high-resolution cursor image, so animating the scale does not
- * reload the cursor theme from disk. Pass 1.0 to restore the normal cursor.
+ * Called with a scale >= 1.0, magnifies the cursor by that factor instantly.
+ * Pass 1.0 to restore the normal cursor. For animated transitions see
+ * root._cursor_magnify() (awful.accessibility).
  * \param scale (optional) Magnification factor (>= 1.0)
  * \return Current scale if called as getter
  */
@@ -655,11 +673,16 @@ static int
 luaA_root_cursor_scale(lua_State *L)
 {
 	if (lua_gettop(L) >= 1) {
-		float scale = (float)luaL_checknumber(L, 1);
-		some_set_cursor_scale(scale);
+		double scale = luaL_checknumber(L, 1);
+		luaL_argcheck(L, isfinite(scale) && scale >= 1 && scale <= 16, 1,
+			"scale must be finite and between 1 and 16");
+		/* Same ownership rule as _cursor_magnify: a client owns its
+		 * uploaded cursor, including a hidden cursor. */
+		if (!cursor_image.name) scale = 1;
+		declare_cursor_magnify(scale, 0);
 		return 0;
 	}
-	lua_pushnumber(L, cursor_scale);
+	lua_pushnumber(L, declare_cursor_magnification());
 	return 1;
 }
 
@@ -1281,7 +1304,7 @@ const luaL_Reg root_methods[] = {
 	{ "_remove_key", luaA_root_remove_key },
 	{ "_wallpaper", luaA_root_wallpaper },
 	{ "cursor", luaA_root_cursor },
-    { "_cursor_magnify", luaA_root_cursor_scale },
+    { "_cursor_magnify", luaA_root_cursor_magnify },
 	{ "cursor_theme", luaA_root_cursor_theme },
 	{ "cursor_size", luaA_root_cursor_size },
 	{ "cursor_scale", luaA_root_cursor_scale },
