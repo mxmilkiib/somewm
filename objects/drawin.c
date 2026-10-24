@@ -811,7 +811,13 @@ drawin_moveresize(lua_State *L, int udx, int x, int y, int width, int height, bo
 		drawin->height = height;
 	drawin->geometry_dirty = true;
 
-	/* Authored sizes invalidate the drawable; solved sizes only publish. */
+	/* Update the owning screen before touching the drawable so a surface
+	 * (re)created below picks up the new output's scale. */
+	bool position_changed = (old_x != drawin->x || old_y != drawin->y);
+	if (position_changed)
+		drawin_assign_screen(L, drawin, udx);
+
+	/* Propagate geometry to drawable (this creates the Cairo surface) */
 	if (drawin->drawable) {
 		drawable_t *d = drawin->drawable;
 		int old_dwidth = d->geometry.width;
@@ -822,10 +828,54 @@ drawin_moveresize(lua_State *L, int udx, int x, int y, int width, int height, bo
 		d->geometry.width = drawin->width;
 		d->geometry.height = drawin->height;
 
-		if (!solved && (old_dwidth != drawin->width || old_dheight != drawin->height)) {
-			luaA_object_push_item(L, udx, drawin->drawable);
-			luaA_object_emit_signal(L, -1, "property::surface", 0);
-			lua_pop(L, 1);
+		/* If size or output scale changed, recreate surface. The scale
+		 * changes when the drawin moves onto a monitor with a different
+		 * wlr_output->scale; without recreation the compositor keeps
+		 * resampling the stale-scale buffer (blurry/rescaled edges). */
+		float scale = drawin_get_effective_scale(drawin);
+		if (old_dwidth != drawin->width || old_dheight != drawin->height ||
+		    d->surface_scale != scale) {
+			/* Clean up old surface */
+			if (d->surface) {
+				cairo_surface_finish(d->surface);
+				cairo_surface_destroy(d->surface);
+				d->surface = NULL;
+			}
+
+			/* Clean up old buffer */
+			if (d->buffer) {
+				wlr_buffer_drop(d->buffer);
+				d->buffer = NULL;
+			}
+
+			/* Create new surface if we have valid dimensions */
+			if (drawin->width > 0 && drawin->height > 0) {
+				/* Get scale for HiDPI support.
+				 * Use floorf to match what Cairo will actually draw with device_scale. */
+				int scaled_width = (int)floorf(drawin->width * scale);
+				int scaled_height = (int)floorf(drawin->height * scale);
+				if (scaled_width < 1) scaled_width = 1;
+				if (scaled_height < 1) scaled_height = 1;
+
+				d->surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, scaled_width, scaled_height);
+				if (cairo_surface_status(d->surface) != CAIRO_STATUS_SUCCESS) {
+					cairo_surface_destroy(d->surface);
+					d->surface = NULL;
+				} else {
+					/* Set device scale so Cairo draws in logical coordinates */
+					cairo_surface_set_device_scale(d->surface, scale, scale);
+					d->surface_scale = scale;
+
+					/* Emit property::surface signal on drawable
+					 * AwesomeWM pattern: push from drawin's uservalue table */
+					luaA_object_push_item(L, udx, drawin->drawable);
+					luaA_object_emit_signal(L, -1, "property::surface", 0);
+					lua_pop(L, 1);
+				}
+				/* Note: Don't call refresh_callback here!
+				 * AwesomeWM pattern: Lua draws on surface, then calls drawable:refresh()
+				 * which triggers refresh_callback. Calling it here would copy an empty surface. */
+			}
 		}
 	}
 
@@ -841,13 +891,6 @@ drawin_moveresize(lua_State *L, int udx, int x, int y, int width, int height, bo
 	if (old_height != drawin->height)
 		luaA_object_emit_signal(L, udx, "property::height", 0);
 
-    /* An animated attachment can pass through a neighboring output. Keep
-     * its declaring screen until an authored geometry change moves it. */
-    if ((!solved || !drawin->animation.enabled)
-            && (old_x != drawin->x || old_y != drawin->y)) {
-        drawin_assign_screen(L, drawin, udx);
-    }
-
 	/* Update workarea if struts are set and drawin is visible */
 	if (drawin->visible && drawin->screen &&
 	    (drawin->strut.left || drawin->strut.right || drawin->strut.top || drawin->strut.bottom)) {
@@ -855,23 +898,12 @@ drawin_moveresize(lua_State *L, int udx, int x, int y, int width, int height, bo
 	}
 
 	/* Update scene graph node position if position changed */
-	if (drawin->scene_tree && (old_x != drawin->x || old_y != drawin->y))
+	if (drawin->scene_tree && position_changed)
 		wlr_scene_node_set_position(&drawin->scene_tree->node, drawin->x, drawin->y);
 
 	/* Update scene buffer destination size if size changed */
 	if (drawin->scene_buffer && (old_width != drawin->width || old_height != drawin->height))
 		wlr_scene_buffer_set_dest_size(drawin->scene_buffer, drawin->width, drawin->height);
-
-	/* Moving a scene node only marks damage; it doesn't schedule a render.
-	 * With a hardware cursor plane, cursor motion during a drag never
-	 * triggers rendermon on its own, so a dragged popup would only catch
-	 * up to the pointer whenever some unrelated event (a timer redraw,
-	 * client traffic) happened to schedule a frame - producing visible
-	 * judder. Schedule one explicitly, same as drawin_refresh_drawable()
-	 * does after a content repaint, so every drag step is presented. */
-	if ((old_x != drawin->x || old_y != drawin->y) &&
-	    drawin->screen && drawin->screen->monitor && drawin->screen->monitor->wlr_output)
-		wlr_output_schedule_frame(drawin->screen->monitor->wlr_output);
 
 	/* Size change requires border + shadow refresh */
 	if (old_width != drawin->width || old_height != drawin->height)
