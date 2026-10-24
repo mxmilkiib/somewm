@@ -9,6 +9,7 @@
 #include "common/luaobject.h"
 #include "../somewm_api.h"
 #include "../stack.h"
+#include "../event_queue.h"
 #include "common/util.h"
 #include "../globalconf.h"
 #include "../shadow.h"
@@ -930,6 +931,20 @@ drawin_set_visible(lua_State *L, int udx, bool v)
 		if (drawin->drawable)
 			drawin_update_drawing(L, udx);
 	} else {
+		/* mouse_under holds a raw drawin_t*; leaving it pointing at an
+		 * unregistered drawin makes the next motion event emit mouse::leave
+		 * on a stale object (and dangles entirely once the drawin is GC'd).
+		 * Emit leave while the drawin is still registered, then clear -
+		 * mirrors the client_unmanage() guard for UNDER_CLIENT. */
+		if (globalconf.mouse_under.type == UNDER_DRAWIN &&
+		    globalconf.mouse_under.ptr.drawin == drawin) {
+			luaA_object_push(L, drawin);
+			some_event_queue_signal0(L, -1, SIG_MOUSE_LEAVE);
+			lua_pop(L, 1);
+			globalconf.mouse_under.type = UNDER_NONE;
+			globalconf.mouse_under.ptr.drawin = NULL;
+		}
+
 		/* Unregister from object registry (AwesomeWM drawin.c:402) */
 		luaA_object_unref(L, drawin);
 
@@ -1039,6 +1054,14 @@ luaA_drawin_gc(lua_State *L)
 	drawin_t *drawin = luaA_todrawin(L, 1);
 
 	if (drawin) {
+		/* Drop the raw mouse-tracking pointer - the drawin is being
+		 * collected, so anything still pointing at it would dangle. */
+		if (globalconf.mouse_under.type == UNDER_DRAWIN &&
+		    globalconf.mouse_under.ptr.drawin == drawin) {
+			globalconf.mouse_under.type = UNDER_NONE;
+			globalconf.mouse_under.ptr.drawin = NULL;
+		}
+
 		/* Clean up signals */
 		signal_array_wipe(&drawin->signals);
 
