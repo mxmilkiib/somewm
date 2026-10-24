@@ -1281,7 +1281,7 @@ const luaL_Reg root_methods[] = {
 	{ "_remove_key", luaA_root_remove_key },
 	{ "_wallpaper", luaA_root_wallpaper },
 	{ "cursor", luaA_root_cursor },
-    { "_cursor_magnify", luaA_root_cursor_magnify },
+    { "_cursor_magnify", luaA_root_cursor_scale },
 	{ "cursor_theme", luaA_root_cursor_theme },
 	{ "cursor_size", luaA_root_cursor_size },
 	{ "cursor_scale", luaA_root_cursor_scale },

@@ -426,6 +426,7 @@ some_update_cursor_theme(const char *theme_name, uint32_t size)
 	}
 	some_apply_cursor(cursor_name);
 
+#ifdef XWAYLAND
 	/* Sync XWayland cursor if running */
 	struct wlr_xcursor *xcursor = wlr_xcursor_manager_get_xcursor(cursor_mgr, "default", 1);
 	if (xcursor && xwayland) {

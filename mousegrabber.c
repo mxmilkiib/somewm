@@ -32,6 +32,7 @@
 #include "common/lualib.h"
 #include "common/util.h"
 #include "globalconf.h"
+#include "somewm.h"
 #include "somewm_api.h"
 
 #include <wlr/types/wlr_cursor.h>
@@ -92,8 +93,6 @@ mousegrabber_handleevent(lua_State *L, int x, int y, uint16_t mask)
 void
 mousegrabber_hot_reload(lua_State *L)
 {
-    struct wlr_cursor *cursor = some_get_cursor();
-
     if (cursor && cursor_mgr && mousegrabber_active)
         some_apply_cursor("default");
 
@@ -112,10 +111,7 @@ mousegrabber_hot_reload(lua_State *L)
 int
 luaA_mousegrabber_stop(lua_State *L)
 {
-    struct wlr_cursor *cursor;
-
     /* Restore default cursor */
-    cursor = some_get_cursor();
     if (cursor && cursor_mgr) {
         some_apply_cursor("default");
     }
@@ -188,7 +184,6 @@ luaA_mousegrabber_run(lua_State *L)
     }
 
     /* Set cursor if specified */
-    cursor = some_get_cursor();
     if (cursor && cursor_mgr && cursor_name) {
         /* Store cursor name for cleanup */
         if (mousegrabber_cursor_name) {
