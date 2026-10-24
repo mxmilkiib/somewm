@@ -199,6 +199,123 @@ local function do_redraw(self)
     assert(cr.status == "SUCCESS", "Cairo context entered error state: " .. cr.status)
 end
 
+    local success2, geom_or_err = pcall(function() return self.drawable:geometry() end)
+    if not success2 then
+        return
+    end
+    local geom = geom_or_err
+    local x, y, width, height = geom.x, geom.y, geom.width, geom.height
+    local context = get_widget_context(self)
+
+    -- Relayout
+    if self._need_relayout or self._need_complete_repaint then
+        self._need_relayout = false
+        if self._widget_hierarchy and self._widget then
+            local had_systray = systray_widget and self._widget_hierarchy:get_count(systray_widget) > 0
+
+            self._widget_hierarchy:update(context,
+                self._widget, width, height, self._dirty_area)
+
+            local has_systray = systray_widget and self._widget_hierarchy:get_count(systray_widget) > 0
+            if had_systray and not has_systray then
+                systray_widget:_kickout(context)
+            end
+        else
+            self._need_complete_repaint = true
+            if self._widget then
+                self._widget_hierarchy_callback_arg = {}
+                self._widget_hierarchy = whierarchy.new(context, self._widget, width, height,
+                        self._redraw_callback, self._layout_callback, self._widget_hierarchy_callback_arg)
+            else
+                self._widget_hierarchy = nil
+            end
+        end
+
+        if self._need_complete_repaint then
+            self._need_complete_repaint = false
+            self._dirty_area:union_rectangle(cairo.RectangleInt{
+                x = 0, y = 0, width = width, height = height
+            })
+        end
+    end
+
+    -- Clip to the dirty area
+    if self._dirty_area:is_empty() then
+        return
+    end
+    -- Snap clip edges outward to whole device pixels. At fractional output
+    -- scales an integer user-space edge lands mid-pixel, and cairo's
+    -- antialiased clip then only partially repaints that column, leaving a
+    -- half-faded seam that persists until a repaint fully covers it.
+    local scale = context.screen and context.screen.scale or 1
+    if context.wibox and context.wibox.surface_scale > 0 then
+        scale = context.wibox.surface_scale
+    end
+    for i = 0, self._dirty_area:num_rectangles() - 1 do
+        local rect = self._dirty_area:get_rectangle(i)
+        local rx, ry = rect.x, rect.y
+        local rw, rh = rect.width, rect.height
+        if scale ~= 1 then
+            local rx2 = math.ceil((rx + rw) * scale) / scale
+            local ry2 = math.ceil((ry + rh) * scale) / scale
+            rx = math.floor(rx * scale) / scale
+            ry = math.floor(ry * scale) / scale
+            rw = rx2 - rx
+            rh = ry2 - ry
+        end
+        cr:rectangle(rx, ry, rw, rh)
+    end
+    self._dirty_area = cairo.Region.create()
+    cr:clip()
+
+    -- Draw the background
+    cr:save()
+
+    if not capi.awesome.composite_manager_running then
+        -- This is pseudo-transparency: We draw the wallpaper in the background
+        local wallpaper = surface.load_silently(capi.root.wallpaper(), false)
+        cr.operator = cairo.Operator.SOURCE
+        if wallpaper then
+            cr:set_source_surface(wallpaper, -x, -y)
+        else
+            cr:set_source_rgb(0, 0, 0)
+        end
+        cr:paint()
+        cr.operator = cairo.Operator.OVER
+    else
+        -- This is true transparency: We draw a translucent background
+        cr.operator = cairo.Operator.SOURCE
+    end
+
+    cr:set_source(self.background_color)
+    cr:paint()
+
+    cr:restore()
+
+    -- Paint the background image
+    if self.background_image then
+        cr:save()
+        if type(self.background_image) == "function" then
+            self.background_image(context, cr, width, height, unpack(self.background_image_args))
+        else
+            local pattern = cairo.Pattern.create_for_surface(self.background_image)
+            cr:set_source(pattern)
+            cr:paint()
+        end
+        cr:restore()
+    end
+
+    -- Draw the widget
+    if self._widget_hierarchy then
+        cr:set_source(self.foreground_color)
+        self._widget_hierarchy:draw(context, cr)
+    end
+
+    self.drawable:refresh()
+
+    assert(cr.status == "SUCCESS", "Cairo context entered error state: " .. cr.status)
+end
+
 local function find_widgets(self, result, hierarchy, x, y)
     local m = hierarchy:get_matrix_from_device()
 
