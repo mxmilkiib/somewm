@@ -188,17 +188,41 @@ local lookup_icon = function(self, icon_name, icon_size)
 end
 
 local find_icon_path_helper  -- Gets called recursively.
-find_icon_path_helper = function(self, icon_name, icon_size)
+find_icon_path_helper = function(self, icon_name, icon_size, checked)
     local filename = lookup_icon(self, icon_name, icon_size)
     if filename then
         return filename
     end
 
+    checked = checked or {}
     for _, parent in ipairs(self.index_theme:get_inherits()) do
-        local parent_icon_theme = icon_theme(parent, self.base_directories)
-        filename = find_icon_path_helper(parent_icon_theme, icon_name, icon_size)
-        if filename then
-            return filename
+        -- Parent themes resolve in the base dirs strictly below this
+        -- theme's own: a user-dir theme may shadow a system theme of the
+        -- same name and declare it as parent (~/.local/share/icons/
+        -- breeze-dark with Inherits=breeze-dark); including the child's
+        -- own dir would re-find the same file and loop. The checked key
+        -- also breaks genuine A-inherits-B / B-inherits-A cycles.
+        local parent_dirs = self.base_directories
+        if self.index_theme.base_directory then
+            parent_dirs = {}
+            for i, d in ipairs(self.base_directories) do
+                if self.index_theme.base_directory == d .. "/" .. self.icon_theme_name then
+                    for j = i + 1, #self.base_directories do
+                        parent_dirs[#parent_dirs + 1] = self.base_directories[j]
+                    end
+                    break
+                end
+            end
+            if #parent_dirs == 0 then parent_dirs = self.base_directories end
+        end
+        local checked_key = parent .. "@" .. table.concat(parent_dirs, ":")
+        if not checked[checked_key] then
+            checked[checked_key] = true
+            filename = find_icon_path_helper(
+                icon_theme(parent, parent_dirs), icon_name, icon_size, checked)
+            if filename then
+                return filename
+            end
         end
     end
 
