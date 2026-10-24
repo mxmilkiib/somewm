@@ -144,7 +144,12 @@ stack_has(Client *c)
 
 /* Whether c rides its parent: its transient_for chain reaches a client in
  * the stack that is no transient of one, within the stack's length (a
- * cycle never does, so its members keep their own places). */
+ * cycle never does, so its members keep their own places). The anchor must
+ * have a scene node and be visible: a phantom parent (managed but never
+ * shown or tagged, e.g. a Qt dialog whose WM_TRANSIENT_FOR points at a
+ * widget-internal window) drags its transients to the bottom of the stack
+ * with it, buried below normal windows, and raise() silently does
+ * nothing. Such orphans stack on their own. */
 static bool
 stack_rides(Client *c)
 {
@@ -153,7 +158,7 @@ stack_rides(Client *c)
 	for (int i = 0; i < globalconf.stack.len; i++) {
 		Client *q = p->transient_for;
 		if (!q || !stack_has(q))
-			return p != c;
+			return p != c && p->scene && client_isvisible(p);
 		p = q;
 	}
 	return false;
