@@ -83,6 +83,21 @@ struct wl_listener new_xdg_toplevel = {.notify = createnotify};
 struct wl_listener new_xdg_popup = {.notify = createpopup};
 struct wl_listener new_xdg_decoration = {.notify = createdecoration};
 
+/** scene_surface node destroyed - clear the stale pointer.
+ * Fires both when client_scene_node_destroy() tears the tree down and when
+ * wlroots destroys it internally on xdg_surface death; without this,
+ * c->scene_surface dangles and the NULL checks in luaA_client_get_content(),
+ * client_apply_opacity() and client_set_node_data() walk freed nodes. */
+void
+scene_surface_destroyed(struct wl_listener *listener, void *data)
+{
+	Client *c = wl_container_of(listener, c, scene_surface_destroy);
+
+	wl_list_remove(&c->scene_surface_destroy.link);
+	wl_list_init(&c->scene_surface_destroy.link);
+	c->scene_surface = NULL;
+}
+
 void
 client_scene_node_destroy(Client *c)
 {
@@ -94,6 +109,11 @@ client_scene_node_destroy(Client *c)
 	declare_handle_drop(c);
 	wlr_scene_node_destroy(&c->scene->node);
 	c->scene = NULL;
+	c->popups = NULL;
+	/* The destroy signal above already NULLed this via
+	 * scene_surface_destroyed(); explicit clear for paths that ran before
+	 * the listener was registered. */
+	c->scene_surface = NULL;
 }
 
 void
@@ -617,6 +637,12 @@ client_remove_all_listeners(client_t *c)
 		wlr_foreign_toplevel_handle_v1_destroy(c->toplevel_handle);
 		c->toplevel_handle = NULL;
 	}
+	/* scene_surface_destroy listener: the link is only in the node's signal
+	 * list while the node is alive (the notify self-removes and NULLs). */
+	if (c->scene_surface) {
+		wl_list_remove(&c->scene_surface_destroy.link);
+		wl_list_init(&c->scene_surface_destroy.link);
+	}
 	/* Clean up decoration listeners if decoration exists */
 	if (c->decoration) {
 		wl_list_remove(&c->set_decoration_mode.link);
@@ -681,6 +707,13 @@ client_reregister_listeners(client_t *c)
 			LISTEN(&c->surface.xdg->surface->events.unmap, &c->unmap, unmapnotify);
 			wl_list_init(&c->commit.link);
 		}
+	}
+
+	/* The scene_surface node survives a hot reload along with the scene -
+	 * re-hook its destroy listener. */
+	if (c->scene_surface) {
+		LISTEN(&c->scene_surface->node.events.destroy,
+			&c->scene_surface_destroy, scene_surface_destroyed);
 	}
 
 	/* Note: foreign_toplevel_handle was destroyed by client_remove_all_listeners().
@@ -879,6 +912,11 @@ mapnotify(struct wl_listener *listener, void *data)
 	client_surface(c)->data = c->scene;
 
 	client_set_node_data(c, c);
+
+	/* wlroots destroys the xdg_surface's scene tree itself on surface death -
+	 * track it so c->scene_surface cannot dangle. */
+	LISTEN(&c->scene_surface->node.events.destroy,
+		&c->scene_surface_destroy, scene_surface_destroyed);
 
 	/* Register after scene creation so commits see wlroots' updated surface.
 	 * Only for XDG clients - commitnotify references XDG-specific fields.
