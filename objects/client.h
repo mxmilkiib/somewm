@@ -213,7 +213,6 @@ struct client_t
      * when the xdg_surface dies, so this pointer must be tracked to keep
      * it from going stale outside client_scene_node_destroy(). */
     struct wl_listener scene_surface_destroy;
-#ifdef XWAYLAND
     struct wl_listener activate;
     struct wl_listener associate;
     struct wl_listener dissociate;

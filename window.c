@@ -109,7 +109,6 @@ client_scene_node_destroy(Client *c)
 	declare_handle_drop(c);
 	wlr_scene_node_destroy(&c->scene->node);
 	c->scene = NULL;
-	c->popups = NULL;
 	/* The destroy signal above already NULLed this via
 	 * scene_surface_destroyed(); explicit clear for paths that ran before
 	 * the listener was registered. */
