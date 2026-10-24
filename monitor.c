@@ -22,6 +22,7 @@
 #include <wlr/types/wlr_session_lock_v1.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/util/log.h>
+#include <wlr/version.h>
 
 #include "somewm.h"
 #include "somewm_api.h"
@@ -592,6 +593,10 @@ requestmonstate(struct wl_listener *listener, void *data)
 				some_event_queue_signal0(globalconf_L, -1, SIG_PROPERTY_MODE);
 			if (committed & WLR_OUTPUT_STATE_ADAPTIVE_SYNC_ENABLED)
 				some_event_queue_signal0(globalconf_L, -1, SIG_PROPERTY_ADAPTIVE_SYNC);
+#if WLR_VERSION_NUM >= ((0 << 16) | (20 << 8))
+			if (committed & WLR_OUTPUT_STATE_IMAGE_DESCRIPTION)
+				some_event_queue_signal0(globalconf_L, -1, SIG_PROPERTY_HDR);
+#endif
 			lua_pop(globalconf_L, 1);
 		}
 	}

@@ -147,6 +147,13 @@ local steps = {
             "adaptive_sync is not a boolean")
         print("TEST:   adaptive_sync = " .. tostring(o.adaptive_sync))
 
+        -- hdr (boolean; reports real state on wlroots 0.20+, false on 0.19)
+        assert(type(o.hdr) == "boolean", "hdr is not a boolean")
+        assert(type(o.hdr_supported) == "boolean",
+            "hdr_supported is not a boolean")
+        print("TEST:   hdr = " .. tostring(o.hdr)
+            .. " (supported: " .. tostring(o.hdr_supported) .. ")")
+
         return true
     end,
 

@@ -14,6 +14,7 @@
 #include <wlr/backend/headless.h>
 #include <wlr/backend/wayland.h>
 #include <wlr/util/log.h>
+#include <wlr/version.h>
 
 /* AwesomeWM-compatible output class */
 lua_class_t output_class;
@@ -461,6 +462,47 @@ luaA_output_get_adaptive_sync(lua_State *L, output_t *o)
 	return 1;
 }
 
+/* HDR counts as on when the output's image description is the HDR10
+ * combination: BT.2020 Primaries + PQ (ST 2084) Transfer Function.
+ * The image-description API is wlroots 0.20+; on 0.19 this always reads
+ * false. */
+static int
+luaA_output_get_hdr(lua_State *L, output_t *o)
+{
+	bool hdr = false;
+#if WLR_VERSION_NUM >= ((0 << 16) | (20 << 8))
+	if (o && o->valid && o->monitor && o->monitor->wlr_output) {
+		const struct wlr_output_image_description *desc =
+			o->monitor->wlr_output->image_description;
+		hdr = desc
+			&& desc->primaries == WLR_COLOR_NAMED_PRIMARIES_BT2020
+			&& desc->transfer_function
+				== WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ;
+	}
+#endif
+	lua_pushboolean(L, hdr);
+	return 1;
+}
+
+/* True when the backend advertises both BT.2020 Primaries and the PQ
+ * Transfer Function for this output, i.e. an hdr = true commit has a
+ * chance of succeeding. */
+static int
+luaA_output_get_hdr_supported(lua_State *L, output_t *o)
+{
+	bool supported = false;
+#if WLR_VERSION_NUM >= ((0 << 16) | (20 << 8))
+	if (o && o->valid && o->monitor && o->monitor->wlr_output) {
+		struct wlr_output *wo = o->monitor->wlr_output;
+		supported = (wo->supported_primaries & WLR_COLOR_NAMED_PRIMARIES_BT2020)
+			&& (wo->supported_transfer_functions
+				& WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ);
+	}
+#endif
+	lua_pushboolean(L, supported);
+	return 1;
+}
+
 /* ========================================================================
  * Instance property setters
  * ======================================================================== */
@@ -717,6 +759,59 @@ luaA_output_set_adaptive_sync(lua_State *L, output_t *o)
 	return 0;
 }
 
+static int
+luaA_output_set_hdr(lua_State *L, output_t *o)
+{
+	bool hdr = lua_toboolean(L, -1);
+#if WLR_VERSION_NUM >= ((0 << 16) | (20 << 8))
+	struct wlr_output_state state;
+
+	if (!o || !o->valid || !o->monitor || !o->monitor->wlr_output)
+		return 0;
+
+	if (hdr) {
+		struct wlr_output *wo = o->monitor->wlr_output;
+		if (!(wo->supported_primaries & WLR_COLOR_NAMED_PRIMARIES_BT2020)
+				|| !(wo->supported_transfer_functions
+					& WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ)) {
+			luaL_error(L, "output %s does not support HDR (BT.2020/PQ)",
+				wo->name);
+			return 0;
+		}
+	}
+
+	wlr_output_state_init(&state);
+	if (hdr) {
+		struct wlr_output_image_description desc = { 0 };
+		desc.primaries = WLR_COLOR_NAMED_PRIMARIES_BT2020;
+		desc.transfer_function = WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ;
+		/* Zeroed Mastering fields mean "not indicated" per CTA-861; fill
+		 * the Display's advertised Primaries when the backend parsed
+		 * them from EDID */
+		if (o->monitor->wlr_output->default_primaries)
+			desc.mastering_display_primaries =
+				*o->monitor->wlr_output->default_primaries;
+		wlr_output_state_set_image_description(&state, &desc);
+	} else {
+		/* NULL restores the backend default (SDR) description */
+		wlr_output_state_set_image_description(&state, NULL);
+	}
+
+	if (wlr_output_commit_state(o->monitor->wlr_output, &state))
+		luaA_object_emit_signal(L, 1, "property::hdr", 0);
+	else
+		wlr_log(WLR_INFO, "output: failed to commit hdr for %s",
+			o->monitor->wlr_output->name);
+
+	wlr_output_state_finish(&state);
+#else
+	if (hdr)
+		luaL_error(L, "HDR requires wlroots 0.20 (built against "
+			WLR_VERSION_STR ")");
+#endif
+	return 0;
+}
+
 /* ========================================================================
  * Instance metamethods
  * ======================================================================== */
@@ -760,6 +855,8 @@ luaA_output_index(lua_State *L)
 	if (strcmp(key, "transform") == 0) return luaA_output_get_transform(L, o);
 	if (strcmp(key, "position") == 0) return luaA_output_get_position(L, o);
 	if (strcmp(key, "adaptive_sync") == 0) return luaA_output_get_adaptive_sync(L, o);
+	if (strcmp(key, "hdr") == 0) return luaA_output_get_hdr(L, o);
+	if (strcmp(key, "hdr_supported") == 0) return luaA_output_get_hdr_supported(L, o);
 
 	/* Check for _private table */
 	if (strcmp(key, "_private") == 0) {
@@ -831,6 +928,12 @@ luaA_output_newindex(lua_State *L)
 	if (strcmp(key, "adaptive_sync") == 0) {
 		lua_pushvalue(L, 3);
 		luaA_output_set_adaptive_sync(L, o);
+		lua_pop(L, 1);
+		return 0;
+	}
+	if (strcmp(key, "hdr") == 0) {
+		lua_pushvalue(L, 3);
+		luaA_output_set_hdr(L, o);
 		lua_pop(L, 1);
 		return 0;
 	}
@@ -1125,6 +1228,8 @@ output_class_setup(lua_State *L)
 		{ "mode", (lua_class_propfunc_t) luaA_output_set_mode, (lua_class_propfunc_t) luaA_output_get_current_mode, (lua_class_propfunc_t) luaA_output_set_mode },
 		{ "position", (lua_class_propfunc_t) luaA_output_set_position, (lua_class_propfunc_t) luaA_output_get_position, (lua_class_propfunc_t) luaA_output_set_position },
 		{ "adaptive_sync", (lua_class_propfunc_t) luaA_output_set_adaptive_sync, (lua_class_propfunc_t) luaA_output_get_adaptive_sync, (lua_class_propfunc_t) luaA_output_set_adaptive_sync },
+		{ "hdr", (lua_class_propfunc_t) luaA_output_set_hdr, (lua_class_propfunc_t) luaA_output_get_hdr, (lua_class_propfunc_t) luaA_output_set_hdr },
+		{ "hdr_supported", NULL, (lua_class_propfunc_t) luaA_output_get_hdr_supported, NULL },
 	};
 	luaA_class_add_properties(&output_class, properties, countof(properties));
 }
