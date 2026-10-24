@@ -242,7 +242,19 @@ end
 -- Callback for updating list of layouts
 local function update_layout(self)
     self._layout = {};
-    local layouts = keyboardlayout.get_groups_from_group_names(awesome.xkb_get_group_names())
+    local group_names = awesome.xkb_get_group_names()
+    local layouts = keyboardlayout.get_groups_from_group_names(group_names)
+    if (layouts == nil or layouts[1] == nil) and group_names then
+        -- A backend may answer keymap display names ("pc+English (US)")
+        -- rather than RMLVO codes; keep them verbatim as labels instead of
+        -- an empty widget
+        layouts = {}
+        for token in group_names:gmatch("[^+]+") do
+            if token ~= "pc" and not token:match("^[%w_]+:") then
+                layouts[#layouts + 1] = { group_idx = #layouts + 1, label = token }
+            end
+        end
+    end
     if layouts == nil or layouts[1] == nil then
         gdebug.print_error("Failed to get list of keyboard groups")
         return
@@ -251,7 +263,7 @@ local function update_layout(self)
         layouts[1].group_idx = 1
     end
     for _, v in ipairs(layouts) do
-        self._layout[v.group_idx] = self.layout_name(v)
+        self._layout[v.group_idx] = v.label or self.layout_name(v)
     end
     update_status(self)
 end
