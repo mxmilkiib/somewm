@@ -1546,8 +1546,11 @@ client_xproperty_free(client_xproperty_t *property)
 static void
 client_wipe(client_t *c)
 {
-    if (c->shape_ref)
-        luaL_unref(globalconf_get_lua_State(), LUA_REGISTRYINDEX, c->shape_ref);
+    /* Same lua_close case as drawin_wipe: globalconf.L is already NULL
+     * when teardown GC reaches this. The closing VM frees the registry. */
+    lua_State *L = globalconf_get_lua_State();
+    if (c->shape_ref && L)
+        luaL_unref(L, LUA_REGISTRYINDEX, c->shape_ref);
     while (c->xproperties) {
         client_xproperty_t *property = c->xproperties;
         c->xproperties = property->next;
