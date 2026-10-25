@@ -1985,10 +1985,14 @@ declare_widget_subtree(const struct widget_host *host, size_t i, Clay_ElementId 
 	if (host->inner_clip && n->floating)
 		e.floating.clipTo = CLAY_CLIP_TO_ATTACHED_PARENT;
 	/* A native clip preserves natural overflow sizing while records remain.
-	 * Pixel clipping is always supplied by the root's renderer scope. */
+	 * Pixel clipping is always supplied by the root's renderer scope. Only
+	 * the flow axis takes a clip: on the other axis it makes Clay expand
+	 * every child to the largest child's natural size (third_party/clay.h:
+	 * 2500-2504), so one taller widget would push all of a bar's content. */
 	if (i == 0 && !host->inner_clip && !host->layout && n->sizing[0] == WIDGET_SIZING_FIXED
 			&& n->sizing[1] == WIDGET_SIZING_FIXED && !n->scroll && host_clip(host))
-		e.clip = (Clay_ClipElementConfig) {.horizontal = true, .vertical = true};
+		e.clip = (Clay_ClipElementConfig) {
+			.horizontal = !n->vertical, .vertical = n->vertical };
 	if (i == 0 && host->flow && !root_decl) {
 		/* A bar's root fills the slot the frame sized for it; the
 		 * drawin's geometry is what this element solves to. */
