@@ -3463,21 +3463,68 @@ declare_cursor_magnify(double scale, double duration)
     cursor_mark();
 }
 
+/* The themed cursor's animation clock: the epoch resets whenever the
+ * seat's image generation changes, so a freshly applied name restarts
+ * from its first frame. cursor_anim_source steps the clock; the declare
+ * pass arms it for the remaining delay of the frame it just picked, and
+ * each fire re-declares the outputs showing the cursor. One seat-wide
+ * clock keeps the animation continuous when crossing outputs. */
+static struct wl_event_source *cursor_anim_source;
+static uint64_t cursor_anim_gen = UINT64_MAX;
+static int64_t cursor_anim_epoch_us;
+
+static int
+cursor_anim_fire(void *data)
+{
+	(void)data;
+	cursor_mark();
+	return 0;
+}
+
 /* The xcursor frame this output shows for the themed name, or NULL when the
- * theme has neither it nor "default". An animated cursor shows its first
- * frame: a frame per animation step would keep an idle output declaring
- * for as long as a busy cursor is up. */
+ * theme has neither it nor "default". An animated cursor steps its frames
+ * on the animation clock, so an idle output declares once per animation
+ * step rather than once per refresh. ms_to_next, when given, gets the
+ * milliseconds until the frame after the returned one is due, or -1 when
+ * the cursor is a still image. */
 static const struct wlr_xcursor_image *
-cursor_xcursor_frame(Monitor *m, float multiplier)
+cursor_xcursor_frame(Monitor *m, float multiplier, int *ms_to_next)
 {
 	float scale = m->wlr_output->scale * multiplier;
 	struct wlr_xcursor *xc;
+	uint32_t index = 0;
 
+	if (ms_to_next)
+		*ms_to_next = -1;
 	wlr_xcursor_manager_load(cursor_mgr, scale);
 	xc = wlr_xcursor_manager_get_xcursor(cursor_mgr, cursor_image.name, scale);
 	if (!xc)
 		xc = wlr_xcursor_manager_get_xcursor(cursor_mgr, "default", scale);
-	return xc && xc->image_count ? xc->images[0] : NULL;
+	if (!xc || !xc->image_count)
+		return NULL;
+	if (xc->image_count > 1 && xc->total_delay) {
+		int64_t now = g_get_monotonic_time();
+		uint64_t t, end = 0;
+
+		if (cursor_anim_gen != cursor_image.gen) {
+			cursor_anim_gen = cursor_image.gen;
+			cursor_anim_epoch_us = now;
+			t = 0;
+		} else {
+			t = ((uint64_t)(now - cursor_anim_epoch_us) / 1000)
+				% xc->total_delay;
+		}
+		for (index = 0; index < xc->image_count; index++) {
+			end += xc->images[index]->delay;
+			if (t < end)
+				break;
+		}
+		if (index == xc->image_count)
+			index = xc->image_count - 1;
+		if (ms_to_next)
+			*ms_to_next = end > t ? (int)(end - t) : 1;
+	}
+	return xc->images[index];
 }
 
 /* A copy of an xcursor frame's pixels: ARGB32 premultiplied in both. */
@@ -3532,14 +3579,23 @@ declare_cursor(Monitor *m)
 			Clay__HashStringWithOffset(CLAY_STRING("cursor"),
 			(uint32_t)handle, 0), &s);
 	} else if (cursor_image.name) {
-		const struct wlr_xcursor_image *normal = cursor_xcursor_frame(m, 1);
+		int anim_ms;
+		const struct wlr_xcursor_image *normal =
+			cursor_xcursor_frame(m, 1, &anim_ms);
         double magnification = declare_cursor_magnification();
         const struct wlr_xcursor_image *frame = magnification > 1
-            ? cursor_xcursor_frame(m, 4) : normal;
+            ? cursor_xcursor_frame(m, 4, NULL) : normal;
         if (!frame) frame = normal;
         float scale = m->wlr_output->scale / magnification;
         if (cursor_scale_duration > 0)
             declare_output_mark_dirty(dout);
+		if (anim_ms >= 0) {
+			if (!cursor_anim_source)
+				cursor_anim_source = wl_event_loop_add_timer(
+					some_get_event_loop(), cursor_anim_fire, NULL);
+			if (cursor_anim_source)
+				wl_event_source_timer_update(cursor_anim_source, anim_ms);
+		}
 
 		if (!frame || !normal)
 			return;
