@@ -3537,6 +3537,8 @@ declare_cursor(Monitor *m)
 		struct wlr_surface *surface = cursor_image.surface;
 		int w = surface->current.width, h = surface->current.height;
 
+		cursor_image.declared_w = w;
+		cursor_image.declared_h = h;
 		if (!cursor_image.tree || w < 1 || h < 1)
 			return;
 		if (!cursor_surface_node)
