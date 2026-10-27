@@ -144,8 +144,12 @@ widget.hide_without_description = true
 
 local function modifier_join_plus_sort(modifiers)
     if #modifiers<1 then return "none" end
+    -- modifiers missing from modifier_sort_order (Mod5, "Alt Gr", ...) sort
+    -- last by name instead of crashing the whole import on a nil compare
     table.sort(modifiers, function(a,b)
-            return widget.modifier_sort_order[a] < widget.modifier_sort_order[b]
+            local oa = widget.modifier_sort_order[a] or math.huge
+            local ob = widget.modifier_sort_order[b] or math.huge
+            return oa == ob and a < b or oa < ob
         end)
     return table.concat(modifiers, '+')
 end
