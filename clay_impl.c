@@ -86,6 +86,11 @@ void clay_clip_restore(void)
     }
 }
 
+void clay_flex_basis(uint8_t axes)
+{
+    Clay__GetOpenLayoutElement()->flexBasis = axes;
+}
+
 bool clay_declaration_full(void)
 {
     Clay_Context *c = Clay_GetCurrentContext();

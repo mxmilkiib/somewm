@@ -37,7 +37,7 @@
 	X(gap) X(wmin) X(hmin) X(wmax) X(hmax) X(w) X(h) X(percent) X(wsrc) X(hsrc) \
 	X(align) X(dir) X(float) X(parent) X(own) X(passthrough) X(vector) X(image) \
 	X(aspect) X(image_width) X(image_height) X(filter) X(natural) X(track) \
-	X(thumb) X(scroll) X(transition) X(duration) X(properties) X(exit_order) \
+	X(thumb) X(scroll) X(basis) X(transition) X(duration) X(properties) X(exit_order) \
     X(exit_duration) X(tag_exit) X(tag_duration) \
 	X(enter) X(exit) X(x11_configure_serial) X(client) X(surface) X(host) X(opacity) X(probe) X(attrs) \
 	X(font) X(color) X(wrap) X(halign) X(ellipsize) X(bindings) X(item) X(id) \
@@ -780,6 +780,13 @@ read_node(lua_State *L, int idx, struct widget_node *n)
 	lua_pop(L, 1);
 	getfield(L, idx, KEY_thumb);
 	n->thumb = lua_toboolean(L, -1);
+	lua_pop(L, 1);
+	getfield(L, idx, KEY_basis);
+	if (!lua_isnil(L, -1)) {
+		const char *word = lua_tostring(L, -1);
+
+		n->basis = word && !strcmp(word, "w") ? 1 : word && !strcmp(word, "h") ? 2 : 0;
+	}
 	lua_pop(L, 1);
 	getfield(L, idx, KEY_scroll);
 	bool has_scroll = !lua_isnil(L, -1);
