@@ -2130,6 +2130,7 @@ declare_widget_subtree(const struct widget_host *host, size_t i, Clay_ElementId 
 		next = declare_widget_subtree(host, next,
 			widget_child_id(d, next, id, k), z, userdata, leaf, NULL, ids,
 			scroll_id, scroll_axis);
+	if (n->basis && !native_full()) clay_flex_basis(n->basis);
 	native_close();
 	return next;
 }

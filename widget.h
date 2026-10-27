@@ -168,6 +168,8 @@ struct widget_node {
 	float aspect;
 	float image_size[2];
 	uint8_t scroll;      /* 0 none, 1 x, 2 y, 3 both */
+	uint8_t basis;       /* axes (bit 0 x, bit 1 y) it starts from its
+	                      * minimum along its parent's flow (Clay flexBasis) */
 	bool track, thumb;
 	/* The child offset this scroll node last declared; written only where
 	 * declare.c declares it, so a moved record publishes the tree. */

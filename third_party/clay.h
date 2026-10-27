@@ -1223,6 +1223,10 @@ typedef struct Clay_LayoutElement {
     uint32_t id;
     uint16_t floatingChildrenCount;
     bool isTextElement;
+    // Bit 0 x, bit 1 y: along that axis the element starts from its minimum
+    // instead of its content size when its parent distributes space, so that
+    // GROW siblings end up with equal shares (a flex basis of zero).
+    uint8_t flexBasis;
     // True if the element is currently in an exit transition, and is "synthetic"
     // i.e. data was retained from previous frames
     bool exiting;
@@ -2345,6 +2349,11 @@ void Clay__SizeContainersAlongAxis(bool xAxis, float deltaTime, Clay__int32_tArr
                 Clay_LayoutElement *childElement = Clay_LayoutElementArray_Get(&context->layoutElements, childElementIndex);
                 Clay_SizingAxis childSizing = Clay__GetElementSizing(childElement, xAxis);
                 float childSize = xAxis ? childElement->dimensions.width : childElement->dimensions.height;
+
+                if (sizingAlongAxis && (childElement->flexBasis & (xAxis ? 1 : 2)) && !childElement->exiting) {
+                    childSize = xAxis ? childElement->minDimensions.width : childElement->minDimensions.height;
+                    *(xAxis ? &childElement->dimensions.width : &childElement->dimensions.height) = childSize;
+                }
 
                 if (textElementsOut && childElement->isTextElement) {
                     Clay__int32_tArray_Add(textElementsOut, childElementIndex);
