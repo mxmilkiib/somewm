@@ -1469,6 +1469,13 @@ pan_ghost_add(struct declare_band *band, Client *c, Monitor *m,
 		ghost.y1 = -ghost.h;
 	else
 		ghost.y1 = m->m.height;
+	/* A client departing twice inside one slide keeps the later run: two
+	 * ghosts would open the same leaf id in one frame. */
+	for (size_t i = 0; i < band->pan_ghosts_len; i++) {
+		if (band->pan_ghosts[i].handle != ghost.handle) continue;
+		band->pan_ghosts[i] = ghost;
+		return;
+	}
 	if (band->pan_ghosts_len == band->pan_ghosts_cap) {
 		band->pan_ghosts_cap = band->pan_ghosts_cap ? band->pan_ghosts_cap * 2 : 4;
 		p_realloc(&band->pan_ghosts, band->pan_ghosts_cap);
@@ -1487,8 +1494,14 @@ declare_pan_ghosts(struct declare_band *band, Monitor *m)
 	for (size_t i = 0; i < band->pan_ghosts_len;) {
 		struct pan_ghost *ghost = &band->pan_ghosts[i];
 		Client *c = declare_handle_get(ghost->handle, NULL);
+		/* The ghost borrows the composite leaf's id (below), so it cannot
+		 * share a frame with the client's own declaration: back on this
+		 * output before the slide is done, the live leaf wins. */
+		bool live = c && client_has_surface(c)
+			&& (client_is_unmanaged(c) ? monitor_for_unmanaged(c) == m
+				: client_isvisible(c) && screen_hosted(c->screen, m));
 
-		if (!c || !client_has_surface(c)
+		if (!c || !client_has_surface(c) || live
 				|| ghost->dur_us <= 0 || now - ghost->start_us >= ghost->dur_us) {
 			band->pan_ghosts[i] = band->pan_ghosts[--band->pan_ghosts_len];
 			continue;
