@@ -1505,7 +1505,7 @@ static uint32_t
 attachment_target(drawin_t *d)
 {
     uint32_t identity = d->attachment.target, occurrence = d->attachment.occurrence;
-    uint32_t id = 0;
+    uint32_t id = 0, fallback = 0;
     if (!occurrence && attachment_is_ambiguous(identity, d->attachment.host)) {
         if (!d->attachment_ambiguous)
             wlr_log(WLR_ERROR, "ambiguous attachment target %"PRIu32
@@ -1515,12 +1515,20 @@ attachment_target(drawin_t *d)
     }
     for (size_t i = 0; i < attachment_targets_len; i++)
         if (attachment_targets[i].identity == identity
-                && (!d->attachment.host || attachment_targets[i].host == d->attachment.host)
-                && (!occurrence || attachment_targets[i].occurrence == occurrence)) {
+                && (!d->attachment.host || attachment_targets[i].host == d->attachment.host)) {
+            if (occurrence && attachment_targets[i].occurrence != occurrence) {
+                /* A hit captured before an async show can name an occurrence
+                 * the host's recompile has since renumbered. Keep the live
+                 * occurrence of the same identity as a fallback rather than
+                 * parking the drawin; only a unique fallback resolves. */
+                if (fallback && fallback != attachment_targets[i].id) fallback = UINT32_MAX;
+                else if (fallback != UINT32_MAX) fallback = attachment_targets[i].id;
+                continue;
+            }
             if (id && id != attachment_targets[i].id) return 0;
             id = attachment_targets[i].id;
         }
-    return id;
+    return id ? id : fallback == UINT32_MAX ? 0 : fallback;
 }
 
 static Clay_ElementId
