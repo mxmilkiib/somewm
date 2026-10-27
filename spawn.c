@@ -11,13 +11,19 @@
  * (at your option) any later version.
  */
 
+#define _GNU_SOURCE /* close_range, execvpe, environ, pipe2, POSIX_SPAWN_* extensions */
+
 #include "objects/spawn.h"
 #include "protocols.h"
 #include "globalconf.h"
 #include "luaa.h"
 #include "objects/signal.h"
 
+#include <errno.h>
+#include <fcntl.h>
+#include <spawn.h>
 #include <stdbool.h>
+#include <sys/resource.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -196,22 +202,228 @@ spawn_child_exited(pid_t pid, int status)
 	luaL_unref(L, LUA_REGISTRYINDEX, exit_callback);
 }
 
-/** Child setup callback - just call setsid()
- * This runs in the child process before exec
- */
-static void
-spawn_child_setup(gpointer user_data)
+/* GSpawnFlags is an enum, invisible to the preprocessor: an #ifndef
+ * guard on a member is always true, so only a version check can tell
+ * genuinely old glib. glib 2.74 added the stdin flag; the other two are
+ * ancient. */
+#if !GLIB_CHECK_VERSION(2, 74, 0)
+#define G_SPAWN_STDIN_FROM_DEV_NULL 0
+#endif
+
+/* Spawn without copying the page tables.
+ *
+ * g_spawn_async_with_pipes forked, then blocked the main loop on a pipe
+ * until the child had closed its inherited descriptors and exec'd — ~70ms a
+ * call on a multi-GB compositor under load, which widget polls on timers
+ * stacked into whole-loop stalls (and a stalled loop is a stalled cursor,
+ * the pointer leaf only repaints per frame). A plain fork() is no cheaper
+ * at compositor sizes: it still clones megabytes of page tables before the
+ * child can exec (~250ms once RSS reached 11GB).
+ *
+ * posix_spawn_file_actions_addclosefrom_np (glibc 2.34) lets the spawn
+ * run under clone(CLONE_VM|CLONE_VFORK) — no page-table copy, and the
+ * child's exec error comes back to the caller instead of an invisible
+ * 127. The file actions replay what the old fork child did, in the same
+ * order: pipe dup2s, /dev/null overrides, then closefrom drops every
+ * descriptor above stderr (wayland sockets, dmabufs, the pipes' other
+ * ends) before glibc's spawn child setsid()s and runs execvpe (its
+ * ENOEXEC /bin/sh fallback included). Where the extension is missing the
+ * fork path below does the same child setup at the old price.
+ *
+ * The child gets the caller's envp or the compositor's environ, plus
+ * XDG_ACTIVATION_TOKEN when startup notification asked for one (the env
+ * var g_spawn's child_setup set in place of setsid, now folded into
+ * close_range + execvpe below). */
+static GPid
+spawn_exec(char **argv, char **envp, GSpawnFlags flags, const char *token,
+		int *stdin_fd, int *stdout_fd, int *stderr_fd, GError **error)
 {
-	char *token;
+	char *resolved = NULL, **exec_env = NULL, *token_var = NULL;
+	int in_pipe[2] = { -1, -1 }, out_pipe[2] = { -1, -1 },
+		err_pipe[2] = { -1, -1 };
+	char **base;
+	size_t n = 0;
+	pid_t pid = -1;
 
-	setsid();
-
-	/* Set XDG_ACTIVATION_TOKEN for Wayland startup notification
-	 * (matches AwesomeWM's DESKTOP_STARTUP_ID pattern for X11) */
-	token = (char *)user_data;
-	if (token) {
-		setenv("XDG_ACTIVATION_TOKEN", token, 1);
+	resolved = g_find_program_in_path(argv[0]);
+	if (!resolved) {
+		int errsv = g_file_test(argv[0], G_FILE_TEST_EXISTS) ? EACCES : ENOENT;
+		g_set_error(error, G_SPAWN_ERROR, 0,
+			"Failed to execute child process “%s” (%s)",
+			argv[0], g_strerror(errsv));
+		goto fail;
 	}
+
+	base = envp ? envp : environ;
+	while (base[n])
+		n++;
+	exec_env = g_new(char *, n + 2);
+	memcpy(exec_env, base, n * sizeof(*exec_env));
+	if (token) {
+		token_var = g_strconcat("XDG_ACTIVATION_TOKEN=", token, NULL);
+		exec_env[n++] = token_var;
+	}
+	exec_env[n] = NULL;
+
+	if ((stdin_fd && pipe2(in_pipe, O_CLOEXEC) < 0)
+			|| (stdout_fd && pipe2(out_pipe, O_CLOEXEC) < 0)
+			|| (stderr_fd && pipe2(err_pipe, O_CLOEXEC) < 0)) {
+		int errsv = errno;
+		g_set_error(error, G_SPAWN_ERROR, 0,
+			"Failed to create pipe for child process (%s)",
+			g_strerror(errsv));
+		goto fail;
+	}
+
+#if defined(__GLIBC__) && __GLIBC_PREREQ(2, 34)
+	{
+		posix_spawn_file_actions_t fa;
+		posix_spawnattr_t attr;
+		int devnull_fd = -1, r;
+		int fa_ok = posix_spawn_file_actions_init(&fa) == 0;
+		int attr_ok = fa_ok && posix_spawnattr_init(&attr) == 0;
+
+		r = attr_ok ? 0 : ENOMEM;
+		if (!r)
+			r = posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID
+#ifdef POSIX_SPAWN_USEVFORK
+				| POSIX_SPAWN_USEVFORK
+#endif
+				);
+		/* Same order as the old fork child: pipe dup2s, then devnull
+		 * overrides for whichever stream asked, and the closefrom last
+		 * so every action still sees its sources. The opened fd sits
+		 * above every pipe end so no action can clobber it; closefrom
+		 * reaps it with the rest. */
+		if (!r && in_pipe[0] >= 0)
+			r = posix_spawn_file_actions_adddup2(&fa, in_pipe[0],
+				STDIN_FILENO);
+		if (!r && out_pipe[1] >= 0)
+			r = posix_spawn_file_actions_adddup2(&fa, out_pipe[1],
+				STDOUT_FILENO);
+		if (!r && err_pipe[1] >= 0)
+			r = posix_spawn_file_actions_adddup2(&fa, err_pipe[1],
+				STDERR_FILENO);
+		if (!r && (flags & (G_SPAWN_STDIN_FROM_DEV_NULL
+				| G_SPAWN_STDOUT_TO_DEV_NULL
+				| G_SPAWN_STDERR_TO_DEV_NULL))) {
+			for (int i = 0; i < 2; i++) {
+				if (in_pipe[i] > devnull_fd) devnull_fd = in_pipe[i];
+				if (out_pipe[i] > devnull_fd) devnull_fd = out_pipe[i];
+				if (err_pipe[i] > devnull_fd) devnull_fd = err_pipe[i];
+			}
+			devnull_fd++;
+			r = posix_spawn_file_actions_addopen(&fa, devnull_fd,
+				"/dev/null", O_RDWR, 0);
+		}
+		if (!r && (flags & G_SPAWN_STDIN_FROM_DEV_NULL))
+			r = posix_spawn_file_actions_adddup2(&fa, devnull_fd,
+				STDIN_FILENO);
+		if (!r && (flags & G_SPAWN_STDOUT_TO_DEV_NULL))
+			r = posix_spawn_file_actions_adddup2(&fa, devnull_fd,
+				STDOUT_FILENO);
+		if (!r && (flags & G_SPAWN_STDERR_TO_DEV_NULL))
+			r = posix_spawn_file_actions_adddup2(&fa, devnull_fd,
+				STDERR_FILENO);
+		if (!r)
+			r = posix_spawn_file_actions_addclosefrom_np(&fa,
+				STDERR_FILENO + 1);
+
+		if (!r)
+			r = posix_spawn(&pid, resolved, &fa, &attr, argv, exec_env);
+
+		if (attr_ok)
+			posix_spawnattr_destroy(&attr);
+		if (fa_ok)
+			posix_spawn_file_actions_destroy(&fa);
+
+		if (r) {
+			pid = -1;
+			g_set_error(error, G_SPAWN_ERROR, 0,
+				"Failed to execute child process “%s” (%s)",
+				argv[0], g_strerror(r));
+			goto fail;
+		}
+	}
+#else
+	/* No addclosefrom_np (pre-2.34 glibc, musl): the same child setup by
+	 * hand, at the cost of the page-table copy. */
+	pid = fork();
+	if (pid < 0) {
+		int errsv = errno;
+		g_set_error(error, G_SPAWN_ERROR, 0,
+			"Failed to fork child process (%s)", g_strerror(errsv));
+		goto fail;
+	}
+	if (pid == 0) {
+		int devnull = -1;
+
+		/* Async-signal-safe calls only: a forked copy of a threaded
+		 * compositor cannot touch malloc, the Lua state or stdio. */
+		if (in_pipe[0] >= 0)
+			dup2(in_pipe[0], STDIN_FILENO);
+		if (out_pipe[1] >= 0)
+			dup2(out_pipe[1], STDOUT_FILENO);
+		if (err_pipe[1] >= 0)
+			dup2(err_pipe[1], STDERR_FILENO);
+		if (flags & (G_SPAWN_STDIN_FROM_DEV_NULL | G_SPAWN_STDOUT_TO_DEV_NULL
+				| G_SPAWN_STDERR_TO_DEV_NULL))
+			devnull = open("/dev/null", O_RDWR);
+		if (devnull >= 0) {
+			if (flags & G_SPAWN_STDIN_FROM_DEV_NULL)
+				dup2(devnull, STDIN_FILENO);
+			if (flags & G_SPAWN_STDOUT_TO_DEV_NULL)
+				dup2(devnull, STDOUT_FILENO);
+			if (flags & G_SPAWN_STDERR_TO_DEV_NULL)
+				dup2(devnull, STDERR_FILENO);
+		}
+		/* Wayland sockets, dmabufs and the pipes' other ends go in one
+		 * call — the table exec would drop anyway. dup2'd targets survive
+		 * (dup2 clears CLOEXEC). */
+		if (close_range(STDERR_FILENO + 1, ~0U, 0) < 0) {
+			struct rlimit rl;
+			long max = getrlimit(RLIMIT_NOFILE, &rl) == 0
+				? (long)rl.rlim_cur : 1024;
+			for (long fd = STDERR_FILENO + 1; fd < max; fd++)
+				close(fd);
+		}
+		setsid();
+		execvpe(resolved, argv, exec_env);
+		/* execvpe already fell back to /bin/sh on ENOEXEC; the rest is a
+		 * shell-style 127 on the exit callback. */
+		_exit(127);
+	}
+#endif
+
+	/* The parent keeps its ends; the child's die with the copy. */
+	if (in_pipe[0] >= 0) {
+		close(in_pipe[0]);
+		*stdin_fd = in_pipe[1];
+	}
+	if (out_pipe[1] >= 0) {
+		close(out_pipe[1]);
+		*stdout_fd = out_pipe[0];
+	}
+	if (err_pipe[1] >= 0) {
+		close(err_pipe[1]);
+		*stderr_fd = err_pipe[0];
+	}
+
+	g_free(resolved);
+	g_free(exec_env);
+	g_free(token_var);
+	return pid;
+
+fail:
+	g_free(resolved);
+	g_free(exec_env);
+	g_free(token_var);
+	for (int i = 0; i < 2; i++) {
+		if (in_pipe[i] >= 0) close(in_pipe[i]);
+		if (out_pipe[i] >= 0) close(out_pipe[i]);
+		if (err_pipe[i] >= 0) close(err_pipe[i]);
+	}
+	return -1;
 }
 
 /** Spawn a program.
@@ -365,11 +577,10 @@ luaA_spawn(lua_State *L)
 				"name", argv[0]);
 		}
 
-	/* Spawn the process */
-	flags |= G_SPAWN_SEARCH_PATH | G_SPAWN_CLOEXEC_PIPES;
-	retval = g_spawn_async_with_pipes(NULL, argv, envp, flags,
-			spawn_child_setup, activation_token, &pid,
+	/* Spawn the process: fork and return, the child execs off the loop. */
+	pid = spawn_exec(argv, envp, flags, activation_token,
 			stdin_ptr, stdout_ptr, stderr_ptr, &error);
+	retval = pid > 0;
 
 	g_strfreev(argv);
 	g_strfreev(envp);
