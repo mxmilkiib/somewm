@@ -166,55 +166,10 @@ stack_place(Client *c, Client **old, const bool *rides, int len)
 {
 	if (stack_has(c))
 		return;
-
-	if (previous && previous->scene) {
-		/* Node == Sibling aborts inside wlroots. Can happen with a
-		 * transient_for self-reference or a duplicated stack entry. */
-		if (&c->scene->node == &previous->scene->node)
-			return;
-
-		/* Ensure both nodes share the same scene parent.
-		 * In X11, stacking is flat (xcb_configure_window works on any two windows).
-		 * In wlroots, wlr_scene_node_place_above requires shared parents.
-		 * Transients should visually stack with their parent regardless of
-		 * which layer they were initially placed in. */
-		if (c->scene->node.parent != previous->scene->node.parent) {
-			wlr_scene_node_reparent(&c->scene->node, previous->scene->node.parent);
-		}
-		wlr_scene_node_place_above(&c->scene->node, &previous->scene->node);
-	} else {
-		/* No previous client, raise to top of layer */
-		wlr_scene_node_raise_to_top(&c->scene->node);
-	}
-}
-
-/** Stack transient windows above their parent
- * Recursively stacks all transients above c
- * \param c Parent client
- * \param previous Last stacked window
- * \return Last stacked transient (or c if no transients)
- */
-static Client *
-stack_transients_above(Client *c, Client *previous)
-{
-	if (!c)
-		return previous;
-
-	/* Stack this client first */
-	stack_client_relative(c, previous);
-	previous = c;
-
-	/* Then stack all transients above it.
-	 * *node != c skips a transient_for self-reference, which would
-	 * otherwise recurse with previous == c and trip the scene assert. */
-	foreach(node, globalconf.stack) {
-		if (*node != c && (*node)->transient_for == c) {
-			/* Recursively stack this transient and its transients */
-			previous = stack_transients_above(*node, previous);
-		}
-	}
-
-	return previous;
+	client_array_append(&globalconf.stack, c);
+	for (int i = 0; i < len; i++)
+		if (rides[i] && old[i]->transient_for == c)
+			stack_place(old[i], old, rides, len);
 }
 
 /** Refresh stacking order
