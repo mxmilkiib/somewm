@@ -4631,7 +4631,11 @@ declare_output_frame(struct declare_output *dout, Monitor *m)
 	Clay_UpdateScrollContainers(false,
 		(Clay_Vector2) { dout->scroll_x, dout->scroll_y }, dt);
 	dout->scroll_x = dout->scroll_y = 0;
-    /* Select the authored departure policy before Clay copies an omitted client subtree. */
+    /* Select the authored departure policy before Clay copies an omitted client subtree.
+     * The pan is this frame's switch alone: held over, it would mirror an
+     * unrelated exit that happens to leave with a surface. */
+    int pan = band->tag_pan;
+    band->tag_pan = 0;
     for (size_t i = 0; i < old_len; i++) {
         struct declare_record *record = &old_records[i];
         if (!record->client_exit) continue;
@@ -4642,10 +4646,16 @@ declare_output_frame(struct declare_output *dout, Monitor *m)
         }
         struct widget_transition policy = record->exit_policy;
         bool tagged = c && client_has_surface(c);
-        if (tagged) policy.exit_state = policy.tag_exit;
-        if (tagged && band->tag_pan < 0)
-            policy.exit_state = transition_mirror(policy.exit_state);
-        policy.duration = tagged ? policy.tag_duration : policy.exit_duration;
+        if (tagged) {
+            /* A minimize is not a tag switch: an authored minimize exit wins,
+             * else it rides the tag word like a hidden client. */
+            bool minimizing = c->minimized && policy.minimize_exit;
+            policy.exit_state = minimizing ? policy.minimize_exit : policy.tag_exit;
+            policy.duration = minimizing ? policy.minimize_duration : policy.tag_duration;
+            if (!minimizing && pan < 0)
+                policy.exit_state = transition_mirror(policy.exit_state);
+        }
+        if (!tagged) policy.duration = policy.exit_duration;
         policy.properties |= widget_transition_properties(policy.exit_state);
         clay_exit_transition((Clay_ElementId){.id = record->id}, transition_config(&policy));
         /* The surface leaf floats under the client's element, so Clay drops

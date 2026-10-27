@@ -39,6 +39,7 @@
 	X(aspect) X(image_width) X(image_height) X(filter) X(natural) X(track) \
 	X(thumb) X(scroll) X(basis) X(transition) X(duration) X(properties) X(exit_order) \
     X(exit_duration) X(tag_exit) X(tag_duration) \
+    X(minimize_exit) X(minimize_duration) \
 	X(enter) X(exit) X(x11_configure_serial) X(client) X(surface) X(host) X(opacity) X(probe) X(attrs) \
 	X(font) X(color) X(wrap) X(halign) X(ellipsize) X(bindings) X(item) X(id) \
 	X(next) X(_attach) X(clip) X(children)
@@ -416,10 +417,13 @@ read_transition(lua_State *L, int idx, struct widget_node *n)
         && read_option(L, t, KEY_exit_order, orders, 3, &n->transition.exit_order)
         && read_transition_state(L, t, KEY_enter, &n->transition.enter_state)
         && read_transition_state(L, t, KEY_exit, &n->transition.exit_state)
-        && read_transition_state(L, t, KEY_tag_exit, &n->transition.tag_exit);
-    n->transition.exit_duration = n->transition.tag_duration = n->transition.duration;
+        && read_transition_state(L, t, KEY_tag_exit, &n->transition.tag_exit)
+        && read_transition_state(L, t, KEY_minimize_exit, &n->transition.minimize_exit);
+    n->transition.exit_duration = n->transition.tag_duration
+        = n->transition.minimize_duration = n->transition.duration;
     ok = ok && read_number(L, t, KEY_exit_duration, 0, 1e6, &n->transition.exit_duration)
-        && read_number(L, t, KEY_tag_duration, 0, 1e6, &n->transition.tag_duration);
+        && read_number(L, t, KEY_tag_duration, 0, 1e6, &n->transition.tag_duration)
+        && read_number(L, t, KEY_minimize_duration, 0, 1e6, &n->transition.minimize_duration);
     getfield(L, t, KEY_properties);
     bool implicit = lua_isnil(L, -1);
     lua_pop(L, 1);

@@ -177,6 +177,19 @@ describe("somewm.animation", function()
         assert.equals("slide_right", animation.word(object, "tag").enter)
         animation.set_tag_pan(s, 0)
     end)
+    it("declares an authored minimize exit beside the tag exit", function()
+        theme.animation_duration = 1
+        theme.animation_tag, theme.animation_tag_duration = {"slide_right", "slide_left"}, 0.5
+        theme.animation_minimize, theme.animation_minimize_duration = "slide_up", 0.8
+        local word = animation.word({}, "layout")
+        assert.equals("slide_left", word.tag_exit)
+        assert.equals("slide_up", word.minimize_exit)
+        assert.equals(0.8, word.minimize_duration)
+        theme.animation_minimize = nil
+        assert.is_nil(animation.word({}, "layout").minimize_exit)
+        local object = {animation = {minimize = {"fade", "slide_down"}}}
+        assert.same({"fade", "slide_down"}, animation.word(object, "layout").minimize_exit)
+    end)
     it("keeps list occurrences stable across copied policy reads", function()
         theme.animation_duration = 1
         local object = {animation = {appear = {"grow", "fade"}}}
