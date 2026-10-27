@@ -103,6 +103,8 @@ configs that avoid the removals and the Changed cases below run unchanged.
   "slide_left"} slides the new tag in from the right while the old tag
   exits left, so the client layer pans like a desktop switch. Switching to
   a lower-indexed tag pans the other way.
+  beautiful.animation_minimize and animation_minimize_duration give a
+  minimized client its own exit word; unset, a minimize rides the tag exit.
   A client exit animates its frame only; the surface snaps.
 - `animation = {visible = {duration, enter, exit}}` on wibox and awful.popup,
   with the same entrances. A drawin's exit drops its shadow at once.
