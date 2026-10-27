@@ -15,6 +15,7 @@
 #include <wlr/backend/wayland.h>
 #include <wlr/util/log.h>
 #include <wlr/version.h>
+#include <drm_fourcc.h>
 
 /* AwesomeWM-compatible output class */
 lua_class_t output_class;
@@ -781,6 +782,11 @@ luaA_output_set_hdr(lua_State *L, output_t *o)
 	}
 
 	wlr_output_state_init(&state);
+	/* HDR Signalling flips the Connector's Colorspace and
+	 * HDR_OUTPUT_METADATA Properties; amdgpu reprograms the Stream for
+	 * that during a Modeset, while a live non-Modeset Flip on a running
+	 * Pipe can hang the Display Core and take every Output down with it */
+	state.allow_reconfiguration = true;
 	if (hdr) {
 		struct wlr_output_image_description desc = { 0 };
 		desc.primaries = WLR_COLOR_NAMED_PRIMARIES_BT2020;
@@ -792,16 +798,51 @@ luaA_output_set_hdr(lua_State *L, output_t *o)
 			desc.mastering_display_primaries =
 				*o->monitor->wlr_output->default_primaries;
 		wlr_output_state_set_image_description(&state, &desc);
+		/* 10 bpc Scanout: PQ quantizes too coarsely at 8 bpc */
+		wlr_output_state_set_render_format(&state,
+			DRM_FORMAT_XRGB2101010);
 	} else {
 		/* NULL restores the backend default (SDR) description */
 		wlr_output_state_set_image_description(&state, NULL);
+		wlr_output_state_set_render_format(&state, DRM_FORMAT_XRGB8888);
 	}
 
-	if (wlr_output_commit_state(o->monitor->wlr_output, &state))
-		luaA_object_emit_signal(L, 1, "property::hdr", 0);
-	else
-		wlr_log(WLR_INFO, "output: failed to commit hdr for %s",
+	/* A Test Commit only validates and never programs the Hardware, so a
+	 * Driver that declines the change fails here without touching the
+	 * live Pipe */
+	if (!wlr_output_test_state(o->monitor->wlr_output, &state)) {
+		wlr_output_state_finish(&state);
+		luaL_error(L, "output %s rejected the HDR image description",
 			o->monitor->wlr_output->name);
+		return 0;
+	}
+
+	/* Rendering through the Scene lets it rebuild its output Color
+	 * Transform from the new Image Description (sRGB->BT.2020 Gamut
+	 * Matrix plus the inverse PQ EOTF); the gles2 Renderer ignores the
+	 * Transform, vulkan applies it */
+	if (o->monitor->scene_output && o->monitor->wlr_output->enabled
+			&& !wlr_scene_output_build_state(o->monitor->scene_output,
+				&state, NULL)) {
+		wlr_output_state_finish(&state);
+		wlr_log(WLR_ERROR, "output: scene render failed for hdr on %s",
+			o->monitor->wlr_output->name);
+		return 0;
+	}
+
+	if (wlr_output_commit_state(o->monitor->wlr_output, &state)) {
+		luaA_object_emit_signal(L, 1, "property::hdr", 0);
+		/* Swapchain Contents predate the new Transform; repaint
+		 * everything once so no stale Pixels linger */
+		if (o->monitor->scene_output) {
+			wlr_damage_ring_add_whole(
+				&o->monitor->scene_output->damage_ring);
+			wlr_output_schedule_frame(o->monitor->wlr_output);
+		}
+	} else {
+		wlr_log(WLR_ERROR, "output: failed to commit hdr for %s",
+			o->monitor->wlr_output->name);
+	}
 
 	wlr_output_state_finish(&state);
 #else
