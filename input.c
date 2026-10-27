@@ -3052,13 +3052,21 @@ cursor_surface_destroy(struct wl_listener *listener, void *data)
 }
 
 /* A commit can move the hotspot by the buffer offset (wl_pointer.set_cursor)
- * and change the size the leaf is declared at. */
+ * and change the size the leaf is declared at. A commit that changes only
+ * the pixels repaints through the borrowed scene surface's own damage;
+ * bumping gen for those let an animated cursor client spin every output
+ * into a declare loop. */
 static void
 cursor_surface_commit(struct wl_listener *listener, void *data)
 {
-	cursor_image.hotspot_x -= cursor_image.surface->current.dx;
-	cursor_image.hotspot_y -= cursor_image.surface->current.dy;
-	cursor_image.gen++;
+	struct wlr_surface *surface = cursor_image.surface;
+
+	cursor_image.hotspot_x -= surface->current.dx;
+	cursor_image.hotspot_y -= surface->current.dy;
+	if (surface->current.dx || surface->current.dy
+			|| surface->current.width != cursor_image.declared_w
+			|| surface->current.height != cursor_image.declared_h)
+		cursor_image.gen++;
 	declare_cursor_changed();
 }
 
