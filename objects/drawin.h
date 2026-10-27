@@ -125,6 +125,8 @@ enum drawin_edge {
 };
 
 bool drawin_widget_host(drawin_t *d, struct widget_host *out);
+/* An attachment drawin's screen is its host's, not its parked position's. */
+struct screen_t *drawin_effective_screen(drawin_t *d);
 /* Rectangular attachment borders are native Clay paint, without a raster. */
 
 /* Metatable name for drawin userdata */

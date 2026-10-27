@@ -1,5 +1,6 @@
 #include "drawin.h"
 #include "drawable.h"
+#include "client.h"
 #include "screen.h"
 #include "signal.h"
 #include "button.h"
@@ -52,6 +53,27 @@ drawin_update_drawing(lua_State *L, int widx)
 	lua_pop(L, 1);
 }
 
+/** The screen an attachment drawin declares on. A widget attachment belongs
+ * to its host's screen: the drawin's own position-derived screen is stale
+ * whenever the solver never placed it at its authored coordinates, which is
+ * every popup parked by an unresolved attachment. */
+screen_t *
+drawin_effective_screen(drawin_t *d)
+{
+	if (d->attachment.host) {
+		drawin_t *host = declare_handle_get(
+			((uint64_t)DECLARE_KIND_DRAWIN << 32) | d->attachment.host, NULL);
+		if (host && host->screen)
+			return host->screen;
+		drawable_t *titlebar = declare_handle_get(
+			((uint64_t)DECLARE_KIND_TITLEBAR << 32) | d->attachment.host, NULL);
+		if (titlebar && titlebar->owner_type == DRAWABLE_OWNER_CLIENT
+				&& titlebar->owner.client && titlebar->owner.client->screen)
+			return titlebar->owner.client->screen;
+	}
+	return d->screen;
+}
+
 /** Refresh callback for drawable - called when drawable content should be displayed
  * This updates the scene graph buffer with new Cairo-rendered content
  */
@@ -59,7 +81,7 @@ drawin_update_drawing(lua_State *L, int widx)
 void
 drawin_mark_dirty(drawin_t *drawin)
 {
-	Monitor *m = luaA_monitor_get_by_screen(globalconf_get_lua_State(), drawin->screen);
+	Monitor *m = luaA_monitor_get_by_screen(globalconf_get_lua_State(), drawin_effective_screen(drawin));
 	if (m && m->declare)
 		declare_output_mark_dirty(m->declare);
 }
@@ -67,7 +89,7 @@ drawin_mark_dirty(drawin_t *drawin)
 bool
 drawin_widget_host(drawin_t *d, struct widget_host *out)
 {
-	Monitor *m = luaA_monitor_get_by_screen(globalconf_get_lua_State(), d->screen);
+	Monitor *m = luaA_monitor_get_by_screen(globalconf_get_lua_State(), drawin_effective_screen(d));
 	if (!m)
 		return false;
 

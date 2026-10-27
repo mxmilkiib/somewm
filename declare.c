@@ -2456,10 +2456,11 @@ declare_wallpaper_drawin(drawin_t *d, Monitor *m, int16_t z)
 static bool
 declarable_drawin(drawin_t *d, Monitor *m)
 {
+	screen_t *screen = drawin_effective_screen(d);
 	return d->visible
 		&& d->widgets.nodes_len > 0
-		&& screen_hosted(d->screen, m)
-        && (!active_screen || d->screen == active_screen->screen);
+		&& screen_hosted(screen, m)
+        && (!active_screen || screen == active_screen->screen);
 }
 
 /* --- layer surfaces ---
@@ -3633,7 +3634,7 @@ static bool clips_prepare(Monitor *m)
     size_t scrolls = 0;
     foreach(item, globalconf.drawins) {
         drawin_t *d = *item;
-        if (screen_hosted(d->screen, m)) scrolls += d->widgets.scrolls;
+        if (screen_hosted(drawin_effective_screen(d), m)) scrolls += d->widgets.scrolls;
     }
     foreach(item, globalconf.clients) {
         Client *c = *item;
