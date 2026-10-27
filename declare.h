@@ -40,6 +40,11 @@ void declare_output_mark_dirty(struct declare_output *dout);
  * order, banning, a drawin whose screen assignment may be stale). */
 void declare_mark_all_dirty(void);
 
+/* Record the sign of a tag switch's index delta on the band: a negative
+ * direction mirrors the slide in the client tag exits the next frames
+ * resolve. Set at selection time, before the switch's first declare. */
+void declare_tag_pan(struct declare_output *dout, int direction);
+
 /* The pointer moved or its image changed: the output under the pointer and
  * every output whose tree shows the pointer run a frame. A no-op while the
  * pointer is where the last frame declared it with the same image, so the

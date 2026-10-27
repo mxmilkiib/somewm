@@ -61,9 +61,12 @@ local seen = setmetatable({}, {__mode = "k"})
 -- @tparam[opt=nil] string|table animation_disappear
 
 --- The entrance and exit on a tag switch, same words as `animation_appear`.
--- Defaults to `grow`; `c.animation.tag` can override it.
+-- Defaults to `fade`; `c.animation.tag` can override it. A list of two slide
+-- words reads as {enter, exit}: {"slide_right", "slide_left"} slides the new
+-- tag in from the right edge while the old tag exits left, so the whole
+-- client layer pans like a KDE desktop switch.
 -- @beautiful beautiful.animation_tag
--- @tparam[opt="grow"] string|table animation_tag
+-- @tparam[opt="fade"] string|table animation_tag
 
 local theme_keys = {
     layout = "animation_layout_duration",
@@ -112,7 +115,7 @@ local function entrance_value(object, name)
     if value == false then return nil end
     if type(value) == "string" or type(value) == "table" then return value end
     value = beautiful["animation_" .. name]
-    return (type(value) == "string" or type(value) == "table") and value or name == "tag" and "grow" or nil
+    return (type(value) == "string" or type(value) == "table") and value or name == "tag" and "fade" or nil
 end
 
 local function entrance(object, name)
@@ -130,6 +133,37 @@ local function entrance(object, name)
         cached[name] = previous
     end
     return previous
+end
+
+local slide_words = {slide_left = true, slide_right = true, slide_up = true, slide_down = true}
+local slide_mirror = {slide_left = "slide_right", slide_right = "slide_left",
+    slide_up = "slide_down", slide_down = "slide_up"}
+local tag_pan = setmetatable({}, {__mode = "k"})
+
+local function mirror_word(value)
+    if type(value) == "table" then
+        local out = {}
+        for i, word in ipairs(value) do out[i] = slide_mirror[word] or word end
+        return out
+    end
+    return slide_mirror[value] or value
+end
+
+--- Record the sign of a tag switch's index delta on its screen, so tag
+-- entrances pan the other way on a backward switch. The matching exit side
+-- is mirrored in C, where the retained records resolve their direction.
+function animation.set_tag_pan(screen, direction)
+    tag_pan[screen] = direction
+end
+
+--- Split a two-slide tag word into its enter and exit words, so a tag
+-- switch can slide the arriving clients one way and the departing the
+-- other: {"slide_right", "slide_left"} enters from the right edge while
+-- the old tag exits left, a conveyor in lockstep.
+local function tag_pair(value)
+    if type(value) == "table" and #value == 2 and slide_words[value[1]] and slide_words[value[2]] then
+        return value[1], value[2]
+    end
 end
 
 function animation.has_effect(value, effect)
@@ -161,11 +195,20 @@ function animation.word(object, trigger)
     end
     if not configured and not seen[object] then return nil end
     local duration, enter, arriving = 0, nil, false
+    local tag_enter, tag_out = entrance(object, "tag")
+    do
+        -- tag_exit is declared on every frame, so the pair must split even
+        -- when this describe is not the tag entrance itself.
+        local in_word, out_word = tag_pair(tag_enter)
+        if in_word then tag_enter, tag_out = in_word, out_word end
+        -- tag_exit stays the forward word; declare.c mirrors it at exit.
+        if (tag_pan[object.screen] or 0) < 0 then tag_enter = mirror_word(tag_enter) end
+    end
     for _, name in ipairs(type(trigger) == "table" and trigger or {trigger}) do
         -- One element has one duration, so simultaneous box and border changes use the larger.
         duration = math.max(duration, animation.duration(object, name))
         if name == "appear" or name == "tag" then
-            arriving, enter = true, entrance(object, name)
+            arriving, enter = true, name == "tag" and tag_enter or entrance(object, name)
         end
     end
     -- Installing a transition on an existing node starts from an empty box.
@@ -180,7 +223,7 @@ function animation.word(object, trigger)
     local exit = entrance(object, "disappear")
     if exit then word.exit, word.exit_duration = exit, animation.duration(object, "disappear") end
     if animation.duration(object, "tag") > 0 then
-        word.tag_exit, word.tag_duration = entrance(object, "tag"), animation.duration(object, "tag")
+        word.tag_exit, word.tag_duration = tag_out or entrance(object, "tag"), animation.duration(object, "tag")
     end
     if not animation.enabled or capi.mousegrabber.isrunning() then
         if word.exit then word.exit_duration = 0 end

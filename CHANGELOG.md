@@ -97,8 +97,12 @@ configs that avoid the removals and the Changed cases below run unchanged.
   animation_maximize_duration and animation_floating_duration.
   beautiful.animation_duration supplies the fallback for triggers without
   their own duration, including layout. A focus change eases the border
-  colour. With a tag duration set, a tag switch grows clients in and out
+  colour. With a tag duration set, a tag switch fades clients in and out
   unless c.animation.tag or beautiful.animation_tag names another entrance.
+  A list of two slide words reads as {enter, exit}: {"slide_right",
+  "slide_left"} slides the new tag in from the right while the old tag
+  exits left, so the client layer pans like a desktop switch. Switching to
+  a lower-indexed tag pans the other way.
   A client exit animates its frame only; the surface snaps.
 - `animation = {visible = {duration, enter, exit}}` on wibox and awful.popup,
   with the same entrances. A drawin's exit drops its shadow at once.

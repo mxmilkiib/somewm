@@ -85,6 +85,20 @@ struct scrollbar_record {
 
 struct exit_owner { uint64_t handle; int ref; };
 
+/* A departing client's pixels for the length of its slide: the surface leaf
+ * is a floating child of the client element, so Clay drops it when the frame
+ * exits instead of cloning it. The ghost is a root-attached leaf at the
+ * surface's last box, stepped off screen in the slide's direction until its
+ * duration is up; its custom command borrows the client's scene tree, which
+ * nobody else claims once the client is gone. */
+struct pan_ghost {
+	uint64_t handle;
+	int x0, y0, x1, y1, w, h;
+	int64_t start_us, dur_us;
+};
+
+static int64_t now_us(void);
+
 struct declare_band {
     bool exhausted, context_valid, inspector_refused;
     bool inspector_solving, inspector_collision_logged;
@@ -101,6 +115,8 @@ struct declare_band {
     size_t entrances_len, entrances_cap;
     struct exit_owner *exit_owners;
     size_t exit_owners_len, exit_owners_cap;
+    struct pan_ghost *pan_ghosts;
+    size_t pan_ghosts_len, pan_ghosts_cap;
     uint64_t *command_handles;
     size_t command_handles_len;
     struct declared_host *hosts;
@@ -130,6 +146,9 @@ struct declare_band {
 	 * settled state on the frame after, which is where the next one
 	 * starts from (third_party/clay.h:5068-5073). */
 	bool transitioning;
+	/* Sign of the tag switch's index delta, set by declare_tag_pan: a
+	 * backward switch mirrors the slide in client tag exits. */
+	int tag_pan;
 	int64_t declare_us, solve_us, reconcile_us;
 	/* What the last frame's pass declared, in declaration order, for the
 	 * tree dump: the desktop-level elements (roots, client frames, bar
@@ -1204,6 +1223,19 @@ transition_state(uint16_t state)
     return state < LENGTH(transition_states) ? transition_states[state] : NULL;
 }
 
+/* The mirror image of a state word for a tag switch that went to a
+ * lower-indexed tag: slides swap their direction, everything else stays. */
+static uint16_t
+transition_mirror(uint16_t state)
+{
+    uint16_t out = state & ~(uint16_t)WIDGET_TRANSITION_SLIDE;
+    if (state & WIDGET_TRANSITION_SLIDE_LEFT) out |= WIDGET_TRANSITION_SLIDE_RIGHT;
+    if (state & WIDGET_TRANSITION_SLIDE_RIGHT) out |= WIDGET_TRANSITION_SLIDE_LEFT;
+    if (state & WIDGET_TRANSITION_SLIDE_UP) out |= WIDGET_TRANSITION_SLIDE_DOWN;
+    if (state & WIDGET_TRANSITION_SLIDE_DOWN) out |= WIDGET_TRANSITION_SLIDE_UP;
+    return out;
+}
+
 static uint16_t
 transition_effects(transition_state_fn state)
 {
@@ -1410,6 +1442,76 @@ declare_unmanaged_clients(Monitor *m)
 		s.userData = leaf_userdata(handle, 1.0f);
 		declare_leaf("SURFACE", handle, DECLARE_SRC_PROTOCOL, DECLARE_SRC_PROTOCOL, id, &s);
 		declare_popups(client_surface(c), id, 0, 0, handle);
+	}
+}
+
+/* A departing client gets a ghost leaf at its surface's monitor-relative
+ * box; the exit policy's slide direction and duration decide where it lands
+ * and how fast it gets there. */
+static void
+pan_ghost_add(struct declare_band *band, Client *c, Monitor *m,
+	const struct widget_transition *policy)
+{
+	struct wlr_box origin = screen_origin(m);
+	struct pan_ghost ghost = {
+		.handle = declare_handle_for(c, DECLARE_KIND_CLIENT),
+		.x0 = c->geometry.x - origin.x, .y0 = c->geometry.y - origin.y,
+		.x1 = c->geometry.x - origin.x, .y1 = c->geometry.y - origin.y,
+		.w = c->geometry.width, .h = c->geometry.height,
+		.start_us = now_us(), .dur_us = (int64_t)(policy->duration * 1e6),
+	};
+
+	if (policy->exit_state & WIDGET_TRANSITION_SLIDE_LEFT)
+		ghost.x1 = -ghost.w;
+	else if (policy->exit_state & WIDGET_TRANSITION_SLIDE_RIGHT)
+		ghost.x1 = m->m.width;
+	else if (policy->exit_state & WIDGET_TRANSITION_SLIDE_UP)
+		ghost.y1 = -ghost.h;
+	else
+		ghost.y1 = m->m.height;
+	if (band->pan_ghosts_len == band->pan_ghosts_cap) {
+		band->pan_ghosts_cap = band->pan_ghosts_cap ? band->pan_ghosts_cap * 2 : 4;
+		p_realloc(&band->pan_ghosts, band->pan_ghosts_cap);
+	}
+	band->pan_ghosts[band->pan_ghosts_len++] = ghost;
+}
+
+/* The ghost leaves of departing clients, expired ones dropped: each sits at
+ * its eased point between the surface's last box and off screen, borrowing
+ * the client's scene tree for the duration. */
+static void
+declare_pan_ghosts(struct declare_band *band, Monitor *m)
+{
+	int64_t now = now_us();
+
+	for (size_t i = 0; i < band->pan_ghosts_len;) {
+		struct pan_ghost *ghost = &band->pan_ghosts[i];
+		Client *c = declare_handle_get(ghost->handle, NULL);
+
+		if (!c || !client_has_surface(c)
+				|| ghost->dur_us <= 0 || now - ghost->start_us >= ghost->dur_us) {
+			band->pan_ghosts[i] = band->pan_ghosts[--band->pan_ghosts_len];
+			continue;
+		}
+		i++;
+		float t = (float)(now - ghost->start_us) / ghost->dur_us;
+		float ease = 1 - (1 - t) * (1 - t) * (1 - t);
+		int x = ghost->x0 + (int)((ghost->x1 - ghost->x0) * ease);
+		int y = ghost->y0 + (int)((ghost->y1 - ghost->y0) * ease);
+		/* The composite leaf's own id: the rnode survives the switch from
+		 * parent-attached float to ghost, so the sweep never releases the
+		 * borrowed tree out from under it. */
+		Clay_ElementId id = Clay__HashStringWithOffset(CLAY_STRING("SURFACE"),
+			(uint32_t)ghost->handle, 0);
+		Clay_ElementDeclaration s = leaf_at(client_z(c), x, y,
+			ghost->w, ghost->h);
+		s.floating.attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID;
+		s.floating.parentId = screen_root_id(m).id;
+		s.floating.pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH;
+		s.custom.customData = (void *)(uintptr_t)ghost->handle;
+		s.userData = leaf_userdata(ghost->handle, 1.0f);
+		declare_leaf("GHOST", ghost->handle, DECLARE_SRC_PROTOCOL,
+			DECLARE_SRC_PROTOCOL, id, &s);
 	}
 }
 
@@ -3732,6 +3834,8 @@ declare_scene(Monitor *m)
     if (recording->exhausted) return;
 	declare_unmanaged_clients(m);
     if (recording->exhausted) return;
+	declare_pan_ghosts(recording, m);
+    if (recording->exhausted) return;
 	declare_drag_icon(m);
     if (recording->exhausted) return;
 	if (session_is_locked())
@@ -4160,6 +4264,7 @@ declare_band_wipe(struct declare_band *band)
     free(band->command_handles);
     release_exit_owners(band, NULL, 0);
     free(band->exit_owners);
+    free(band->pan_ghosts);
     free(band->entrances);
     free(band->transition_baselines);
 	render_destroy(band->render, &client_hooks);
@@ -4329,6 +4434,12 @@ declare_mark_all_dirty(void)
 	wl_list_for_each(m, &mons, link)
 		if (m->declare)
 			declare_output_mark_dirty(m->declare);
+}
+
+void
+declare_tag_pan(struct declare_output *dout, int direction)
+{
+	dout->band.tag_pan = direction < 0 ? -1 : direction > 0;
 }
 
 struct native_pass {
@@ -4507,9 +4618,16 @@ declare_output_frame(struct declare_output *dout, Monitor *m)
         struct widget_transition policy = record->exit_policy;
         bool tagged = c && client_has_surface(c);
         if (tagged) policy.exit_state = policy.tag_exit;
+        if (tagged && band->tag_pan < 0)
+            policy.exit_state = transition_mirror(policy.exit_state);
         policy.duration = tagged ? policy.tag_duration : policy.exit_duration;
         policy.properties |= widget_transition_properties(policy.exit_state);
         clay_exit_transition((Clay_ElementId){.id = record->id}, transition_config(&policy));
+        /* The surface leaf floats under the client's element, so Clay drops
+         * it when the frame exits instead of cloning it: the pixels ride a
+         * ghost leaf stepped off screen for the slide's duration. */
+        if (tagged && (policy.exit_state & WIDGET_TRANSITION_SLIDE))
+            pan_ghost_add(band, c, m, &policy);
     }
     band->previous_records = old_records;
     band->previous_records_len = old_len;

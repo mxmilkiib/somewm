@@ -36,6 +36,8 @@ Clay_RenderCommandArray clay_render_commands(void);
 
 /* Whether the current context holds a transition that has not settled. */
 bool clay_transitions_active(void);
+/* Debug: append " id.state.elapsed" for each non-IDLE transition. */
+int clay_transitions_report(char *buf, size_t len);
 
 /* The solved tree as Clay holds it after Clay_EndLayout, for the dump:
  * roots in the order of the command array, each root's element index, and
