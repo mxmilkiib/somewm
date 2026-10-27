@@ -93,6 +93,7 @@ struct exit_owner { uint64_t handle; int ref; };
  * nobody else claims once the client is gone. */
 struct pan_ghost {
 	uint64_t handle;
+	int16_t z;
 	int x0, y0, x1, y1, w, h;
 	int64_t start_us, dur_us;
 };
@@ -692,6 +693,10 @@ enum {
 	Z_CLIENT_DESKTOP = -6,
 	Z_DRAWIN_BG = -4,
 	Z_LAYER_BOTTOM = -2,
+	/* A minimized client's slide: below the flow root, so the window tucks
+	 * under the bars and the tiled clients it passes, over the layers and
+	 * wallpaper underneath. */
+	Z_UNDER_FLOW = -1,
 	Z_CLIENT_BELOW = 10,
 	Z_CLIENT_NORMAL = 20,
 	/* A wibox placed by its geometry, neither a bar in flow nor ontop. */
@@ -1450,11 +1455,11 @@ declare_unmanaged_clients(Monitor *m)
  * and how fast it gets there. */
 static void
 pan_ghost_add(struct declare_band *band, Client *c, Monitor *m,
-	const struct widget_transition *policy)
+	const struct widget_transition *policy, int16_t z)
 {
 	struct wlr_box origin = screen_origin(m);
 	struct pan_ghost ghost = {
-		.handle = declare_handle_for(c, DECLARE_KIND_CLIENT),
+		.handle = declare_handle_for(c, DECLARE_KIND_CLIENT), .z = z,
 		.x0 = c->geometry.x - origin.x, .y0 = c->geometry.y - origin.y,
 		.x1 = c->geometry.x - origin.x, .y1 = c->geometry.y - origin.y,
 		.w = c->geometry.width, .h = c->geometry.height,
@@ -1516,7 +1521,7 @@ declare_pan_ghosts(struct declare_band *band, Monitor *m)
 		 * borrowed tree out from under it. */
 		Clay_ElementId id = Clay__HashStringWithOffset(CLAY_STRING("SURFACE"),
 			(uint32_t)ghost->handle, 0);
-		Clay_ElementDeclaration s = leaf_at(client_z(c), x, y,
+		Clay_ElementDeclaration s = leaf_at(ghost->z, x, y,
 			ghost->w, ghost->h);
 		s.floating.attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID;
 		s.floating.parentId = screen_root_id(m).id;
@@ -4646,10 +4651,11 @@ declare_output_frame(struct declare_output *dout, Monitor *m)
         }
         struct widget_transition policy = record->exit_policy;
         bool tagged = c && client_has_surface(c);
+        bool minimizing = false;
         if (tagged) {
             /* A minimize is not a tag switch: an authored minimize exit wins,
              * else it rides the tag word like a hidden client. */
-            bool minimizing = c->minimized && policy.minimize_exit;
+            minimizing = c->minimized && policy.minimize_exit;
             policy.exit_state = minimizing ? policy.minimize_exit : policy.tag_exit;
             policy.duration = minimizing ? policy.minimize_duration : policy.tag_duration;
             if (!minimizing && pan < 0)
@@ -4657,12 +4663,19 @@ declare_output_frame(struct declare_output *dout, Monitor *m)
         }
         if (!tagged) policy.duration = policy.exit_duration;
         policy.properties |= widget_transition_properties(policy.exit_state);
-        clay_exit_transition((Clay_ElementId){.id = record->id}, transition_config(&policy));
+        bool slides = policy.exit_state & WIDGET_TRANSITION_SLIDE;
+        /* A minimize's slide is the ghost alone, run under the flow so the
+         * window tucks under the bar: the kept clone would only paint its
+         * chrome over it. */
+        clay_exit_transition((Clay_ElementId){.id = record->id},
+            minimizing && slides ? (Clay_TransitionElementConfig){0}
+                : transition_config(&policy));
         /* The surface leaf floats under the client's element, so Clay drops
          * it when the frame exits instead of cloning it: the pixels ride a
          * ghost leaf stepped off screen for the slide's duration. */
-        if (tagged && (policy.exit_state & WIDGET_TRANSITION_SLIDE))
-            pan_ghost_add(band, c, m, &policy);
+        if (tagged && slides)
+            pan_ghost_add(band, c, m, &policy,
+                minimizing ? Z_UNDER_FLOW : client_z(c));
     }
     band->previous_records = old_records;
     band->previous_records_len = old_len;

@@ -22,6 +22,18 @@ local function exit_clone_box()
     end
 end
 
+-- A minimize's slide is the ghost leaf alone, run under the flow so the
+-- window tucks under the bar instead of painting chrome over it.
+local function ghost_box()
+    for line in dump():gmatch('[^\n]+') do
+        if line:match('GHOST') then
+            local x, y, w, h = line:match('box (%-?%d+),(%-?%d+) (%d+)x(%d+)')
+            local z = line:match('band (%-?%d+)')
+            if x then return tonumber(x), tonumber(y), tonumber(w), tonumber(h), tonumber(z) end
+        end
+    end
+end
+
 local function client_box()
     for line in dump():gmatch('[^\n]+') do
         if line:match('^%s*CLIENT ') then
@@ -50,10 +62,11 @@ runner.run_async(function()
 
     c.minimized = true
     async.sleep(.15)
-    local ex, ey = exit_clone_box()
-    assert(ex and ey, 'minimize left no exit clone: ' .. dump())
-    assert(ey < ay, 'minimize exit did not slide up (y ' .. ey .. ' not < ' .. ay .. '): ' .. dump())
-    assert(math.abs(ex - ax) < 4, 'minimize exit slid sideways (x ' .. ex .. ' vs ' .. ax .. '): ' .. dump())
+    local gx, gy, gw, gh, gz = ghost_box()
+    assert(gx and gy, 'minimize left no ghost: ' .. dump())
+    assert(gy < ay, 'minimize ghost did not slide up (y ' .. gy .. ' not < ' .. ay .. '): ' .. dump())
+    assert(math.abs(gx - ax) < 4, 'minimize ghost slid sideways (x ' .. gx .. ' vs ' .. ax .. '): ' .. dump())
+    assert(gz and gz < 0, 'minimize ghost not under the flow (band ' .. tostring(gz) .. '): ' .. dump())
     async.sleep(1)
 
     -- Without animation_minimize a minimize still rides the tag exit: left.
