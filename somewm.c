@@ -25,6 +25,7 @@
 #include <wlr/render/allocator.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_alpha_modifier_v1.h>
+#include <wlr/types/wlr_color_management_v1.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_cursor_shape_v1.h>
@@ -865,6 +866,33 @@ setup(void)
 	wl_signal_add(&activation->events.request_activate, &request_activate);
 
 	wlr_scene_set_gamma_control_manager_v1(scene, wlr_gamma_control_manager_v1_create(dpy));
+
+	/* The Colour Manager advertises the Transfer Functions and Primaries
+	 * the Renderer can ingest; gles2 gets the implicit sRGB Baseline,
+	 * vulkan additionally BT.2020, PQ and Friends. The Scene wires each
+	 * Surface's Image Description into its Buffers for Composition. */
+	{
+		static const enum wp_color_manager_v1_render_intent intents[] = {
+			WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL,
+		};
+		size_t tf_len = 0, primaries_len = 0;
+		enum wp_color_manager_v1_transfer_function *tfs =
+			wlr_color_manager_v1_transfer_function_list_from_renderer(drw, &tf_len);
+		enum wp_color_manager_v1_primaries *primaries =
+			wlr_color_manager_v1_primaries_list_from_renderer(drw, &primaries_len);
+		struct wlr_color_manager_v1_options cm_options = {
+			.render_intents = intents,
+			.render_intents_len = 1,
+			.transfer_functions = tfs,
+			.transfer_functions_len = tf_len,
+			.primaries = primaries,
+			.primaries_len = primaries_len,
+		};
+		wlr_scene_set_color_manager_v1(scene,
+			wlr_color_manager_v1_create(dpy, 2, &cm_options));
+		free(tfs);
+		free(primaries);
+	}
 
 	power_mgr = wlr_output_power_manager_v1_create(dpy);
 	wl_signal_add(&power_mgr->events.set_mode, &output_power_mgr_set_mode);
