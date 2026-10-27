@@ -146,9 +146,10 @@ configs that avoid the removals and the Changed cases below run unchanged.
   overflow its parent. An imagebox forced on one axis scales its image to that
   axis.
 - Hotkeys help and menubar scroll instead of paging; every key and item stays
-  reachable. Hotkeys: one column per group, continued every
-  `beautiful.hotkeys_rows` rows (new theme value, default 20); PgDn/PgUp scroll
-  by one viewport; the "PgDn - Next Page"/"PgUp - Prev Page" labels are gone.
+  reachable. Hotkeys: groups pack into columns that fill the popup height as
+  upstream does; `beautiful.hotkeys_rows` (new theme value, unset by default)
+  caps a column's rows. PgDn/PgUp scroll by one viewport; the
+  "PgDn - Next Page"/"PgUp - Prev Page" labels are gone.
   Menubar: `left_label`/`right_label` show while items lie beyond that side. A
   bordered popup whose content is larger than its slot keeps its slot geometry;
   the content is clipped as it was already drawn.
