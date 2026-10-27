@@ -11,7 +11,7 @@
  * (at your option) any later version.
  */
 
-#define _GNU_SOURCE /* close_range, execvpe, environ, pipe2 */
+#define _GNU_SOURCE /* close_range, execvpe, environ, pipe2, POSIX_SPAWN_* extensions */
 
 #include "objects/spawn.h"
 #include "protocols.h"
@@ -21,6 +21,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <spawn.h>
 #include <stdbool.h>
 #include <sys/resource.h>
 #include <sys/types.h>
@@ -201,26 +202,33 @@ spawn_child_exited(pid_t pid, int status)
 	luaL_unref(L, LUA_REGISTRYINDEX, exit_callback);
 }
 
-/* glib < 2.74 lacks these flags; the Lua args ignore them there too. */
-#ifndef G_SPAWN_STDIN_FROM_DEV_NULL
+/* GSpawnFlags is an enum, invisible to the preprocessor: an #ifndef
+ * guard on a member is always true, so only a version check can tell
+ * genuinely old glib. glib 2.74 added the stdin flag; the other two are
+ * ancient. */
+#if !GLIB_CHECK_VERSION(2, 74, 0)
 #define G_SPAWN_STDIN_FROM_DEV_NULL 0
 #endif
-#ifndef G_SPAWN_STDOUT_TO_DEV_NULL
-#define G_SPAWN_STDOUT_TO_DEV_NULL 0
-#endif
-#ifndef G_SPAWN_STDERR_TO_DEV_NULL
-#define G_SPAWN_STDERR_TO_DEV_NULL 0
-#endif
 
-/* Spawn without GLib's wait-for-exec.
+/* Spawn without copying the page tables.
  *
  * g_spawn_async_with_pipes forked, then blocked the main loop on a pipe
  * until the child had closed its inherited descriptors and exec'd — ~70ms a
  * call on a multi-GB compositor under load, which widget polls on timers
  * stacked into whole-loop stalls (and a stalled loop is a stalled cursor,
- * the pointer leaf only repaints per frame). Here fork returns at once and
- * the child does its own descriptor cleanup and exec; a missing program is
- * still the same synchronous "Failed to execute" error, resolved up front.
+ * the pointer leaf only repaints per frame). A plain fork() is no cheaper
+ * at compositor sizes: it still clones megabytes of page tables before the
+ * child can exec (~250ms once RSS reached 11GB).
+ *
+ * posix_spawn_file_actions_addclosefrom_np (glibc 2.34) lets the spawn
+ * run under clone(CLONE_VM|CLONE_VFORK) — no page-table copy, and the
+ * child's exec error comes back to the caller instead of an invisible
+ * 127. The file actions replay what the old fork child did, in the same
+ * order: pipe dup2s, /dev/null overrides, then closefrom drops every
+ * descriptor above stderr (wayland sockets, dmabufs, the pipes' other
+ * ends) before glibc's spawn child setsid()s and runs execvpe (its
+ * ENOEXEC /bin/sh fallback included). Where the extension is missing the
+ * fork path below does the same child setup at the old price.
  *
  * The child gets the caller's envp or the compositor's environ, plus
  * XDG_ACTIVATION_TOKEN when startup notification asked for one (the env
@@ -235,7 +243,7 @@ spawn_exec(char **argv, char **envp, GSpawnFlags flags, const char *token,
 		err_pipe[2] = { -1, -1 };
 	char **base;
 	size_t n = 0;
-	pid_t pid;
+	pid_t pid = -1;
 
 	resolved = g_find_program_in_path(argv[0]);
 	if (!resolved) {
@@ -267,6 +275,79 @@ spawn_exec(char **argv, char **envp, GSpawnFlags flags, const char *token,
 		goto fail;
 	}
 
+#if defined(__GLIBC__) && __GLIBC_PREREQ(2, 34)
+	{
+		posix_spawn_file_actions_t fa;
+		posix_spawnattr_t attr;
+		int devnull_fd = -1, r;
+		int fa_ok = posix_spawn_file_actions_init(&fa) == 0;
+		int attr_ok = fa_ok && posix_spawnattr_init(&attr) == 0;
+
+		r = attr_ok ? 0 : ENOMEM;
+		if (!r)
+			r = posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID
+#ifdef POSIX_SPAWN_USEVFORK
+				| POSIX_SPAWN_USEVFORK
+#endif
+				);
+		/* Same order as the old fork child: pipe dup2s, then devnull
+		 * overrides for whichever stream asked, and the closefrom last
+		 * so every action still sees its sources. The opened fd sits
+		 * above every pipe end so no action can clobber it; closefrom
+		 * reaps it with the rest. */
+		if (!r && in_pipe[0] >= 0)
+			r = posix_spawn_file_actions_adddup2(&fa, in_pipe[0],
+				STDIN_FILENO);
+		if (!r && out_pipe[1] >= 0)
+			r = posix_spawn_file_actions_adddup2(&fa, out_pipe[1],
+				STDOUT_FILENO);
+		if (!r && err_pipe[1] >= 0)
+			r = posix_spawn_file_actions_adddup2(&fa, err_pipe[1],
+				STDERR_FILENO);
+		if (!r && (flags & (G_SPAWN_STDIN_FROM_DEV_NULL
+				| G_SPAWN_STDOUT_TO_DEV_NULL
+				| G_SPAWN_STDERR_TO_DEV_NULL))) {
+			for (int i = 0; i < 2; i++) {
+				if (in_pipe[i] > devnull_fd) devnull_fd = in_pipe[i];
+				if (out_pipe[i] > devnull_fd) devnull_fd = out_pipe[i];
+				if (err_pipe[i] > devnull_fd) devnull_fd = err_pipe[i];
+			}
+			devnull_fd++;
+			r = posix_spawn_file_actions_addopen(&fa, devnull_fd,
+				"/dev/null", O_RDWR, 0);
+		}
+		if (!r && (flags & G_SPAWN_STDIN_FROM_DEV_NULL))
+			r = posix_spawn_file_actions_adddup2(&fa, devnull_fd,
+				STDIN_FILENO);
+		if (!r && (flags & G_SPAWN_STDOUT_TO_DEV_NULL))
+			r = posix_spawn_file_actions_adddup2(&fa, devnull_fd,
+				STDOUT_FILENO);
+		if (!r && (flags & G_SPAWN_STDERR_TO_DEV_NULL))
+			r = posix_spawn_file_actions_adddup2(&fa, devnull_fd,
+				STDERR_FILENO);
+		if (!r)
+			r = posix_spawn_file_actions_addclosefrom_np(&fa,
+				STDERR_FILENO + 1);
+
+		if (!r)
+			r = posix_spawn(&pid, resolved, &fa, &attr, argv, exec_env);
+
+		if (attr_ok)
+			posix_spawnattr_destroy(&attr);
+		if (fa_ok)
+			posix_spawn_file_actions_destroy(&fa);
+
+		if (r) {
+			pid = -1;
+			g_set_error(error, G_SPAWN_ERROR, 0,
+				"Failed to execute child process “%s” (%s)",
+				argv[0], g_strerror(r));
+			goto fail;
+		}
+	}
+#else
+	/* No addclosefrom_np (pre-2.34 glibc, musl): the same child setup by
+	 * hand, at the cost of the page-table copy. */
 	pid = fork();
 	if (pid < 0) {
 		int errsv = errno;
@@ -312,6 +393,7 @@ spawn_exec(char **argv, char **envp, GSpawnFlags flags, const char *token,
 		 * shell-style 127 on the exit callback. */
 		_exit(127);
 	}
+#endif
 
 	/* The parent keeps its ends; the child's die with the copy. */
 	if (in_pipe[0] >= 0) {
