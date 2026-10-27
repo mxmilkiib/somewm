@@ -4848,10 +4848,12 @@ declare_output_frame(struct declare_output *dout, Monitor *m)
 	in_pass = false;
 	/* A transition that has not settled needs the next frame to advance
 	 * it, and one more to settle on; when every record is idle the output
-	 * stays clean. */
+	 * stays clean. Ghost leaves step themselves, not through a transition:
+	 * alive ones need frames as badly, and an output that stops here can
+	 * never give them the frame they expire on. */
 	Clay_SetCurrentContext(band->clay);
 	bool transitioning = clay_transitions_active();
-	if (transitioning || band->transitioning)
+	if (transitioning || band->transitioning || band->pan_ghosts_len)
 		declare_output_mark_dirty(dout);
 	band->transitioning = transitioning;
 	if (insp_closed)
