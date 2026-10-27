@@ -131,9 +131,24 @@ commitlayersurfacenotify(struct wl_listener *listener, void *data)
 	int was_mapped;
 
 	if (l->layer_surface->initial_commit) {
+		struct wlr_layer_surface_v1_state old_state;
+		struct wlr_box usable_area;
+
 		client_set_scale(layer_surface->surface, l->mon->wlr_output->scale);
+		/* The first configure must go out now, not on the next frame's
+		 * declare pass: until it lands, a client that commits a buffer is
+		 * protocol-killed ("layer_surface has never been configured"), and
+		 * one that draws early (rofi) builds a zero-size pool and crashes.
+		 * Configure with the monitor's area like arrangelayers did; the
+		 * solver re-configures with the solved size on the next frame. */
+		old_state = layer_surface->current;
+		layer_surface->current = layer_surface->pending;
+		usable_area = l->mon->m;
+		wlr_scene_layer_surface_v1_configure(l->scene_layer,
+				&l->mon->m, &usable_area);
+		layer_surface->current = old_state;
 		/* Initialized now: the next frame declares the surface and its
-		 * first configure carries the size the tree solved. */
+		 * following configures carry the size the tree solved. */
 		if (l->mon->declare)
 			declare_output_mark_dirty(l->mon->declare);
 		return;
