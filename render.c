@@ -3291,9 +3291,11 @@ int render_reconcile(struct render_state *rs, Clay_RenderCommandArray commands,
 				continue;
 			struct wl_list *prev = below ? &below->link : &rs->tree->children;
 			if (placed_below(rs, n->node) != prev) {
-				if (below)
+				/* Node == sibling aborts inside wlroots: a duplicated
+				 * order key resolves to the same scene node. */
+				if (below && n->node != below)
 					wlr_scene_node_place_above(n->node, below);
-				else
+				else if (!below)
 					wlr_scene_node_lower_to_bottom(n->node);
 				muts++;
 			}
