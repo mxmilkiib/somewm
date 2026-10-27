@@ -3204,7 +3204,7 @@ output_wallpaper_fill(Monitor *m, Clay_ElementId id, Clay_ElementDeclaration *o)
 	unsigned desktops = 0;
 	foreach(item, globalconf.drawins) {
 		drawin_t *d = *item;
-		if (!screen_hosted(d->screen, m))
+		if (!screen_hosted(drawin_effective_screen(d), m))
 			continue;
 		d->widgets.output_fill = false;
 		if (!screen_subtrees && declarable_drawin(d) && d->type == WINDOW_TYPE_DESKTOP) {
@@ -3626,9 +3626,9 @@ declare_lock_section(Monitor *m)
 		Clay__HashStringWithOffset(CLAY_STRING("LOCK"), 0, 0), &backdrop);
 
 	for (int i = 0; i < cover_count; i++)
-		if (covers[i] && screen_hosted(covers[i]->screen, m) && declarable_drawin(covers[i]))
+		if (covers[i] && screen_hosted(drawin_effective_screen(covers[i]), m) && declarable_drawin(covers[i]))
 			declare_drawin(covers[i], m, Z_LOCK_COVER);
-	if (lock_surface && screen_hosted(lock_surface->screen, m) && declarable_drawin(lock_surface))
+	if (lock_surface && screen_hosted(drawin_effective_screen(lock_surface), m) && declarable_drawin(lock_surface))
 		declare_drawin(lock_surface, m, Z_LOCK_SURFACE);
 	/* An ext-session-lock client's surface for this output: a borrowed
 	 * surface leaf filling the output, which the protocol configured to
@@ -3655,7 +3655,7 @@ static bool clips_prepare(Monitor *m)
     size_t scrolls = 0;
     foreach(item, globalconf.drawins) {
         drawin_t *d = *item;
-        if (screen_hosted(d->screen, m)) scrolls += d->widgets.scrolls;
+        if (screen_hosted(drawin_effective_screen(d), m)) scrolls += d->widgets.scrolls;
     }
     foreach(item, globalconf.clients) {
         Client *c = *item;
