@@ -172,6 +172,8 @@ struct widget_node {
 	 * its scroll record back right after configuring it, so it spends none
 	 * of the 100. Same axis values as scroll. */
 	uint8_t cut;
+	uint8_t basis;       /* axes (bit 0 x, bit 1 y) it starts from its
+	                      * minimum along its parent's flow (Clay flexBasis) */
 	bool track, thumb;
 	/* The child offset this scroll node last declared; written only where
 	 * declare.c declares it, so a moved record publishes the tree. */
