@@ -139,7 +139,7 @@ dependency('pixman-1', version: '>=0.46.0', fallback: 'pixman',
 
 # Backends are named, not auto: auto drops one whose library is missing or too old (DRM
 # without libdisplay-info 0.2) and the build succeeds without it.
-wlroots_options = ['default_library=static', 'renderers=gles2', 'examples=false',
+wlroots_options = ['default_library=static', 'renderers=gles2,vulkan', 'examples=false',
                    'backends=drm,libinput,x11', 'xwayland=enabled']
 wlroots = subproject('wlroots', default_options: wlroots_options).get_variable('wlroots')
 
