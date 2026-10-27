@@ -578,7 +578,6 @@ function widget.new(args)
             end
         end
         if not changed then return end
-        self._awful_key_inputs = inputs
         self._cached_awful_keys = {}
         self._group_list = {}
         for group in pairs(self._additional_hotkeys) do self._group_list[group] = true end
@@ -592,6 +591,9 @@ function widget.new(args)
         if self.merge_duplicates then
             self:_abbreviate_awful_keys()
         end
+        -- committing the inputs only after the import completes lets a failed
+        -- import retry next call instead of freezing the partial cache in place
+        self._awful_key_inputs = inputs
     end
 
 
