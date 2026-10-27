@@ -918,6 +918,11 @@ motionnotify(uint32_t time, struct wlr_input_device *device, double dx, double d
         lua_pushnumber(L, cursor->x);
         lua_pushnumber(L, cursor->y);
         luaA_signal_emit(L, "_accessibility::motion", 2);
+        /* pointer::motion is the public alias consumers (e.g. external
+         * shake detectors) connect to; same payload, same cadence. */
+        lua_pushnumber(L, cursor->x);
+        lua_pushnumber(L, cursor->y);
+        luaA_signal_emit(L, "pointer::motion", 2);
     }
 
 	/* If drag source became invalid, clear it. */
