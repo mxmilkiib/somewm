@@ -9,6 +9,7 @@
 #include "clay.h"
 
 #include "clay_impl.h"
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -330,4 +331,30 @@ clay_transitions_active(void)
 				!= CLAY_TRANSITION_STATE_IDLE)
 			return true;
 	return false;
+}
+
+/* Debug: append " id.state.elapsed" for each non-IDLE transition to buf.
+ * The id matches the element id in the tree dump, so a wedged entry can be
+ * named. Returns the count of non-IDLE entries seen (more than were
+ * written if buf filled). */
+int
+clay_transitions_report(char *buf, size_t len)
+{
+	Clay_Context *context = Clay_GetCurrentContext();
+	size_t off = 0;
+	int n = 0;
+
+	if (len)
+		buf[0] = 0;
+	for (int32_t i = 0; i < context->transitionDatas.length; i++) {
+		Clay__TransitionDataInternal *d =
+			Clay__TransitionDataInternalArray_Get(&context->transitionDatas, i);
+		if (d->state == CLAY_TRANSITION_STATE_IDLE)
+			continue;
+		n++;
+		if (off + 32 < len)
+			off += snprintf(buf + off, len - off, " %x.s%d.e%.1f",
+				d->elementId, d->state, d->elapsedTime);
+	}
+	return n;
 }

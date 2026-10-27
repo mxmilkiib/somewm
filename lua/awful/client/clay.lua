@@ -270,7 +270,18 @@ if capi.client.connect_signal then
     capi.client.connect_signal("request::manage", function(c) previous[c] = nil end)
 end
 if tag and tag.connect_signal then
-    tag.connect_signal("property::selected", function()
+    local tag_index = setmetatable({}, {__mode = "k"})
+    tag.connect_signal("property::selected", function(t)
+        local s = t.screen
+        if s and t.selected then
+            local before = tag_index[s]
+            tag_index[s] = t.index
+            if before and t.index ~= before then
+                local direction = t.index > before and 1 or -1
+                animation.set_tag_pan(s, direction)
+                awesome._clay_tag_pan(s, direction)
+            end
+        end
         for c, state in pairs(previous) do
             if c.valid and not c:isvisible() then state.hidden = true end
         end
