@@ -176,21 +176,27 @@ end)
 
 -- The widgets of a converted tree under a point, outermost first: Clay's
 -- pointer query against the output's last solve (drawable:_clay_hits), each
--- node named by its preorder index.
+-- node named by its preorder index. Clay's containment is closed-edge while
+-- the scene's render_hit is half-open, so a point on a shared sibling edge
+-- answers both boxes; the solved box's half-open test gives it to the later
+-- one, the way render_hit picks.
 local function find_clay_widgets(self, result, x, y)
     for _, i in ipairs(self.drawable:_clay_hits(x, y)) do
         local node = self._clay_index[i]
         local box = node.box
 
-        for _, binding in wclay.bindings(node) do
-            table.insert(result, {
-                x = box.x, y = box.y, width = box.width, height = box.height,
-                widget_width = box.width,
-                widget_height = box.height,
-                drawable = self,
-                widget = binding.widget,
-                occurrence = binding.id,
-            })
+        if box and x >= box.x and y >= box.y
+            and x < box.x + box.width and y < box.y + box.height then
+            for _, binding in wclay.bindings(node) do
+                table.insert(result, {
+                    x = box.x, y = box.y, width = box.width, height = box.height,
+                    widget_width = box.width,
+                    widget_height = box.height,
+                    drawable = self,
+                    widget = binding.widget,
+                    occurrence = binding.id,
+                })
+            end
         end
     end
 end
