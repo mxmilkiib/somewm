@@ -1052,6 +1052,23 @@ static bool widget_writable(struct widget_tree *d)
     return true;
 }
 
+bool
+widget_nodes_paint_border(struct widget_tree *d, uint64_t client, const float rgba[4])
+{
+	bool found = false;
+
+	for (size_t i = 0; i < d->nodes_len && !found; i++)
+		found = d->nodes[i].client == client && (d->nodes[i].bw[0] | d->nodes[i].bw[1]
+			| d->nodes[i].bw[2] | d->nodes[i].bw[3]);
+	if (!found || !widget_writable(d))
+		return false;
+	for (size_t i = 0; i < d->nodes_len; i++)
+		if (d->nodes[i].client == client && (d->nodes[i].bw[0] | d->nodes[i].bw[1]
+				| d->nodes[i].bw[2] | d->nodes[i].bw[3]))
+			memcpy(d->nodes[i].border, rgba, sizeof(d->nodes[i].border));
+	return true;
+}
+
 void
 widget_nodes_clear(struct widget_tree *d)
 {

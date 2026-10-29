@@ -468,12 +468,17 @@ for _, signal in ipairs{"property::_x11_configure", "property::size_hints_honor"
         "property::maximized", "property::maximized_horizontal", "property::maximized_vertical",
         "property::border_width", "property::hidden", "property::floating",
         -- What the client composite reads (awful.client.clay).
-        "property::animation", "property::border_color", "property::opacity", "property::shadow", "property::shape",
+        "property::animation", "property::opacity", "property::shadow", "property::shape",
         "property::size_hints", "property::urgent", "property::titlebar_top",
         "property::titlebar_right", "property::titlebar_bottom", "property::titlebar_left",
         "property::_committed_size", "focus", "unfocus"} do
     capi.client.connect_signal(signal, arrange_prop)
 end
+-- A colour moves nothing: the stored node takes it, and only a client the
+-- tree has no bordered node for is described again.
+capi.client.connect_signal("property::border_color", function(c)
+    if not c:_paint_border() then arrange_prop(c) end
+end)
 -- An authored move of a floating client describes it again; a tiled
 -- client's geometry that the solve published skips.
 capi.client.connect_signal("property::geometry", function(c)

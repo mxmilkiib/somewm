@@ -270,6 +270,9 @@ bool widget_read_transition(lua_State *L, int idx, struct widget_transition *tra
  * NONE, MALFORMED and OVER_BUDGET show nothing. */
 bool widget_nodes_set(lua_State *L, struct widget_tree *d, Monitor *m, int idx);
 void widget_nodes_clear(struct widget_tree *d);
+/* Write the colour into the bordered nodes of a client composite, which keep
+ * the width they were described with. False when none is stored. */
+bool widget_nodes_paint_border(struct widget_tree *d, uint64_t client, const float rgba[4]);
 /* Retain immutable payloads and a separate solved ID mapping until release. */
 struct widget_tree *widget_tree_hold(struct widget_tree *d);
 void widget_tree_release(struct widget_tree *d);
