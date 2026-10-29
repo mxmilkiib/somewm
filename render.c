@@ -2541,7 +2541,11 @@ static int reconcile_surface(struct render_state *rs, struct rnode *n,
 	}
 
 	int muts = 0;
-	float opacity = command_opacity(rs, cmd);
+	/* A fade carrier owns the frame's commands; a pure fade carries no
+	 * presentation, so the borrowed surface would pop while the chrome
+	 * faded. Take the owner's fade pose here. */
+	float opacity = command_opacity(rs, cmd)
+		* render_owner_presentation(rs, handle).fade;
 	bool first_borrow = n->node == NULL;
 	bool surface_changed = first_borrow;
 	if (first_borrow) {
@@ -3290,7 +3294,9 @@ int render_reconcile(struct render_state *rs, Clay_RenderCommandArray commands,
 			if (n->node == NULL)
 				continue;
 			struct wl_list *prev = below ? &below->link : &rs->tree->children;
-			if (placed_below(rs, n->node) != prev) {
+			/* node == sibling aborts inside wlroots; a duplicated command
+			 * key resolves to the same node twice in one order. */
+			if (n->node != below && placed_below(rs, n->node) != prev) {
 				if (below)
 					wlr_scene_node_place_above(n->node, below);
 				else

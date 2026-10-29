@@ -1460,6 +1460,22 @@ luaA_awesome_clay_tree(lua_State *L)
 	return 1;
 }
 
+/** Record a tag switch's direction on the screen's band: a negative
+ * direction mirrors the slide in the client tag exits the switch resolves.
+ * Called at selection time, before the switch's first declare.
+ * \tparam screen screen The screen whose tag selection changed.
+ * \tparam integer direction 1 forward, -1 backward.
+ */
+static int
+luaA_awesome_clay_tag_pan(lua_State *L)
+{
+	screen_t *s = luaA_checkscreen(L, 1);
+	int direction = luaL_checkinteger(L, 2);
+	if (s->monitor && s->monitor->declare)
+		declare_tag_pan(s->monitor->declare, direction);
+	return 0;
+}
+
 static int
 luaA_awesome_clay_scroll_get(lua_State *L)
 {
@@ -2347,6 +2363,7 @@ const luaL_Reg awesome_methods[] = {
 	{ "_test_redeclare", luaA_awesome_test_redeclare },
 	{ "_clay_dirty", luaA_awesome_clay_dirty },
 	{ "_clay_tree", luaA_awesome_clay_tree },
+	{ "_clay_tag_pan", luaA_awesome_clay_tag_pan },
 	{ "_clay_scroll_get", luaA_awesome_clay_scroll_get },
 	{ "_clay_scroll_set", luaA_awesome_clay_scroll_set },
 	{ "_clay_font", luaA_awesome_clay_font },

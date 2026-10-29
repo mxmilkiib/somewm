@@ -1,5 +1,6 @@
 #include "drawin.h"
 #include "drawable.h"
+#include "client.h"
 #include "screen.h"
 #include "signal.h"
 #include "button.h"
@@ -9,6 +10,7 @@
 #include "common/luaobject.h"
 #include "../somewm_api.h"
 #include "../stack.h"
+#include "../event_queue.h"
 #include "common/util.h"
 #include "../globalconf.h"
 #include "../shadow.h"
@@ -52,6 +54,27 @@ drawin_update_drawing(lua_State *L, int widx)
 	lua_pop(L, 1);
 }
 
+/** The screen an attachment drawin declares on. A widget attachment belongs
+ * to its host's screen: the drawin's own position-derived screen is stale
+ * whenever the solver never placed it at its authored coordinates, which is
+ * every popup parked by an unresolved attachment. */
+screen_t *
+drawin_effective_screen(drawin_t *d)
+{
+	if (d->attachment.host) {
+		drawin_t *host = declare_handle_get(
+			((uint64_t)DECLARE_KIND_DRAWIN << 32) | d->attachment.host, NULL);
+		if (host && host->screen)
+			return host->screen;
+		drawable_t *titlebar = declare_handle_get(
+			((uint64_t)DECLARE_KIND_TITLEBAR << 32) | d->attachment.host, NULL);
+		if (titlebar && titlebar->owner_type == DRAWABLE_OWNER_CLIENT
+				&& titlebar->owner.client && titlebar->owner.client->screen)
+			return titlebar->owner.client->screen;
+	}
+	return d->screen;
+}
+
 /** Refresh callback for drawable - called when drawable content should be displayed
  * This updates the scene graph buffer with new Cairo-rendered content
  */
@@ -59,7 +82,7 @@ drawin_update_drawing(lua_State *L, int widx)
 void
 drawin_mark_dirty(drawin_t *drawin)
 {
-	Monitor *m = luaA_monitor_get_by_screen(globalconf_get_lua_State(), drawin->screen);
+	Monitor *m = luaA_monitor_get_by_screen(globalconf_get_lua_State(), drawin_effective_screen(drawin));
 	if (m && m->declare)
 		declare_output_mark_dirty(m->declare);
 }
@@ -67,7 +90,7 @@ drawin_mark_dirty(drawin_t *drawin)
 bool
 drawin_widget_host(drawin_t *d, struct widget_host *out)
 {
-	Monitor *m = luaA_monitor_get_by_screen(globalconf_get_lua_State(), d->screen);
+	Monitor *m = luaA_monitor_get_by_screen(globalconf_get_lua_State(), drawin_effective_screen(d));
 	if (!m)
 		return false;
 
@@ -810,6 +833,15 @@ drawin_moveresize(lua_State *L, int udx, int x, int y, int width, int height, bo
 		drawin->height = height;
 	drawin->geometry_dirty = true;
 
+	/* An animated attachment can pass through a neighboring output. Keep
+	 * its declaring screen until an authored geometry change moves it.
+	 * Assigned before the drawable block so a repaint the property::surface
+	 * signal triggers reads the new screen's scale. */
+	if ((!solved || !drawin->animation.enabled)
+			&& (old_x != drawin->x || old_y != drawin->y)) {
+		drawin_assign_screen(L, drawin, udx);
+	}
+
 	/* Authored sizes invalidate the drawable; solved sizes only publish. */
 	if (drawin->drawable) {
 		drawable_t *d = drawin->drawable;
@@ -839,13 +871,6 @@ drawin_moveresize(lua_State *L, int udx, int x, int y, int width, int height, bo
 		luaA_object_emit_signal(L, udx, "property::width", 0);
 	if (old_height != drawin->height)
 		luaA_object_emit_signal(L, udx, "property::height", 0);
-
-    /* An animated attachment can pass through a neighboring output. Keep
-     * its declaring screen until an authored geometry change moves it. */
-    if ((!solved || !drawin->animation.enabled)
-            && (old_x != drawin->x || old_y != drawin->y)) {
-        drawin_assign_screen(L, drawin, udx);
-    }
 
 	/* Size change requires border entry refresh */
 	if (old_width != drawin->width || old_height != drawin->height)
@@ -930,6 +955,20 @@ drawin_set_visible(lua_State *L, int udx, bool v)
 		if (drawin->drawable)
 			drawin_update_drawing(L, udx);
 	} else {
+		/* mouse_under holds a raw drawin_t*; leaving it pointing at an
+		 * unregistered drawin makes the next motion event emit mouse::leave
+		 * on a stale object (and dangles entirely once the drawin is GC'd).
+		 * Emit leave while the drawin is still registered, then clear -
+		 * mirrors the client_unmanage() guard for UNDER_CLIENT. */
+		if (globalconf.mouse_under.type == UNDER_DRAWIN &&
+		    globalconf.mouse_under.ptr.drawin == drawin) {
+			luaA_object_push(L, drawin);
+			some_event_queue_signal0(L, -1, SIG_MOUSE_LEAVE);
+			lua_pop(L, 1);
+			globalconf.mouse_under.type = UNDER_NONE;
+			globalconf.mouse_under.ptr.drawin = NULL;
+		}
+
 		/* Unregister from object registry (AwesomeWM drawin.c:402) */
 		luaA_object_unref(L, drawin);
 
@@ -1039,6 +1078,14 @@ luaA_drawin_gc(lua_State *L)
 	drawin_t *drawin = luaA_todrawin(L, 1);
 
 	if (drawin) {
+		/* Drop the raw mouse-tracking pointer - the drawin is being
+		 * collected, so anything still pointing at it would dangle. */
+		if (globalconf.mouse_under.type == UNDER_DRAWIN &&
+		    globalconf.mouse_under.ptr.drawin == drawin) {
+			globalconf.mouse_under.type = UNDER_NONE;
+			globalconf.mouse_under.ptr.drawin = NULL;
+		}
+
 		/* Clean up signals */
 		signal_array_wipe(&drawin->signals);
 

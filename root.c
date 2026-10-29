@@ -631,9 +631,12 @@ luaA_root_cursor(lua_State *L)
 	}
 	free(selected_root_cursor);
 	selected_root_cursor = strdup(cursor_name);
-	struct wlr_surface *surface = NULL;
-    xytonode(cursor->x, cursor->y, &surface, NULL, NULL, NULL, NULL, NULL, NULL);
-    if (!surface) {
+	/* Update the displayed cursor unless a client is focused AND the pointer
+	 * is over it (in which case the client owns the cursor image). The prior
+	 * guard checked only global focus, which left the cursor stuck on a stale
+	 * "watch" on an output with no focused client — e.g. the internal screen
+	 * after a reload — until pointer motion triggered the motion handler. */
+	if(some_get_focused_client() == NULL || some_object_under_cursor() == NULL) {
 		cursor_set_xcursor(cursor_name);
 	}
 	return 0;
@@ -656,6 +659,31 @@ luaA_root_cursor_magnify(lua_State *L)
     }
     lua_pushnumber(L, declare_cursor_magnification());
     return 1;
+}
+
+/** root.cursor_scale([scale]) - Get or set the cursor magnification scale.
+ * Called with no arguments, returns the current scale (1.0 = normal size).
+ * Called with a scale >= 1.0, magnifies the cursor by that factor instantly.
+ * Pass 1.0 to restore the normal cursor. For animated transitions see
+ * root._cursor_magnify() (awful.accessibility).
+ * \param scale (optional) Magnification factor (>= 1.0)
+ * \return Current scale if called as getter
+ */
+static int
+luaA_root_cursor_scale(lua_State *L)
+{
+	if (lua_gettop(L) >= 1) {
+		double scale = luaL_checknumber(L, 1);
+		luaL_argcheck(L, isfinite(scale) && scale >= 1 && scale <= 16, 1,
+			"scale must be finite and between 1 and 16");
+		/* Same ownership rule as _cursor_magnify: a client owns its
+		 * uploaded cursor, including a hidden cursor. */
+		if (!cursor_image.name) scale = 1;
+		declare_cursor_magnify(scale, 0);
+		return 0;
+	}
+	lua_pushnumber(L, declare_cursor_magnification());
+	return 1;
 }
 
 /** root.cursor_theme([name]) - Get or set cursor theme
@@ -1279,6 +1307,7 @@ const luaL_Reg root_methods[] = {
     { "_cursor_magnify", luaA_root_cursor_magnify },
 	{ "cursor_theme", luaA_root_cursor_theme },
 	{ "cursor_size", luaA_root_cursor_size },
+	{ "cursor_scale", luaA_root_cursor_scale },
 	{ "fake_input", luaA_root_fake_input },
 	{ "fake_drag_start", luaA_root_fake_drag_start },
 	{ "fake_drag_end", luaA_root_fake_drag_end },

@@ -154,18 +154,18 @@ end
 --@DOC_fixed_COMMON@
 
 --- wibox.layout.flex: every child grows along the direction, with
--- `max_widget_size` as the ceiling, and across. Clay grows the smallest
--- children first until they are all equal and then all together
--- (third_party/clay.h:2357-2391), so children of one size get the same share;
--- a child whose content is wider than its share keeps that width and takes
--- it from the others.
+-- `max_widget_size` as the ceiling, and across. Each child starts from its
+-- minimum along the direction (`basis`, a flex basis of zero), so Clay's grow
+-- step (third_party/clay.h:2357-2391) gives them equal shares whatever their
+-- content width; a child whose minimum is above its share keeps the minimum
+-- and takes it from the others.
 local function describe_flex(w)
     local node, along, across, spacing = fixed.describe_linear(w)
     local p = w._private
 
     for _, child in ipairs(p.widgets) do
         clay.linear_spec(node, { widget = child, w = "grow", h = "grow",
-            [along .. "max"] = p.max_widget_size, [along .. "src"] = "user" }, p.spacing_widget, spacing, along, across)
+            basis = along, [along .. "max"] = p.max_widget_size, [along .. "src"] = "user" }, p.spacing_widget, spacing, along, across)
     end
     return node
 end

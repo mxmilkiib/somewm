@@ -17,6 +17,7 @@
 #include <wlr/types/wlr_keyboard_group.h>
 #include <wlr/interfaces/wlr_keyboard.h>
 #include <wlr/types/wlr_cursor.h>
+#include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/xcursor.h>
 #include <wlr/xwayland.h>
@@ -414,12 +415,21 @@ some_update_cursor_theme(const char *theme_name, uint32_t size)
 	cursor_set_xcursor(cursor_name);
 	declare_cursor_changed();
 
+#ifdef XWAYLAND
 	/* Sync XWayland cursor if running */
 	struct wlr_xcursor *xcursor = wlr_xcursor_manager_get_xcursor(cursor_mgr, "default", 1);
 	if (xcursor && xwayland) {
 		wlr_xwayland_set_cursor(xwayland, wlr_xcursor_image_get_buffer(xcursor->images[0]),
 			xcursor->images[0]->hotspot_x, xcursor->images[0]->hotspot_y);
 	}
+#endif
+}
+
+struct wl_list *
+some_get_keyboard_groups(void)
+{
+	/* kb_group is a single KeyboardGroup, not a list, but included for API completeness */
+	return NULL;
 }
 
 /*

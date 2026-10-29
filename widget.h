@@ -104,10 +104,10 @@ struct widget_binding {
  * of zero means the node draws no fill or no ring. */
 struct widget_transition {
     bool enabled;
-    uint16_t enter_state, exit_state, tag_exit;
+    uint16_t enter_state, exit_state, tag_exit, minimize_exit;
     uint8_t exit_order;
     uint16_t properties;
-    float duration, exit_duration, tag_duration;
+    float duration, exit_duration, tag_duration, minimize_duration;
 };
 
 struct widget_node {
@@ -168,6 +168,8 @@ struct widget_node {
 	float aspect;
 	float image_size[2];
 	uint8_t scroll;      /* 0 none, 1 x, 2 y, 3 both */
+	uint8_t basis;       /* axes (bit 0 x, bit 1 y) it starts from its
+	                      * minimum along its parent's flow (Clay flexBasis) */
 	bool track, thumb;
 	/* The child offset this scroll node last declared; written only where
 	 * declare.c declares it, so a moved record publishes the tree. */
@@ -268,6 +270,9 @@ bool widget_read_transition(lua_State *L, int idx, struct widget_transition *tra
  * NONE, MALFORMED and OVER_BUDGET show nothing. */
 bool widget_nodes_set(lua_State *L, struct widget_tree *d, Monitor *m, int idx);
 void widget_nodes_clear(struct widget_tree *d);
+/* Write the colour into the bordered nodes of a client composite, which keep
+ * the width they were described with. False when none is stored. */
+bool widget_nodes_paint_border(struct widget_tree *d, uint64_t client, const float rgba[4]);
 /* Retain immutable payloads and a separate solved ID mapping until release. */
 struct widget_tree *widget_tree_hold(struct widget_tree *d);
 void widget_tree_release(struct widget_tree *d);

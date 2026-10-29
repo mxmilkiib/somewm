@@ -55,7 +55,7 @@ runner.run_async(function()
         assert(not root:find('w=fit>=',1,true),'a column was told a minimum')
         assert(not root:find('derived',1,true))
         local _,margins = root:gsub('wibox%.container%.margin w=fit h=grow row pad %d+,0,0,0','')
-        assert(margins==columns,'one FIT column per five rows: '..margins)
+        assert(margins==columns,'one margin per column: '..margins)
         local counts, boxes = entries(root)
         local count = 0
         for entry,n in pairs(counts) do assert(n==1,'entry repeated: '..entry); count=count+1 end
@@ -66,7 +66,7 @@ runner.run_async(function()
             assert(b[1]>=top and b[1]+b[2]<=top+popup.height,'a record lies outside the popup height')
         end
         local _,markers = root:gsub('▽','')
-        assert(markers==columns-2,'leftover markers: '..markers)
+        assert(markers==columns-1,'leftover markers: '..markers)
         assert(not root:find('Next Page',1,true) and not root:find('Prev Page',1,true))
         assert(popup._drawable._clay_wired[popup.widget:get_children()[1]],'first column lost its input binding')
         assert(#popup:find_widgets(10,10)>0)
@@ -110,7 +110,7 @@ runner.run_async(function()
     assert(popup.width==380 and popup.height==240)
     assert(assert(awesome._clay_tree(s):match('  LAUNCHER [^\n]+'))
         :find('w=fixed(386) theme h=grow<=246 user',1,true))
-    traverse(103,22,'refreshed')
+    traverse(103,21,'refreshed')
     beautiful.launcher_width=nil
     bar:remove()
 

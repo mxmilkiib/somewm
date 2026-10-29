@@ -261,6 +261,7 @@ local function merge_sizing(node, spec, parent_fit)
             if size ~= nil and type(size) ~= "string" then node[src] = spec[src] end
         end
     end
+    if spec.basis then node.basis = spec.basis end
     for _, k in ipairs(floors) do
         if spec[k] and (not node[k] or spec[k] >= node[k]) then
             node[k], node[k:sub(1, 1) .. "src"] = spec[k], spec[k:sub(1, 1) .. "src"]
@@ -841,6 +842,7 @@ local function transformed(node, word, container)
             end
             if n.aspect then c.aspect = 1 / n.aspect end
             c.dir = n.dir == "y" and "x" or "y"
+            if n.basis then c.basis = n.basis == "w" and "h" or "w" end
         end
         for _, key in ipairs { "pad", "bw" } do
             local v, s = n[key], t.sides
@@ -935,7 +937,7 @@ local function compile_specs(st, specs, parent, fg, bound, box, alpha, parent_fi
 end
 
 local spec_keys = { "w", "h", "wmin", "hmin", "wmax", "hmax",
-    "float", "stack", "x", "y", "parent", "own", "passthrough", "_attach" }
+    "float", "stack", "x", "y", "parent", "own", "passthrough", "_attach", "basis" }
 
 local function same_spec(a, b)
     for _, k in ipairs(spec_keys) do
@@ -1002,7 +1004,7 @@ local fold_fields = {}
 for _, key in ipairs {'w','h','wmin','hmin','wmax','hmax','pad','bg','border','bw',
         'radius','dir','gap','align','children','name','widget','identity',
         'occurrence','bindings','spacer','owner','box','wsrc','hsrc','transition',
-        'wgreedy','hgreedy'} do fold_fields[key] = true end
+        'wgreedy','hgreedy','basis'} do fold_fields[key] = true end
 
 -- An opaque rectangular child completely covers a plain background at the
 -- same area. Keeping only that child's paint preserves source-over order,
@@ -1093,6 +1095,7 @@ local function combine(node, opaque_host, host)
     for key, value in pairs(child) do result[key] = value end
     result.transition = node.transition or child.transition
     result.wgreedy, result.hgreedy = node.wgreedy or child.wgreedy, node.hgreedy or child.hgreedy
+    result.basis = node.basis
     if #node.children > 1 then
         result.children = {}
         for _, grandchild in ipairs(child.children or empty_list) do

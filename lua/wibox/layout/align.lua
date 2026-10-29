@@ -229,7 +229,10 @@ local function describe_align(w, _, _, _, offer)
     end
 
     local function slot(widget, sizing)
-        return { widget = widget, [along] = sizing, [across] = "grow" }
+        -- Cap the cross axis at the offer: one oversized child must not
+        -- inflate every slot through minDimensions (clay.h:1951).
+        return { widget = widget, [along] = sizing, [across] = "grow",
+            [across .. "max"] = offer[across .. "decided"] and offer[across] or nil }
     end
 
     local specs = {}
@@ -283,11 +286,13 @@ local function describe_align(w, _, _, _, offer)
     local function half(widget, align)
         local children = { widget and slot(widget, "fit") }
         if not widget or not offer[along .. "decided"] then
-            return { [along] = "grow", [across] = "grow", align = align, children = children }
+            return { [along] = "grow", [across] = "grow", [across .. "max"] = offer[across .. "decided"] and offer[across] or nil,
+                align = align, children = children }
         end
-        return { [along] = "grow", [across] = "grow", clip = true,
+        return { [along] = "grow", [across] = "grow", [across .. "max"] = offer[across .. "decided"] and offer[across] or nil, clip = true,
             children = { { [along] = { percent = 1 }, [along .. "src"] = "user",
-                [across] = "grow", align = align, children = children } } }
+                [across] = "grow", [across .. "max"] = offer[across .. "decided"] and offer[across] or nil,
+                align = align, children = children } } }
     end
     specs[1] = half(p.first, { x = "left", y = "top" })
     specs[2] = slot(p.second, "fit")

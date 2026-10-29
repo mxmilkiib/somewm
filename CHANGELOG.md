@@ -97,8 +97,14 @@ configs that avoid the removals and the Changed cases below run unchanged.
   animation_maximize_duration and animation_floating_duration.
   beautiful.animation_duration supplies the fallback for triggers without
   their own duration, including layout. A focus change eases the border
-  colour. With a tag duration set, a tag switch grows clients in and out
+  colour. With a tag duration set, a tag switch fades clients in and out
   unless c.animation.tag or beautiful.animation_tag names another entrance.
+  A list of two slide words reads as {enter, exit}: {"slide_right",
+  "slide_left"} slides the new tag in from the right while the old tag
+  exits left, so the client layer pans like a desktop switch. Switching to
+  a lower-indexed tag pans the other way.
+  beautiful.animation_minimize and animation_minimize_duration give a
+  minimized client its own exit word; unset, a minimize rides the tag exit.
   A client exit animates its frame only; the surface snaps.
 - `animation = {visible = {duration, enter, exit}}` on wibox and awful.popup,
   with the same entrances. A drawin's exit drops its shadow at once.
@@ -146,9 +152,10 @@ configs that avoid the removals and the Changed cases below run unchanged.
   overflow its parent. An imagebox forced on one axis scales its image to that
   axis.
 - Hotkeys help and menubar scroll instead of paging; every key and item stays
-  reachable. Hotkeys: one column per group, continued every
-  `beautiful.hotkeys_rows` rows (new theme value, default 20); PgDn/PgUp scroll
-  by one viewport; the "PgDn - Next Page"/"PgUp - Prev Page" labels are gone.
+  reachable. Hotkeys: groups pack into columns that fill the popup height as
+  upstream does; `beautiful.hotkeys_rows` (new theme value, unset by default)
+  caps a column's rows. PgDn/PgUp scroll by one viewport; the
+  "PgDn - Next Page"/"PgUp - Prev Page" labels are gone.
   Menubar: `left_label`/`right_label` show while items lie beyond that side. A
   bordered popup whose content is larger than its slot keeps its slot geometry;
   the content is clipped as it was already drawn.

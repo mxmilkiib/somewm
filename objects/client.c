@@ -1546,8 +1546,11 @@ client_xproperty_free(client_xproperty_t *property)
 static void
 client_wipe(client_t *c)
 {
-    if (c->shape_ref)
-        luaL_unref(globalconf_get_lua_State(), LUA_REGISTRYINDEX, c->shape_ref);
+    /* Same lua_close case as drawin_wipe: globalconf.L is already NULL
+     * when teardown GC reaches this. The closing VM frees the registry. */
+    lua_State *L = globalconf_get_lua_State();
+    if (c->shape_ref && L)
+        luaL_unref(L, LUA_REGISTRYINDEX, c->shape_ref);
     while (c->xproperties) {
         client_xproperty_t *property = c->xproperties;
         c->xproperties = property->next;
@@ -4730,6 +4733,33 @@ luaA_client_border_rgba(lua_State *L)
     return 4;
 }
 
+/** client:_paint_border() -> boolean
+ *
+ * Draws the border colour the frame reads (client_border_rgba) from the
+ * screen's stored layout tree, with no describe: a colour moves nothing.
+ * False when the tree holds no bordered node for the client, which a
+ * describe has to give one.
+ */
+static int
+luaA_client_paint_border(lua_State *L)
+{
+    client_t *c = luaA_checkudata(L, 1, &client_class);
+    bool painted = false;
+
+    if (c->scene && c->screen) {
+        float rgba[4];
+
+        client_border_rgba(c, rgba);
+        painted = widget_nodes_paint_border(&c->screen->layout,
+            declare_handle_for(c, DECLARE_KIND_CLIENT), rgba);
+        Monitor *m = painted ? luaA_monitor_get_by_screen(L, c->screen) : NULL;
+        if (m && m->declare)
+            declare_output_mark_dirty(m->declare);
+    }
+    lua_pushboolean(L, painted);
+    return 1;
+}
+
 /** client:_border_is_normal_color() -> boolean
  *
  * Returns true if the client's rendered border color matches the
@@ -4796,6 +4826,7 @@ client_class_setup(lua_State *L)
         { "_border_is_focus_color", luaA_client_border_is_focus_color },
         { "_border_is_normal_color", luaA_client_border_is_normal_color },
         { "_border_rgba", luaA_client_border_rgba },
+        { "_paint_border", luaA_client_paint_border },
         { NULL, NULL }
     };
 

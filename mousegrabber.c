@@ -52,9 +52,9 @@ static char *mousegrabber_cursor_name = NULL;
  * is a no-op that always succeeds. The X11 version uses xcb_grab_pointer.
  */
 static bool
-mousegrabber_grab(uint32_t cursor)
+mousegrabber_grab(uint32_t cursor_id)
 {
-    (void)cursor;
+    (void)cursor_id;
     /* Wayland compositors don't need explicit pointer grabbing like X11.
      * We just track state internally. Always return success. */
     return true;

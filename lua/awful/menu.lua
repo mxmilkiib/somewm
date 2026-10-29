@@ -161,6 +161,11 @@ local function set_coords(self, s, coords)
     else
         local point=coords or capi.mouse.coords()
         local origin=s.geometry
+        -- An attachment drawin's x/y only drive its screen assignment; seed
+        -- them with the target point so the host screen follows it rather
+        -- than the last solved position
+        self.wibox.drawin.x = point.x
+        self.wibox.drawin.y = point.y
         self.wibox.drawin.attachment={kind=1,parent=0,own=0,
             x=point.x-origin.x+(coords and 0 or 1),
             y=point.y-origin.y+(coords and 0 or 1)}

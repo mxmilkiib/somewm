@@ -49,6 +49,11 @@ struct cursor_image {
 	struct wlr_scene_tree *tree;
 	void *render_owner;
 	int hotspot_x, hotspot_y;
+	/* The size the leaf was last declared at; a commit that does not move
+	 * the hotspot or resize the surface repaints through the borrowed
+	 * scene surface's own damage and must not bump gen, or an animated
+	 * cursor client spins every output into a declare loop. */
+	int declared_w, declared_h;
 	uint64_t gen;
 	struct wl_listener surface_destroy, surface_commit;
 };

@@ -85,6 +85,21 @@ struct scrollbar_record {
 
 struct exit_owner { uint64_t handle; int ref; };
 
+/* A departing client's pixels for the length of its slide: the surface leaf
+ * is a floating child of the client element, so Clay drops it when the frame
+ * exits instead of cloning it. The ghost is a root-attached leaf at the
+ * surface's last box, stepped off screen in the slide's direction until its
+ * duration is up; its custom command borrows the client's scene tree, which
+ * nobody else claims once the client is gone. */
+struct pan_ghost {
+	uint64_t handle;
+	int16_t z;
+	int x0, y0, x1, y1, w, h;
+	int64_t start_us, dur_us;
+};
+
+static int64_t now_us(void);
+
 struct declare_band {
     bool exhausted, context_valid, inspector_refused;
     bool inspector_solving, inspector_collision_logged;
@@ -101,6 +116,8 @@ struct declare_band {
     size_t entrances_len, entrances_cap;
     struct exit_owner *exit_owners;
     size_t exit_owners_len, exit_owners_cap;
+    struct pan_ghost *pan_ghosts;
+    size_t pan_ghosts_len, pan_ghosts_cap;
     uint64_t *command_handles;
     size_t command_handles_len;
     struct declared_host *hosts;
@@ -130,6 +147,9 @@ struct declare_band {
 	 * settled state on the frame after, which is where the next one
 	 * starts from (third_party/clay.h:5068-5073). */
 	bool transitioning;
+	/* Sign of the tag switch's index delta, set by declare_tag_pan: a
+	 * backward switch mirrors the slide in client tag exits. */
+	int tag_pan;
 	int64_t declare_us, solve_us, reconcile_us;
 	/* What the last frame's pass declared, in declaration order, for the
 	 * tree dump: the desktop-level elements (roots, client frames, bar
@@ -673,6 +693,10 @@ enum {
 	Z_CLIENT_DESKTOP = -6,
 	Z_DRAWIN_BG = -4,
 	Z_LAYER_BOTTOM = -2,
+	/* A minimized client's slide: below the flow root, so the window tucks
+	 * under the bars and the tiled clients it passes, over the layers and
+	 * wallpaper underneath. */
+	Z_UNDER_FLOW = -1,
 	Z_CLIENT_BELOW = 10,
 	Z_CLIENT_NORMAL = 20,
 	/* A wibox placed by its geometry, neither a bar in flow nor ontop. */
@@ -1204,6 +1228,19 @@ transition_state(uint16_t state)
     return state < LENGTH(transition_states) ? transition_states[state] : NULL;
 }
 
+/* The mirror image of a state word for a tag switch that went to a
+ * lower-indexed tag: slides swap their direction, everything else stays. */
+static uint16_t
+transition_mirror(uint16_t state)
+{
+    uint16_t out = state & ~(uint16_t)WIDGET_TRANSITION_SLIDE;
+    if (state & WIDGET_TRANSITION_SLIDE_LEFT) out |= WIDGET_TRANSITION_SLIDE_RIGHT;
+    if (state & WIDGET_TRANSITION_SLIDE_RIGHT) out |= WIDGET_TRANSITION_SLIDE_LEFT;
+    if (state & WIDGET_TRANSITION_SLIDE_UP) out |= WIDGET_TRANSITION_SLIDE_DOWN;
+    if (state & WIDGET_TRANSITION_SLIDE_DOWN) out |= WIDGET_TRANSITION_SLIDE_UP;
+    return out;
+}
+
 static uint16_t
 transition_effects(transition_state_fn state)
 {
@@ -1413,6 +1450,89 @@ declare_unmanaged_clients(Monitor *m)
 	}
 }
 
+/* A departing client gets a ghost leaf at its surface's monitor-relative
+ * box; the exit policy's slide direction and duration decide where it lands
+ * and how fast it gets there. */
+static void
+pan_ghost_add(struct declare_band *band, Client *c, Monitor *m,
+	const struct widget_transition *policy, int16_t z)
+{
+	struct wlr_box origin = screen_origin(m);
+	struct pan_ghost ghost = {
+		.handle = declare_handle_for(c, DECLARE_KIND_CLIENT), .z = z,
+		.x0 = c->geometry.x - origin.x, .y0 = c->geometry.y - origin.y,
+		.x1 = c->geometry.x - origin.x, .y1 = c->geometry.y - origin.y,
+		.w = c->geometry.width, .h = c->geometry.height,
+		.start_us = now_us(), .dur_us = (int64_t)(policy->duration * 1e6),
+	};
+
+	if (policy->exit_state & WIDGET_TRANSITION_SLIDE_LEFT)
+		ghost.x1 = -ghost.w;
+	else if (policy->exit_state & WIDGET_TRANSITION_SLIDE_RIGHT)
+		ghost.x1 = m->m.width;
+	else if (policy->exit_state & WIDGET_TRANSITION_SLIDE_UP)
+		ghost.y1 = -ghost.h;
+	else
+		ghost.y1 = m->m.height;
+	/* A client departing twice inside one slide keeps the later run: two
+	 * ghosts would open the same leaf id in one frame. */
+	for (size_t i = 0; i < band->pan_ghosts_len; i++) {
+		if (band->pan_ghosts[i].handle != ghost.handle) continue;
+		band->pan_ghosts[i] = ghost;
+		return;
+	}
+	if (band->pan_ghosts_len == band->pan_ghosts_cap) {
+		band->pan_ghosts_cap = band->pan_ghosts_cap ? band->pan_ghosts_cap * 2 : 4;
+		p_realloc(&band->pan_ghosts, band->pan_ghosts_cap);
+	}
+	band->pan_ghosts[band->pan_ghosts_len++] = ghost;
+}
+
+/* The ghost leaves of departing clients, expired ones dropped: each sits at
+ * its eased point between the surface's last box and off screen, borrowing
+ * the client's scene tree for the duration. */
+static void
+declare_pan_ghosts(struct declare_band *band, Monitor *m)
+{
+	int64_t now = now_us();
+
+	for (size_t i = 0; i < band->pan_ghosts_len;) {
+		struct pan_ghost *ghost = &band->pan_ghosts[i];
+		Client *c = declare_handle_get(ghost->handle, NULL);
+		/* The ghost borrows the composite leaf's id (below), so it cannot
+		 * share a frame with the client's own declaration: back on this
+		 * output before the slide is done, the live leaf wins. */
+		bool live = c && client_has_surface(c)
+			&& (client_is_unmanaged(c) ? monitor_for_unmanaged(c) == m
+				: client_isvisible(c) && screen_hosted(c->screen, m));
+
+		if (!c || !client_has_surface(c) || live
+				|| ghost->dur_us <= 0 || now - ghost->start_us >= ghost->dur_us) {
+			band->pan_ghosts[i] = band->pan_ghosts[--band->pan_ghosts_len];
+			continue;
+		}
+		i++;
+		float t = (float)(now - ghost->start_us) / ghost->dur_us;
+		float ease = 1 - (1 - t) * (1 - t) * (1 - t);
+		int x = ghost->x0 + (int)((ghost->x1 - ghost->x0) * ease);
+		int y = ghost->y0 + (int)((ghost->y1 - ghost->y0) * ease);
+		/* The composite leaf's own id: the rnode survives the switch from
+		 * parent-attached float to ghost, so the sweep never releases the
+		 * borrowed tree out from under it. */
+		Clay_ElementId id = Clay__HashStringWithOffset(CLAY_STRING("SURFACE"),
+			(uint32_t)ghost->handle, 0);
+		Clay_ElementDeclaration s = leaf_at(ghost->z, x, y,
+			ghost->w, ghost->h);
+		s.floating.attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID;
+		s.floating.parentId = screen_root_id(m).id;
+		s.floating.pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH;
+		s.custom.customData = (void *)(uintptr_t)ghost->handle;
+		s.userData = leaf_userdata(ghost->handle, 1.0f);
+		declare_leaf("GHOST", ghost->handle, DECLARE_SRC_PROTOCOL,
+			DECLARE_SRC_PROTOCOL, id, &s);
+	}
+}
+
 /* --- the converted widget tree (widget.h) ---
  *
  * One element per node, nested as lua/wibox/clay.lua compiled them. The
@@ -1505,7 +1625,7 @@ static uint32_t
 attachment_target(drawin_t *d)
 {
     uint32_t identity = d->attachment.target, occurrence = d->attachment.occurrence;
-    uint32_t id = 0;
+    uint32_t id = 0, fallback = 0;
     if (!occurrence && attachment_is_ambiguous(identity, d->attachment.host)) {
         if (!d->attachment_ambiguous)
             wlr_log(WLR_ERROR, "ambiguous attachment target %"PRIu32
@@ -1515,12 +1635,20 @@ attachment_target(drawin_t *d)
     }
     for (size_t i = 0; i < attachment_targets_len; i++)
         if (attachment_targets[i].identity == identity
-                && (!d->attachment.host || attachment_targets[i].host == d->attachment.host)
-                && (!occurrence || attachment_targets[i].occurrence == occurrence)) {
+                && (!d->attachment.host || attachment_targets[i].host == d->attachment.host)) {
+            if (occurrence && attachment_targets[i].occurrence != occurrence) {
+                /* A hit captured before an async show can name an occurrence
+                 * the host's recompile has since renumbered. Keep the live
+                 * occurrence of the same identity as a fallback rather than
+                 * parking the drawin; only a unique fallback resolves. */
+                if (fallback && fallback != attachment_targets[i].id) fallback = UINT32_MAX;
+                else if (fallback != UINT32_MAX) fallback = attachment_targets[i].id;
+                continue;
+            }
             if (id && id != attachment_targets[i].id) return 0;
             id = attachment_targets[i].id;
         }
-    return id;
+    return id ? id : fallback == UINT32_MAX ? 0 : fallback;
 }
 
 static Clay_ElementId
@@ -2130,6 +2258,7 @@ declare_widget_subtree(const struct widget_host *host, size_t i, Clay_ElementId 
 		next = declare_widget_subtree(host, next,
 			widget_child_id(d, next, id, k), z, userdata, leaf, NULL, ids,
 			scroll_id, scroll_axis);
+	if (n->basis && !native_full()) clay_flex_basis(n->basis);
 	native_close();
 	return next;
 }
@@ -2456,10 +2585,11 @@ declare_wallpaper_drawin(drawin_t *d, Monitor *m, int16_t z)
 static bool
 declarable_drawin(drawin_t *d, Monitor *m)
 {
+	screen_t *screen = drawin_effective_screen(d);
 	return d->visible
 		&& d->widgets.nodes_len > 0
-		&& screen_hosted(d->screen, m)
-        && (!active_screen || d->screen == active_screen->screen);
+		&& screen_hosted(screen, m)
+        && (!active_screen || screen == active_screen->screen);
 }
 
 /* --- layer surfaces ---
@@ -3463,21 +3593,68 @@ declare_cursor_magnify(double scale, double duration)
     cursor_mark();
 }
 
+/* The themed cursor's animation clock: the epoch resets whenever the
+ * seat's image generation changes, so a freshly applied name restarts
+ * from its first frame. cursor_anim_source steps the clock; the declare
+ * pass arms it for the remaining delay of the frame it just picked, and
+ * each fire re-declares the outputs showing the cursor. One seat-wide
+ * clock keeps the animation continuous when crossing outputs. */
+static struct wl_event_source *cursor_anim_source;
+static uint64_t cursor_anim_gen = UINT64_MAX;
+static int64_t cursor_anim_epoch_us;
+
+static int
+cursor_anim_fire(void *data)
+{
+	(void)data;
+	cursor_mark();
+	return 0;
+}
+
 /* The xcursor frame this output shows for the themed name, or NULL when the
- * theme has neither it nor "default". An animated cursor shows its first
- * frame: a frame per animation step would keep an idle output declaring
- * for as long as a busy cursor is up. */
+ * theme has neither it nor "default". An animated cursor steps its frames
+ * on the animation clock, so an idle output declares once per animation
+ * step rather than once per refresh. ms_to_next, when given, gets the
+ * milliseconds until the frame after the returned one is due, or -1 when
+ * the cursor is a still image. */
 static const struct wlr_xcursor_image *
-cursor_xcursor_frame(Monitor *m, float multiplier)
+cursor_xcursor_frame(Monitor *m, float multiplier, int *ms_to_next)
 {
 	float scale = m->wlr_output->scale * multiplier;
 	struct wlr_xcursor *xc;
+	uint32_t index = 0;
 
+	if (ms_to_next)
+		*ms_to_next = -1;
 	wlr_xcursor_manager_load(cursor_mgr, scale);
 	xc = wlr_xcursor_manager_get_xcursor(cursor_mgr, cursor_image.name, scale);
 	if (!xc)
 		xc = wlr_xcursor_manager_get_xcursor(cursor_mgr, "default", scale);
-	return xc && xc->image_count ? xc->images[0] : NULL;
+	if (!xc || !xc->image_count)
+		return NULL;
+	if (xc->image_count > 1 && xc->total_delay) {
+		int64_t now = g_get_monotonic_time();
+		uint64_t t, end = 0;
+
+		if (cursor_anim_gen != cursor_image.gen) {
+			cursor_anim_gen = cursor_image.gen;
+			cursor_anim_epoch_us = now;
+			t = 0;
+		} else {
+			t = ((uint64_t)(now - cursor_anim_epoch_us) / 1000)
+				% xc->total_delay;
+		}
+		for (index = 0; index < xc->image_count; index++) {
+			end += xc->images[index]->delay;
+			if (t < end)
+				break;
+		}
+		if (index == xc->image_count)
+			index = xc->image_count - 1;
+		if (ms_to_next)
+			*ms_to_next = end > t ? (int)(end - t) : 1;
+	}
+	return xc->images[index];
 }
 
 /* A copy of an xcursor frame's pixels: ARGB32 premultiplied in both. */
@@ -3521,6 +3698,8 @@ declare_cursor(Monitor *m)
 		struct wlr_surface *surface = cursor_image.surface;
 		int w = surface->current.width, h = surface->current.height;
 
+		cursor_image.declared_w = w;
+		cursor_image.declared_h = h;
 		if (!cursor_image.tree || w < 1 || h < 1)
 			return;
 		handle = declare_handle_for(surface, DECLARE_KIND_CURSOR);
@@ -3532,14 +3711,23 @@ declare_cursor(Monitor *m)
 			Clay__HashStringWithOffset(CLAY_STRING("cursor"),
 			(uint32_t)handle, 0), &s);
 	} else if (cursor_image.name) {
-		const struct wlr_xcursor_image *normal = cursor_xcursor_frame(m, 1);
+		int anim_ms;
+		const struct wlr_xcursor_image *normal =
+			cursor_xcursor_frame(m, 1, &anim_ms);
         double magnification = declare_cursor_magnification();
         const struct wlr_xcursor_image *frame = magnification > 1
-            ? cursor_xcursor_frame(m, 4) : normal;
+            ? cursor_xcursor_frame(m, 4, NULL) : normal;
         if (!frame) frame = normal;
         float scale = m->wlr_output->scale / magnification;
         if (cursor_scale_duration > 0)
             declare_output_mark_dirty(dout);
+		if (anim_ms >= 0) {
+			if (!cursor_anim_source)
+				cursor_anim_source = wl_event_loop_add_timer(
+					some_get_event_loop(), cursor_anim_fire, NULL);
+			if (cursor_anim_source)
+				wl_event_source_timer_update(cursor_anim_source, anim_ms);
+		}
 
 		if (!frame || !normal)
 			return;
@@ -3633,7 +3821,7 @@ static bool clips_prepare(Monitor *m)
     size_t scrolls = 0;
     foreach(item, globalconf.drawins) {
         drawin_t *d = *item;
-        if (screen_hosted(d->screen, m)) scrolls += d->widgets.scrolls;
+        if (screen_hosted(drawin_effective_screen(d), m)) scrolls += d->widgets.scrolls;
     }
     foreach(item, globalconf.clients) {
         Client *c = *item;
@@ -3675,6 +3863,8 @@ declare_scene(Monitor *m)
 	declare_fullscreen_bg(m);
     if (recording->exhausted) return;
 	declare_unmanaged_clients(m);
+    if (recording->exhausted) return;
+	declare_pan_ghosts(recording, m);
     if (recording->exhausted) return;
 	declare_drag_icon(m);
     if (recording->exhausted) return;
@@ -4104,6 +4294,7 @@ declare_band_wipe(struct declare_band *band)
     free(band->command_handles);
     release_exit_owners(band, NULL, 0);
     free(band->exit_owners);
+    free(band->pan_ghosts);
     free(band->entrances);
     free(band->transition_baselines);
 	render_destroy(band->render, &client_hooks);
@@ -4275,6 +4466,12 @@ declare_mark_all_dirty(void)
 			declare_output_mark_dirty(m->declare);
 }
 
+void
+declare_tag_pan(struct declare_output *dout, int direction)
+{
+	dout->band.tag_pan = direction < 0 ? -1 : direction > 0;
+}
+
 struct native_pass {
     struct declare_band *band;
     Monitor *m;
@@ -4439,7 +4636,11 @@ declare_output_frame(struct declare_output *dout, Monitor *m)
 	Clay_UpdateScrollContainers(false,
 		(Clay_Vector2) { dout->scroll_x, dout->scroll_y }, dt);
 	dout->scroll_x = dout->scroll_y = 0;
-    /* Select the authored departure policy before Clay copies an omitted client subtree. */
+    /* Select the authored departure policy before Clay copies an omitted client subtree.
+     * The pan is this frame's switch alone: held over, it would mirror an
+     * unrelated exit that happens to leave with a surface. */
+    int pan = band->tag_pan;
+    band->tag_pan = 0;
     for (size_t i = 0; i < old_len; i++) {
         struct declare_record *record = &old_records[i];
         if (!record->client_exit) continue;
@@ -4450,10 +4651,31 @@ declare_output_frame(struct declare_output *dout, Monitor *m)
         }
         struct widget_transition policy = record->exit_policy;
         bool tagged = c && client_has_surface(c);
-        if (tagged) policy.exit_state = policy.tag_exit;
-        policy.duration = tagged ? policy.tag_duration : policy.exit_duration;
+        bool minimizing = false;
+        if (tagged) {
+            /* A minimize is not a tag switch: an authored minimize exit wins,
+             * else it rides the tag word like a hidden client. */
+            minimizing = c->minimized && policy.minimize_exit;
+            policy.exit_state = minimizing ? policy.minimize_exit : policy.tag_exit;
+            policy.duration = minimizing ? policy.minimize_duration : policy.tag_duration;
+            if (!minimizing && pan < 0)
+                policy.exit_state = transition_mirror(policy.exit_state);
+        }
+        if (!tagged) policy.duration = policy.exit_duration;
         policy.properties |= widget_transition_properties(policy.exit_state);
-        clay_exit_transition((Clay_ElementId){.id = record->id}, transition_config(&policy));
+        bool slides = policy.exit_state & WIDGET_TRANSITION_SLIDE;
+        /* A minimize's slide is the ghost alone, run under the flow so the
+         * window tucks under the bar: the kept clone would only paint its
+         * chrome over it. */
+        clay_exit_transition((Clay_ElementId){.id = record->id},
+            minimizing && slides ? (Clay_TransitionElementConfig){0}
+                : transition_config(&policy));
+        /* The surface leaf floats under the client's element, so Clay drops
+         * it when the frame exits instead of cloning it: the pixels ride a
+         * ghost leaf stepped off screen for the slide's duration. */
+        if (tagged && slides)
+            pan_ghost_add(band, c, m, &policy,
+                minimizing ? Z_UNDER_FLOW : client_z(c));
     }
     band->previous_records = old_records;
     band->previous_records_len = old_len;
@@ -4626,10 +4848,12 @@ declare_output_frame(struct declare_output *dout, Monitor *m)
 	in_pass = false;
 	/* A transition that has not settled needs the next frame to advance
 	 * it, and one more to settle on; when every record is idle the output
-	 * stays clean. */
+	 * stays clean. Ghost leaves step themselves, not through a transition:
+	 * alive ones need frames as badly, and an output that stops here can
+	 * never give them the frame they expire on. */
 	Clay_SetCurrentContext(band->clay);
 	bool transitioning = clay_transitions_active();
-	if (transitioning || band->transitioning)
+	if (transitioning || band->transitioning || band->pan_ghosts_len)
 		declare_output_mark_dirty(dout);
 	band->transitioning = transitioning;
 	if (insp_closed)

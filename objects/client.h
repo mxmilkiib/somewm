@@ -209,6 +209,10 @@ struct client_t
     struct wl_listener request_fullscreen;  /* Renamed to avoid conflict with bool fullscreen */
     struct wl_listener set_decoration_mode;
     struct wl_listener destroy_decoration;
+    /** scene_surface node destroy: wlroots also destroys the tree itself
+     * when the xdg_surface dies, so this pointer must be tracked to keep
+     * it from going stale outside client_scene_node_destroy(). */
+    struct wl_listener scene_surface_destroy;
     struct wl_listener activate;
     struct wl_listener associate;
     struct wl_listener dissociate;

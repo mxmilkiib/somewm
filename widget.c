@@ -37,8 +37,9 @@
 	X(gap) X(wmin) X(hmin) X(wmax) X(hmax) X(w) X(h) X(percent) X(wsrc) X(hsrc) \
 	X(align) X(dir) X(float) X(parent) X(own) X(passthrough) X(vector) X(image) \
 	X(aspect) X(image_width) X(image_height) X(filter) X(natural) X(track) \
-	X(thumb) X(scroll) X(transition) X(duration) X(properties) X(exit_order) \
+	X(thumb) X(scroll) X(basis) X(transition) X(duration) X(properties) X(exit_order) \
     X(exit_duration) X(tag_exit) X(tag_duration) \
+    X(minimize_exit) X(minimize_duration) \
 	X(enter) X(exit) X(x11_configure_serial) X(client) X(surface) X(host) X(opacity) X(probe) X(attrs) \
 	X(font) X(color) X(wrap) X(halign) X(ellipsize) X(bindings) X(item) X(id) \
 	X(next) X(_attach) X(clip) X(children)
@@ -416,10 +417,13 @@ read_transition(lua_State *L, int idx, struct widget_node *n)
         && read_option(L, t, KEY_exit_order, orders, 3, &n->transition.exit_order)
         && read_transition_state(L, t, KEY_enter, &n->transition.enter_state)
         && read_transition_state(L, t, KEY_exit, &n->transition.exit_state)
-        && read_transition_state(L, t, KEY_tag_exit, &n->transition.tag_exit);
-    n->transition.exit_duration = n->transition.tag_duration = n->transition.duration;
+        && read_transition_state(L, t, KEY_tag_exit, &n->transition.tag_exit)
+        && read_transition_state(L, t, KEY_minimize_exit, &n->transition.minimize_exit);
+    n->transition.exit_duration = n->transition.tag_duration
+        = n->transition.minimize_duration = n->transition.duration;
     ok = ok && read_number(L, t, KEY_exit_duration, 0, 1e6, &n->transition.exit_duration)
-        && read_number(L, t, KEY_tag_duration, 0, 1e6, &n->transition.tag_duration);
+        && read_number(L, t, KEY_tag_duration, 0, 1e6, &n->transition.tag_duration)
+        && read_number(L, t, KEY_minimize_duration, 0, 1e6, &n->transition.minimize_duration);
     getfield(L, t, KEY_properties);
     bool implicit = lua_isnil(L, -1);
     lua_pop(L, 1);
@@ -781,6 +785,13 @@ read_node(lua_State *L, int idx, struct widget_node *n)
 	getfield(L, idx, KEY_thumb);
 	n->thumb = lua_toboolean(L, -1);
 	lua_pop(L, 1);
+	getfield(L, idx, KEY_basis);
+	if (!lua_isnil(L, -1)) {
+		const char *word = lua_tostring(L, -1);
+
+		n->basis = word && !strcmp(word, "w") ? 1 : word && !strcmp(word, "h") ? 2 : 0;
+	}
+	lua_pop(L, 1);
 	getfield(L, idx, KEY_scroll);
 	bool has_scroll = !lua_isnil(L, -1);
 	lua_pop(L, 1);
@@ -1041,6 +1052,23 @@ static bool widget_writable(struct widget_tree *d)
     return true;
 }
 
+bool
+widget_nodes_paint_border(struct widget_tree *d, uint64_t client, const float rgba[4])
+{
+	bool found = false;
+
+	for (size_t i = 0; i < d->nodes_len && !found; i++)
+		found = d->nodes[i].client == client && (d->nodes[i].bw[0] | d->nodes[i].bw[1]
+			| d->nodes[i].bw[2] | d->nodes[i].bw[3]);
+	if (!found || !widget_writable(d))
+		return false;
+	for (size_t i = 0; i < d->nodes_len; i++)
+		if (d->nodes[i].client == client && (d->nodes[i].bw[0] | d->nodes[i].bw[1]
+				| d->nodes[i].bw[2] | d->nodes[i].bw[3]))
+			memcpy(d->nodes[i].border, rgba, sizeof(d->nodes[i].border));
+	return true;
+}
+
 void
 widget_nodes_clear(struct widget_tree *d)
 {
@@ -1051,8 +1079,11 @@ widget_nodes_clear(struct widget_tree *d)
         *d = (struct widget_tree) { .shape_generation = generation };
         return;
     }
-	for (size_t i = 0; i < d->shapes_len; i++)
-		luaL_unref(globalconf.L, LUA_REGISTRYINDEX, d->shapes[i].ref);
+	/* During lua_close the global state is already detached. The closing
+	 * VM releases its registry itself; ordinary collection still unrefs. */
+	lua_State *L = globalconf_get_lua_State();
+	for (size_t i = 0; L && i < d->shapes_len; i++)
+		luaL_unref(L, LUA_REGISTRYINDEX, d->shapes[i].ref);
 	p_delete(&d->shapes);
 	d->shapes_len = 0;
 	for (size_t i = 0; i < d->leaves_len; i++)

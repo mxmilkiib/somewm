@@ -674,11 +674,17 @@ buttonpress(struct wl_listener *listener, void *data)
 				int rel_x = (int)cursor->x - drawin->x;
 				int rel_y = (int)cursor->y - drawin->y;
 
-				/* Emit button release signals (AwesomeWM-compatible) */
-				if (luaA_drawin_button_check(drawin, rel_x, rel_y, event->button,
-				                             CLEANMASK(mods), false)) {
-					return;
-				}
+				/* Emit button release signals (AwesomeWM-compatible).
+				 * NEVER return here: the press that began this implicit grab
+				 * was already delivered to a surface, so its release must
+				 * always reach wlr_seat_pointer_notify_button() below.
+				 * luaA_drawin_button_check() counts a matched binding as
+				 * handled even when no Lua release handler exists - treating
+				 * that as consumption strands the client's implicit grab
+				 * (button stays logically down, all pointer input confines to
+				 * the grabbed surface forever). Releases are observers only. */
+				luaA_drawin_button_check(drawin, rel_x, rel_y, event->button,
+				                         CLEANMASK(mods), false);
 			} else if (c) {
 				/* Released on client - check client button bindings */
 				int rel_x = (int)cursor->x - c->geometry.x;
@@ -698,12 +704,12 @@ buttonpress(struct wl_listener *listener, void *data)
 				/* Released on empty space - check root button bindings */
 				lua_State *L = globalconf_get_lua_State();
 
-				/* Check root button bindings for release event */
-				if (luaA_root_button_check(L, event->button, CLEANMASK(mods),
-				                           cursor->x, cursor->y, false) > 0) {
-					/* Root button release binding matched and handled */
-					return;
-				}
+				/* Check root button bindings for release event. Observers
+				 * only, same reason as the drawin branch above: a matched
+				 * binding must not strand the pressed surface's implicit
+				 * grab by swallowing the release. */
+				luaA_root_button_check(L, event->button, CLEANMASK(mods),
+				                       cursor->x, cursor->y, false);
 			}
 		}
 		break;
@@ -918,6 +924,11 @@ motionnotify(uint32_t time, struct wlr_input_device *device, double dx, double d
         lua_pushnumber(L, cursor->x);
         lua_pushnumber(L, cursor->y);
         luaA_signal_emit(L, "_accessibility::motion", 2);
+        /* pointer::motion is the public alias consumers (e.g. external
+         * shake detectors) connect to; same payload, same cadence. */
+        lua_pushnumber(L, cursor->x);
+        lua_pushnumber(L, cursor->y);
+        luaA_signal_emit(L, "pointer::motion", 2);
     }
 
 	/* If drag source became invalid, clear it. */
@@ -3052,13 +3063,21 @@ cursor_surface_destroy(struct wl_listener *listener, void *data)
 }
 
 /* A commit can move the hotspot by the buffer offset (wl_pointer.set_cursor)
- * and change the size the leaf is declared at. */
+ * and change the size the leaf is declared at. A commit that changes only
+ * the pixels repaints through the borrowed scene surface's own damage;
+ * bumping gen for those let an animated cursor client spin every output
+ * into a declare loop. */
 static void
 cursor_surface_commit(struct wl_listener *listener, void *data)
 {
-	cursor_image.hotspot_x -= cursor_image.surface->current.dx;
-	cursor_image.hotspot_y -= cursor_image.surface->current.dy;
-	cursor_image.gen++;
+	struct wlr_surface *surface = cursor_image.surface;
+
+	cursor_image.hotspot_x -= surface->current.dx;
+	cursor_image.hotspot_y -= surface->current.dy;
+	if (surface->current.dx || surface->current.dy
+			|| surface->current.width != cursor_image.declared_w
+			|| surface->current.height != cursor_image.declared_h)
+		cursor_image.gen++;
 	declare_cursor_changed();
 }
 
