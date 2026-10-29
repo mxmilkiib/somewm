@@ -3408,7 +3408,7 @@ int render_reconcile(struct render_state *rs, Clay_RenderCommandArray commands,
 			if (n->node == NULL)
 				continue;
 			struct wl_list *prev = below ? &below->link : &rs->tree->children;
-			if (placed_below(rs, n->node) != prev) {
+			if (n->node != below && placed_below(rs, n->node) != prev) {
 				if (below)
 					wlr_scene_node_place_above(n->node, below);
 				else

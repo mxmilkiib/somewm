@@ -1671,7 +1671,12 @@ client_effective_layer(client_t *c)
 	while (c && c->node) {
 		if (c->node->layer != LAYER_INHERIT)
 			return c->node->layer;
-		c = c->transient_for;
+		client_t *p = c->transient_for;
+		/* A hidden parent contributes no layer: the walk stops before
+		 * it, so a phantom cannot bury its visible transients. */
+		if (!p || !p->scene || !client_isvisible(p))
+			break;
+		c = p;
 	}
 	return LAYER_NORMAL;
 }
