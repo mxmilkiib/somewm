@@ -674,11 +674,10 @@ buttonpress(struct wl_listener *listener, void *data)
 				int rel_x = (int)cursor->x - drawin->x;
 				int rel_y = (int)cursor->y - drawin->y;
 
-				/* Emit button release signals (AwesomeWM-compatible) */
-				if (luaA_drawin_button_check(drawin, rel_x, rel_y, event->button,
-				                             CLEANMASK(mods), false)) {
-					return;
-				}
+				/* Release bindings observe the event without swallowing
+				 * the release that ends the pressed surface's implicit grab. */
+				luaA_drawin_button_check(drawin, rel_x, rel_y, event->button,
+				                        CLEANMASK(mods), false);
 			} else if (c) {
 				/* Released on client - check client button bindings */
 				int rel_x = (int)cursor->x - c->geometry.x;
@@ -698,12 +697,10 @@ buttonpress(struct wl_listener *listener, void *data)
 				/* Released on empty space - check root button bindings */
 				lua_State *L = globalconf_get_lua_State();
 
-				/* Check root button bindings for release event */
-				if (luaA_root_button_check(L, event->button, CLEANMASK(mods),
-				                           cursor->x, cursor->y, false) > 0) {
-					/* Root button release binding matched and handled */
-					return;
-				}
+				/* Root release bindings also observe the event; the
+				 * pressed surface still needs its release. */
+				luaA_root_button_check(L, event->button, CLEANMASK(mods),
+				                       cursor->x, cursor->y, false);
 			}
 		}
 		break;
