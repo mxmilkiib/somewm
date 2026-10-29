@@ -147,6 +147,15 @@ local steps = {
             "adaptive_sync is not a boolean")
         print("TEST:   adaptive_sync = " .. tostring(o.adaptive_sync))
 
+        assert(type(o.hdr) == "boolean", "hdr is not a boolean")
+        assert(type(o.hdr_supported) == "boolean", "hdr_supported is not a boolean")
+        if not o.hdr_supported then
+            local ok, err = pcall(function() o.hdr = true end)
+            assert(not ok and err:match("does not support HDR"),
+                "unsupported HDR must fail before committing")
+            assert(not o.hdr, "unsupported HDR changed output state")
+        end
+
         return true
     end,
 

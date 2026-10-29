@@ -50,6 +50,7 @@ static const char *signal_names[SIG_COUNT] = {
 	[SIG_PROPERTY_TRANSFORM]     = "property::transform",
 	[SIG_PROPERTY_MODE]          = "property::mode",
 	[SIG_PROPERTY_ADAPTIVE_SYNC] = "property::adaptive_sync",
+	[SIG_PROPERTY_HDR]           = "property::hdr",
 	[SIG_PROPERTY_SCREEN]        = "property::screen",
 	[SIG_PROPERTY_WORKAREA]      = "property::workarea",
 	[SIG_PROPERTY_VIEWPORTS]     = "property::_viewports",

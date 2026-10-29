@@ -596,6 +596,8 @@ requestmonstate(struct wl_listener *listener, void *data)
 				some_event_queue_signal0(globalconf_L, -1, SIG_PROPERTY_MODE);
 			if (committed & WLR_OUTPUT_STATE_ADAPTIVE_SYNC_ENABLED)
 				some_event_queue_signal0(globalconf_L, -1, SIG_PROPERTY_ADAPTIVE_SYNC);
+			if (committed & WLR_OUTPUT_STATE_IMAGE_DESCRIPTION)
+				some_event_queue_signal0(globalconf_L, -1, SIG_PROPERTY_HDR);
 			lua_pop(globalconf_L, 1);
 		}
 	}

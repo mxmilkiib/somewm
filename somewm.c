@@ -25,6 +25,7 @@
 #include <wlr/render/allocator.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_alpha_modifier_v1.h>
+#include <wlr/types/wlr_color_management_v1.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_cursor_shape_v1.h>
@@ -865,6 +866,41 @@ setup(void)
 	wl_signal_add(&activation->events.request_activate, &request_activate);
 
 	wlr_scene_set_gamma_control_manager_v1(scene, wlr_gamma_control_manager_v1_create(dpy));
+
+	/* Advertise the renderer's supported color spaces and let the scene
+	 * apply each surface's image description during composition. */
+	{
+		static const enum wp_color_manager_v1_render_intent intents[] = {
+			WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL,
+		};
+		size_t tf_len = 0, primaries_len = 0;
+		enum wp_color_manager_v1_transfer_function *tfs =
+			wlr_color_manager_v1_transfer_function_list_from_renderer(drw, &tf_len);
+		enum wp_color_manager_v1_primaries *primaries =
+			wlr_color_manager_v1_primaries_list_from_renderer(drw, &primaries_len);
+		/* Vulkan validates parametric descriptions against these lists.
+		 * GLES2 has empty lists and retains the implicit sRGB baseline. */
+		struct wlr_color_manager_v1_options cm_options = {
+			.features = {
+				.parametric = tf_len > 0,
+				.set_mastering_display_primaries = tf_len > 0,
+			},
+			.render_intents = intents,
+			.render_intents_len = 1,
+			.transfer_functions = tfs,
+			.transfer_functions_len = tf_len,
+			.primaries = primaries,
+			.primaries_len = primaries_len,
+		};
+		struct wlr_color_manager_v1 *color_mgr =
+			wlr_color_manager_v1_create(dpy, 2, &cm_options);
+		if (color_mgr)
+			wlr_scene_set_color_manager_v1(scene, color_mgr);
+		else
+			wlr_log(WLR_ERROR, "color management: manager creation failed");
+		free(tfs);
+		free(primaries);
+	}
 
 	power_mgr = wlr_output_power_manager_v1_create(dpy);
 	wl_signal_add(&power_mgr->events.set_mode, &output_power_mgr_set_mode);

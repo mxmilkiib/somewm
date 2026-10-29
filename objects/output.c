@@ -14,6 +14,7 @@
 #include <wlr/backend/headless.h>
 #include <wlr/backend/wayland.h>
 #include <wlr/util/log.h>
+#include <drm_fourcc.h>
 
 /* AwesomeWM-compatible output class */
 lua_class_t output_class;
@@ -693,6 +694,89 @@ luaA_output_set_position(lua_State *L, output_t *o)
 	return 0;
 }
 
+/* HDR10 uses BT.2020 primaries and the ST 2084 PQ transfer function. */
+static int
+luaA_output_get_hdr(lua_State *L, output_t *o)
+{
+	const struct wlr_output_image_description *desc =
+		o && o->valid && o->monitor && o->monitor->wlr_output
+		? o->monitor->wlr_output->image_description : NULL;
+	lua_pushboolean(L, desc
+		&& desc->primaries == WLR_COLOR_NAMED_PRIMARIES_BT2020
+		&& desc->transfer_function == WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ);
+	return 1;
+}
+
+static int
+luaA_output_get_hdr_supported(lua_State *L, output_t *o)
+{
+	struct wlr_output *wo = o && o->valid && o->monitor
+		? o->monitor->wlr_output : NULL;
+	lua_pushboolean(L, wo
+		&& (wo->supported_primaries & WLR_COLOR_NAMED_PRIMARIES_BT2020)
+		&& (wo->supported_transfer_functions & WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ));
+	return 1;
+}
+
+static int
+luaA_output_set_hdr(lua_State *L, output_t *o)
+{
+	bool hdr = lua_toboolean(L, -1);
+	struct wlr_output_state state;
+
+	if (!o || !o->valid || !o->monitor || !o->monitor->wlr_output)
+		return 0;
+	struct wlr_output *wo = o->monitor->wlr_output;
+	if (hdr && (!(wo->supported_primaries & WLR_COLOR_NAMED_PRIMARIES_BT2020)
+			|| !(wo->supported_transfer_functions & WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ)))
+		return luaL_error(L, "output %s does not support HDR (BT.2020/PQ)", wo->name);
+
+	wlr_output_state_init(&state);
+	/* Changing connector color metadata can require a modeset on amdgpu;
+	 * a live non-modeset flip can hang the display core. */
+	state.allow_reconfiguration = true;
+	if (hdr) {
+		struct wlr_output_image_description desc = {
+			.primaries = WLR_COLOR_NAMED_PRIMARIES_BT2020,
+			.transfer_function = WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ,
+		};
+		/* Zero mastering fields mean "not indicated" under CTA-861. */
+		if (wo->default_primaries)
+			desc.mastering_display_primaries = *wo->default_primaries;
+		wlr_output_state_set_image_description(&state, &desc);
+		wlr_output_state_set_render_format(&state, DRM_FORMAT_XRGB2101010);
+	} else {
+		wlr_output_state_set_image_description(&state, NULL);
+		wlr_output_state_set_render_format(&state, DRM_FORMAT_XRGB8888);
+	}
+
+	/* Validate before programming the hardware. */
+	if (!wlr_output_test_state(wo, &state)) {
+		wlr_output_state_finish(&state);
+		return luaL_error(L, "output %s rejected the HDR image description", wo->name);
+	}
+	/* The scene rebuilds the output color transform; Vulkan applies it,
+	 * while GLES2 ignores the transform. */
+	if (o->monitor->scene_output && wo->enabled
+			&& !wlr_scene_output_build_state(o->monitor->scene_output, &state, NULL)) {
+		wlr_output_state_finish(&state);
+		wlr_log(WLR_ERROR, "output: scene render failed for hdr on %s", wo->name);
+		return 0;
+	}
+	if (wlr_output_commit_state(wo, &state)) {
+		luaA_object_emit_signal(L, 1, "property::hdr", 0);
+		/* Repaint buffers that predate the new transform. */
+		if (o->monitor->scene_output) {
+			wlr_damage_ring_add_whole(&o->monitor->scene_output->damage_ring);
+			wlr_output_schedule_frame(wo);
+		}
+	} else {
+		wlr_log(WLR_ERROR, "output: failed to commit hdr for %s", wo->name);
+	}
+	wlr_output_state_finish(&state);
+	return 0;
+}
+
 static int
 luaA_output_set_adaptive_sync(lua_State *L, output_t *o)
 {
@@ -760,6 +844,8 @@ luaA_output_index(lua_State *L)
 	if (strcmp(key, "transform") == 0) return luaA_output_get_transform(L, o);
 	if (strcmp(key, "position") == 0) return luaA_output_get_position(L, o);
 	if (strcmp(key, "adaptive_sync") == 0) return luaA_output_get_adaptive_sync(L, o);
+	if (strcmp(key, "hdr") == 0) return luaA_output_get_hdr(L, o);
+	if (strcmp(key, "hdr_supported") == 0) return luaA_output_get_hdr_supported(L, o);
 
 	/* Check for _private table */
 	if (strcmp(key, "_private") == 0) {
@@ -831,6 +917,13 @@ luaA_output_newindex(lua_State *L)
 	if (strcmp(key, "adaptive_sync") == 0) {
 		lua_pushvalue(L, 3);
 		luaA_output_set_adaptive_sync(L, o);
+		lua_pop(L, 1);
+		return 0;
+	}
+
+	if (strcmp(key, "hdr") == 0) {
+		lua_pushvalue(L, 3);
+		luaA_output_set_hdr(L, o);
 		lua_pop(L, 1);
 		return 0;
 	}
@@ -1125,6 +1218,8 @@ output_class_setup(lua_State *L)
 		{ "mode", (lua_class_propfunc_t) luaA_output_set_mode, (lua_class_propfunc_t) luaA_output_get_current_mode, (lua_class_propfunc_t) luaA_output_set_mode },
 		{ "position", (lua_class_propfunc_t) luaA_output_set_position, (lua_class_propfunc_t) luaA_output_get_position, (lua_class_propfunc_t) luaA_output_set_position },
 		{ "adaptive_sync", (lua_class_propfunc_t) luaA_output_set_adaptive_sync, (lua_class_propfunc_t) luaA_output_get_adaptive_sync, (lua_class_propfunc_t) luaA_output_set_adaptive_sync },
+		{ "hdr", (lua_class_propfunc_t) luaA_output_set_hdr, (lua_class_propfunc_t) luaA_output_get_hdr, (lua_class_propfunc_t) luaA_output_set_hdr },
+		{ "hdr_supported", NULL, (lua_class_propfunc_t) luaA_output_get_hdr_supported, NULL },
 	};
 	luaA_class_add_properties(&output_class, properties, countof(properties));
 }
