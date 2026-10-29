@@ -618,42 +618,14 @@ function widget.new(args)
         return margin
     end
 
-    -- Pack short groups together up to the popup height; rows caps the fill.
-    -- A group continuing in another column ends with a continuation marker.
+    -- With no row cap, pack short groups to the popup height. An explicit
+    -- rows cap keeps the original one-column-per-chunk behaviour.
     function widget_instance:_create_columns(available_groups, show_awesome_keys, s)
         local columns = wibox.layout.overflow.horizontal()
-        local line_height = math.max(
-            beautiful.get_font_height(self.font),
-            beautiful.get_font_height(self.description_font)
-        )
-        local scr = get_screen(s)
-        local max_height = self.height
-        if scr then
-            max_height = math.min(max_height,
-                scr.workarea.height - (self.border_width or 0) * 2)
-        end
-        -- Reserve space for page labels and group label margins.
-        local capacity = math.max(1, math.floor(
-            (max_height - 2 * (line_height + self.group_margin)) / line_height))
-        if self.rows then capacity = math.max(1, math.min(capacity, self.rows)) end
-
-        local widgets, lines, used = {}, {}, 0
-        local function flush_lines()
-            if #lines > 0 then
-                widgets[#widgets+1] = wibox.widget.textbox(table.concat(lines, "\n"))
-                lines = {}
-            end
-        end
-        local function flush_column()
-            flush_lines()
-            if #widgets > 0 then
-                local layout = wibox.layout.fixed.vertical()
-                for _, w in ipairs(widgets) do layout:add(w) end
-                local column = wibox.container.margin(layout)
-                column:set_left(self.group_margin)
-                columns:add(column)
-                widgets, used = {}, 0
-            end
+        local function add_column(...)
+            local column = wibox.container.margin(wibox.layout.fixed.vertical(...))
+            column:set_left(self.group_margin)
+            columns:add(column)
         end
         local function render_key(key)
             local modifiers = key.mod
@@ -676,14 +648,65 @@ function widget.new(args)
             return markup.font(self.font, modifiers .. key_label .. " ")
                 .. markup.font(self.description_font, key.description or "")
         end
+        if self.rows then
+            for _, group in ipairs(available_groups) do
+                local keys = gtable.join(
+                    show_awesome_keys and self._cached_awful_keys[group] or nil,
+                    self._additional_hotkeys[group]
+                )
+                for first = 1, #keys, self.rows do
+                    local labels = {}
+                    for i = first, math.min(first + self.rows - 1, #keys) do
+                        labels[#labels+1] = render_key(keys[i])
+                    end
+                    if first + self.rows <= #keys then
+                        labels[#labels+1] = markup.font(self.font, "▽ ")
+                    end
+                    local text = wibox.widget.textbox(table.concat(labels, "\n"))
+                    if first == 1 then
+                        add_column(self:_group_label(group), text)
+                    else
+                        add_column(text)
+                    end
+                end
+            end
+            return columns
+        end
+
+        local line_height = math.max(beautiful.get_font_height(self.font),
+            beautiful.get_font_height(self.description_font))
+        local scr = get_screen(s)
+        local max_height = self.height
+        if scr then
+            max_height = math.min(max_height,
+                scr.workarea.height - (self.border_width or 0) * 2)
+        end
+        local capacity = math.max(1, math.floor(
+            (max_height - 2 * (line_height + self.group_margin)) / line_height))
+        local widgets, lines, used = {}, {}, 0
+        local function flush_lines()
+            if #lines > 0 then
+                widgets[#widgets+1] = wibox.widget.textbox(table.concat(lines, "\n"))
+                lines = {}
+            end
+        end
+        local function flush_column()
+            flush_lines()
+            if #widgets > 0 then
+                local layout = wibox.layout.fixed.vertical()
+                for _, child in ipairs(widgets) do layout:add(child) end
+                local column = wibox.container.margin(layout)
+                column:set_left(self.group_margin)
+                columns:add(column)
+                widgets, used = {}, 0
+            end
+        end
         for _, group in ipairs(available_groups) do
             local keys = gtable.join(
                 show_awesome_keys and self._cached_awful_keys[group] or nil,
                 self._additional_hotkeys[group]
             )
             if #keys > 0 then
-                -- Start a fresh column for a group that will not fit once
-                -- this column is at least half full.
                 if used > 0 and used + 1 + #keys > capacity
                     and used >= capacity / 2 then
                     flush_column()
