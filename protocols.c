@@ -129,9 +129,20 @@ commitlayersurfacenotify(struct wl_listener *listener, void *data)
 	int was_mapped;
 
 	if (l->layer_surface->initial_commit) {
+		struct wlr_layer_surface_v1_state old_state;
+		struct wlr_box usable_area;
+
 		client_set_scale(layer_surface->surface, l->mon->wlr_output->scale);
+		/* Configure before the next frame: clients need a size before
+		 * committing their first buffer. The solver refines it later. */
+		old_state = layer_surface->current;
+		layer_surface->current = layer_surface->pending;
+		usable_area = l->mon->m;
+		wlr_scene_layer_surface_v1_configure(l->scene_layer,
+				&l->mon->m, &usable_area);
+		layer_surface->current = old_state;
 		/* Initialized now: the next frame declares the surface and its
-		 * first configure carries the size the tree solved. */
+		 * following configures carry the size the tree solved. */
 		if (l->mon->declare)
 			declare_output_mark_dirty(l->mon->declare);
 		return;
