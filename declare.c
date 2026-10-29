@@ -1430,6 +1430,9 @@ declare_unmanaged_clients(Monitor *m)
 /* This pass's widget identities resolve to their declared Clay elements. */
 static struct { uint32_t identity, occurrence, host, id; } *attachment_targets;
 static size_t attachment_targets_len, attachment_targets_cap;
+/* High-water mark over every occurrence token ever bound. Tokens are
+ * monotonic, so a larger token than this was never a live placement. */
+static uint32_t attachment_max_occurrence;
 
 static void
 attachment_bind(struct widget_binding binding, uint32_t host, uint32_t id)
@@ -1440,6 +1443,8 @@ attachment_bind(struct widget_binding binding, uint32_t host, uint32_t id)
 		attachment_targets_cap = attachment_targets_cap ? attachment_targets_cap * 2 : 64;
 		p_realloc(&attachment_targets, attachment_targets_cap);
 	}
+	if (binding.occurrence > attachment_max_occurrence)
+		attachment_max_occurrence = binding.occurrence;
 	attachment_targets[attachment_targets_len].identity = binding.identity;
 	attachment_targets[attachment_targets_len].occurrence = binding.occurrence;
 	attachment_targets[attachment_targets_len].host = host;
@@ -1515,10 +1520,8 @@ attachment_target(drawin_t *d)
         if (attachment_targets[i].identity == identity
                 && (!d->attachment.host || attachment_targets[i].host == d->attachment.host)) {
             if (occurrence && attachment_targets[i].occurrence != occurrence) {
-                /* A hit captured before an async show can name an occurrence
-                 * the host's recompile has since renumbered. Keep the live
-                 * occurrence of the same identity as a fallback rather than
-                 * parking the drawin; only a unique fallback resolves. */
+                /* An out-of-range token can be substituted only by a unique
+                 * live occurrence. A valid retired occurrence stays absent. */
                 if (fallback && fallback != attachment_targets[i].id) fallback = UINT32_MAX;
                 else if (fallback != UINT32_MAX) fallback = attachment_targets[i].id;
                 continue;
@@ -1526,7 +1529,10 @@ attachment_target(drawin_t *d)
             if (id && id != attachment_targets[i].id) return 0;
             id = attachment_targets[i].id;
         }
-    return id ? id : fallback == UINT32_MAX ? 0 : fallback;
+    /* Only a token that never named a live occurrence may fall back; a
+     * captured occurrence that was merely retired must not rebind to a
+     * surviving sibling. */
+    return id ? id : fallback == UINT32_MAX || occurrence <= attachment_max_occurrence ? 0 : fallback;
 }
 
 static Clay_ElementId
