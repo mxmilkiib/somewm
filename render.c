@@ -2642,7 +2642,9 @@ static int reconcile_surface(struct render_state *rs, struct rnode *n,
 	}
 
 	int muts = 0;
-	float opacity = command_opacity(rs, cmd);
+	/* A fade carrier can own the pose without a presentation transform. */
+	float opacity = command_opacity(rs, cmd)
+		* render_owner_presentation(rs, handle).fade;
 	bool first_borrow = n->node == NULL;
 	bool surface_changed = first_borrow;
 	if (first_borrow) {
