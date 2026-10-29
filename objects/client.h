@@ -210,6 +210,8 @@ struct client_t
     struct wl_listener request_fullscreen;  /* Renamed to avoid conflict with bool fullscreen */
     struct wl_listener set_decoration_mode;
     struct wl_listener destroy_decoration;
+    /* wlroots can destroy scene_surface independently of the client tree. */
+    struct wl_listener scene_surface_destroy;
     struct wl_listener activate;
     struct wl_listener associate;
     struct wl_listener dissociate;

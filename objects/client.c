@@ -1544,8 +1544,10 @@ client_xproperty_free(client_xproperty_t *property)
 static void
 client_wipe(client_t *c)
 {
-    if (c->shape_ref)
-        luaL_unref(globalconf_get_lua_State(), LUA_REGISTRYINDEX, c->shape_ref);
+    /* lua_close frees the registry after globalconf.L has been cleared. */
+    lua_State *L = globalconf_get_lua_State();
+    if (c->shape_ref && L)
+        luaL_unref(L, LUA_REGISTRYINDEX, c->shape_ref);
     while (c->xproperties) {
         client_xproperty_t *property = c->xproperties;
         c->xproperties = property->next;

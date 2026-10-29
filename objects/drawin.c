@@ -9,6 +9,7 @@
 #include "common/luaclass.h"
 #include "common/luaobject.h"
 #include "../somewm_api.h"
+#include "../event_queue.h"
 #include "common/util.h"
 #include "../globalconf.h"
 #include "../shadow.h"
@@ -969,6 +970,16 @@ drawin_set_visible(lua_State *L, int udx, bool v)
 			drawin_update_drawing(L, udx);
 	} else {
 		/* Unregister from object registry (AwesomeWM drawin.c:402) */
+		/* Emit leave while the drawin is still registered, then drop the
+		 * raw pointer so later motion cannot reach a collected object. */
+		if (globalconf.mouse_under.type == UNDER_DRAWIN &&
+		    globalconf.mouse_under.ptr.drawin == drawin) {
+			luaA_object_push(L, drawin);
+			some_event_queue_signal0(L, -1, SIG_MOUSE_LEAVE);
+			lua_pop(L, 1);
+			globalconf.mouse_under.type = UNDER_NONE;
+			globalconf.mouse_under.ptr.drawin = NULL;
+		}
 		luaA_object_unref(L, drawin);
 
 		/* Remove from visible drawins array */
@@ -1077,6 +1088,12 @@ luaA_drawin_gc(lua_State *L)
 	drawin_t *drawin = luaA_todrawin(L, 1);
 
 	if (drawin) {
+		if (globalconf.mouse_under.type == UNDER_DRAWIN &&
+		    globalconf.mouse_under.ptr.drawin == drawin) {
+			globalconf.mouse_under.type = UNDER_NONE;
+			globalconf.mouse_under.ptr.drawin = NULL;
+		}
+
 		/* Clean up signals */
 		signal_array_wipe(&drawin->signals);
 
