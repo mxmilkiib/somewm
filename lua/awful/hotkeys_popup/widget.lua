@@ -145,7 +145,9 @@ widget.hide_without_description = true
 local function modifier_join_plus_sort(modifiers)
     if #modifiers<1 then return "none" end
     table.sort(modifiers, function(a,b)
-            return widget.modifier_sort_order[a] < widget.modifier_sort_order[b]
+            local oa = widget.modifier_sort_order[a] or math.huge
+            local ob = widget.modifier_sort_order[b] or math.huge
+            return oa == ob and a < b or oa < ob
         end)
     return table.concat(modifiers, '+')
 end
@@ -306,9 +308,9 @@ widget.labels = {
 -- @beautiful beautiful.hotkeys_group_margin
 -- @tparam int hotkeys_group_margin
 
---- Rows in one column; a longer group continues in the next column.
+--- Cap on rows in one column; the default fills the popup height.
 -- @beautiful beautiful.hotkeys_rows
--- @tparam[opt=20] int hotkeys_rows
+-- @tparam[opt] int hotkeys_rows
 
 
 --- Create an instance of widget with hotkeys help.
@@ -424,7 +426,7 @@ function widget.new(args)
             beautiful.hotkeys_description_font or "Monospace 8"
         settings.group_margin = args.group_margin or
             beautiful.hotkeys_group_margin or dpi(6)
-        settings.rows = beautiful.hotkeys_rows or 20
+        settings.rows = beautiful.hotkeys_rows
         settings.label_colors = beautiful.xresources.get_current_theme()
         for _, key in ipairs {"width", "height", "bg", "fg", "border_width", "border_color",
             "shape", "modifiers_fg", "label_bg", "label_fg", "override_label_bgs", "opacity",
@@ -574,7 +576,6 @@ function widget.new(args)
             end
         end
         if not changed then return end
-        self._awful_key_inputs = inputs
         self._cached_awful_keys = {}
         self._group_list = {}
         for group in pairs(self._additional_hotkeys) do self._group_list[group] = true end
@@ -588,6 +589,8 @@ function widget.new(args)
         if self.merge_duplicates then
             self:_abbreviate_awful_keys()
         end
+        -- A failed import can retry rather than retaining a partial cache.
+        self._awful_key_inputs = inputs
     end
 
 
@@ -615,55 +618,90 @@ function widget.new(args)
         return margin
     end
 
-    -- One column per group, a group longer than `rows` continuing in the
-    -- next columns; Clay sizes each column to its text.
-    function widget_instance:_create_columns(available_groups, show_awesome_keys)
+    -- Pack short groups together up to the popup height; rows caps the fill.
+    -- A group continuing in another column ends with a continuation marker.
+    function widget_instance:_create_columns(available_groups, show_awesome_keys, s)
         local columns = wibox.layout.overflow.horizontal()
-        local function add_column(...)
-            local column = wibox.container.margin(wibox.layout.fixed.vertical(...))
-            column:set_left(self.group_margin)
-            columns:add(column)
+        local line_height = math.max(
+            beautiful.get_font_height(self.font),
+            beautiful.get_font_height(self.description_font)
+        )
+        local scr = get_screen(s)
+        local max_height = self.height
+        if scr then
+            max_height = math.min(max_height,
+                scr.workarea.height - (self.border_width or 0) * 2)
+        end
+        -- Reserve space for page labels and group label margins.
+        local capacity = math.max(1, math.floor(
+            (max_height - 2 * (line_height + self.group_margin)) / line_height))
+        if self.rows then capacity = math.max(1, math.min(capacity, self.rows)) end
+
+        local widgets, lines, used = {}, {}, 0
+        local function flush_lines()
+            if #lines > 0 then
+                widgets[#widgets+1] = wibox.widget.textbox(table.concat(lines, "\n"))
+                lines = {}
+            end
+        end
+        local function flush_column()
+            flush_lines()
+            if #widgets > 0 then
+                local layout = wibox.layout.fixed.vertical()
+                for _, w in ipairs(widgets) do layout:add(w) end
+                local column = wibox.container.margin(layout)
+                column:set_left(self.group_margin)
+                columns:add(column)
+                widgets, used = {}, 0
+            end
+        end
+        local function render_key(key)
+            local modifiers = key.mod
+            if not modifiers or modifiers == "none" then
+                modifiers = ""
+            else
+                modifiers = markup.fg(self.modifiers_fg, modifiers.."+")
+            end
+            local key_label = ""
+            if key.keylist and #key.keylist > 1 then
+                for each_key_idx, each_key in ipairs(key.keylist) do
+                    key_label = key_label .. gstring.xml_escape(each_key)
+                    if each_key_idx ~= #key.keylist then
+                        key_label = key_label .. markup.fg(self.modifiers_fg, '/')
+                    end
+                end
+            elseif key.key then
+                key_label = gstring.xml_escape(key.key)
+            end
+            return markup.font(self.font, modifiers .. key_label .. " ")
+                .. markup.font(self.description_font, key.description or "")
         end
         for _, group in ipairs(available_groups) do
             local keys = gtable.join(
                 show_awesome_keys and self._cached_awful_keys[group] or nil,
                 self._additional_hotkeys[group]
             )
-            for first = 1, #keys, self.rows do
-                local labels = {}
-                for i = first, math.min(first + self.rows - 1, #keys) do
-                    local key = keys[i]
-                    local modifiers = key.mod
-                    if not modifiers or modifiers == "none" then
-                        modifiers = ""
-                    else
-                        modifiers = markup.fg(self.modifiers_fg, modifiers.."+")
-                    end
-                    local key_label = ""
-                    if key.keylist and #key.keylist > 1 then
-                        for each_key_idx, each_key in ipairs(key.keylist) do
-                            key_label = key_label .. gstring.xml_escape(each_key)
-                            if each_key_idx ~= #key.keylist then
-                                key_label = key_label .. markup.fg(self.modifiers_fg, '/')
-                            end
-                        end
-                    elseif key.key then
-                        key_label = gstring.xml_escape(key.key)
-                    end
-                    labels[#labels+1] = markup.font(self.font, modifiers .. key_label .. " ")
-                        .. markup.font(self.description_font, key.description or "")
+            if #keys > 0 then
+                -- Start a fresh column for a group that will not fit once
+                -- this column is at least half full.
+                if used > 0 and used + 1 + #keys > capacity
+                    and used >= capacity / 2 then
+                    flush_column()
                 end
-                if first + self.rows <= #keys then
-                    labels[#labels+1] = markup.font(self.font, "▽ ")
-                end
-                local text = wibox.widget.textbox(table.concat(labels, "\n"))
-                if first == 1 then
-                    add_column(self:_group_label(group), text)
-                else
-                    add_column(text)
+                flush_lines()
+                widgets[#widgets+1] = self:_group_label(group)
+                used = used + 1
+                for _, key in ipairs(keys) do
+                    if used >= capacity then
+                        lines[#lines+1] = markup.font(self.font, "▽ ")
+                        flush_column()
+                    end
+                    lines[#lines+1] = render_key(key)
+                    used = used + 1
                 end
             end
         end
+        flush_column()
         return columns
     end
 
@@ -672,7 +710,7 @@ function widget.new(args)
             table.concat(available_groups, "\0")}
         for _, key in ipairs {"bg", "fg", "border_width", "border_color",
             "shape", "modifiers_fg", "label_bg", "label_fg", "override_label_bgs", "opacity",
-            "font", "description_font", "group_margin", "rows"} do
+            "font", "description_font", "group_margin", "rows", "height"} do
             local value = self[key]
             inputs[#inputs+1] = (key == "font" or key == "description_font")
                 and type(value) ~= "string" and value and value:to_string() or tostring(value)
@@ -694,7 +732,7 @@ function widget.new(args)
                     hsrc=owner._loaded_settings.height_authored and "user" or "theme"})
         end
         local mypopup = awful.popup {
-            widget = self:_create_columns(available_groups, show_awesome_keys),
+            widget = self:_create_columns(available_groups, show_awesome_keys, s),
             ontop = true,
             bg=self.bg,
             fg=self.fg,
@@ -741,7 +779,7 @@ function widget.new(args)
                 for _, key in ipairs {"bg", "fg", "opacity", "border_width", "border_color", "shape"} do
                     if owner[key] ~= nil then p[key] = owner[key] end
                 end
-                p:set_widget(owner:_create_columns(available_groups, show_awesome_keys))
+                p:set_widget(owner:_create_columns(available_groups, show_awesome_keys, p.screen))
                 w_self.inputs = inputs
             end
             p.placement = place_launcher
