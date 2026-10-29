@@ -475,9 +475,10 @@ for _, signal in ipairs{"property::_x11_configure", "property::size_hints_honor"
     capi.client.connect_signal(signal, arrange_prop)
 end
 -- A colour moves nothing: the stored node takes it, and only a client the
--- tree has no bordered node for is described again.
+-- tree has no bordered node for is described again. Without a border there
+-- is no colour to draw, and a width change describes it with the colour then.
 capi.client.connect_signal("property::border_color", function(c)
-    if not c:_paint_border() then arrange_prop(c) end
+    if c.border_width > 0 and not c:_paint_border() then arrange_prop(c) end
 end)
 -- An authored move of a floating client describes it again; a tiled
 -- client's geometry that the solve published skips.

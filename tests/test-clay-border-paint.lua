@@ -64,6 +64,14 @@ runner.run_async(function()
     r, g, b = border_pixel()
     assert(r > 240 and g < 15 and b > 240,
         string.format('wider border not repainted: #%02x%02x%02x', r, g, b))
+
+    -- No border draws no colour, so there is nothing to describe again.
+    c.border_width = 0
+    async.sleep(.3)
+    arranges = 0
+    c.border_color = '#00ffff'
+    async.sleep(.2)
+    assert(arranges == 0, 'a colour on a borderless client arranged the screen ' .. arranges .. ' times')
     c:kill()
     runner.done()
 end)
