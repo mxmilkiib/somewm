@@ -880,7 +880,14 @@ setup(void)
 			wlr_color_manager_v1_transfer_function_list_from_renderer(drw, &tf_len);
 		enum wp_color_manager_v1_primaries *primaries =
 			wlr_color_manager_v1_primaries_list_from_renderer(drw, &primaries_len);
+		/* Clients may only build parametric Image Descriptions when the
+		 * Renderer has Lists to validate them against (vulkan); on gles2
+		 * the Lists are empty and the Manager stays sRGB-only */
 		struct wlr_color_manager_v1_options cm_options = {
+			.features = {
+				.parametric = tf_len > 0,
+				.set_mastering_display_primaries = tf_len > 0,
+			},
 			.render_intents = intents,
 			.render_intents_len = 1,
 			.transfer_functions = tfs,
@@ -888,8 +895,12 @@ setup(void)
 			.primaries = primaries,
 			.primaries_len = primaries_len,
 		};
-		wlr_scene_set_color_manager_v1(scene,
-			wlr_color_manager_v1_create(dpy, 2, &cm_options));
+		struct wlr_color_manager_v1 *color_mgr =
+			wlr_color_manager_v1_create(dpy, 2, &cm_options);
+		if (color_mgr)
+			wlr_scene_set_color_manager_v1(scene, color_mgr);
+		else
+			wlr_log(WLR_ERROR, "color management: manager creation failed");
 		free(tfs);
 		free(primaries);
 	}

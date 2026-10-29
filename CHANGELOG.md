@@ -6,6 +6,15 @@ All notable changes to somewm will be documented in this file.
 
 ### Added
 
+- `output.hdr` and `output.hdr_supported`: report and switch an output's HDR10
+  mode (BT.2020 primaries with the PQ transfer function). Setting `hdr` runs a
+  modeset behind a test commit and a scene render at 10 bpc, and raises an
+  error on an output that lacks BT.2020/PQ support. External changes through
+  wlr-randr or kanshi emit `property::hdr`. Needs wlroots 0.20; on 0.19 `hdr`
+  reads false.
+- somewm offers wp-color-management-v1. Clients can tag surfaces with an
+  image description when the renderer is vulkan (`WLR_RENDERER=vulkan`);
+  gles2 stays the default and advertises sRGB only.
 - `awful.accessibility`: a configurable pointer locator with shrinking rings,
   temporary cursor magnification, or both. `find_cursor()` works from a
   keybinding; optional shake detection increases magnification on repeated
