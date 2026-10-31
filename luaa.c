@@ -6057,7 +6057,7 @@ luaA_hot_reload(void)
 	if (some_event_queue_pending()) {
 		warn("hot-reload: events queued during state swap; "
 		     "discarding stale refs");
-		some_event_queue_reset();
+		some_event_queue_reset(NULL);
 	}
 
 	/* ================================================================
