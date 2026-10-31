@@ -459,6 +459,12 @@ apply_or_test:
 
 	/* Force monitor refresh after output config change */
 	updatemons(NULL, NULL);
+
+	/* Re-dirty every output so each one schedules a fresh frame after a
+	 * reconfig: a cancelled or superseded apply can otherwise leave an
+	 * enabled output presenting its last buffer forever. */
+	if (!test)
+		declare_mark_all_dirty();
 }
 
 void
@@ -488,6 +494,7 @@ powermgrsetmode(struct wl_listener *listener, void *data)
 	wlr_log(WLR_ERROR, "[HOTPLUG] powermgrsetmode: %s mode=%d asleep=%d",
 		m->wlr_output->name, event->mode, m->asleep);
 	updatemons(NULL, NULL);
+	declare_mark_all_dirty();
 }
 
 void
