@@ -188,17 +188,41 @@ local lookup_icon = function(self, icon_name, icon_size)
 end
 
 local find_icon_path_helper  -- Gets called recursively.
-find_icon_path_helper = function(self, icon_name, icon_size)
+find_icon_path_helper = function(self, icon_name, icon_size, seen)
     local filename = lookup_icon(self, icon_name, icon_size)
     if filename then
         return filename
     end
 
+    -- seen is keyed on each theme's resolved directory: the same name in a
+    -- later base directory is a different theme (a user-level theme named
+    -- breeze-dark may legitimately Inherits=breeze-dark to layer onto the
+    -- system one), but the same directory twice is a cycle
+    seen = seen or {}
+    seen[self.index_theme.base_directory or self.icon_theme_name] = true
+
     for _, parent in ipairs(self.index_theme:get_inherits()) do
-        local parent_icon_theme = icon_theme(parent, self.base_directories)
-        filename = find_icon_path_helper(parent_icon_theme, icon_name, icon_size)
-        if filename then
-            return filename
+        local dirs = self.base_directories
+        if parent == self.icon_theme_name and self.index_theme.base_directory then
+            -- a theme inheriting its own name shadows itself: resolve the
+            -- name again in the directories after the one it was found in.
+            -- Directories before it provably have no parent/index.theme or
+            -- that file would have been picked for self instead
+            dirs = {}
+            for _, dir in ipairs(self.base_directories) do
+                if dir .. "/" .. parent ~= self.index_theme.base_directory then
+                    dirs[#dirs + 1] = dir
+                end
+            end
+        end
+        local parent_icon_theme = icon_theme(parent, dirs)
+        local key = parent_icon_theme.index_theme and parent_icon_theme.index_theme.base_directory or parent
+        if not seen[key] then
+            seen[key] = true
+            filename = find_icon_path_helper(parent_icon_theme, icon_name, icon_size, seen)
+            if filename then
+                return filename
+            end
         end
     end
 
