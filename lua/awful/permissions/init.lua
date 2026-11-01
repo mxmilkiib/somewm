@@ -385,7 +385,10 @@ function permissions.geometry(c, context, hints)
     -- the intended geometry later
     if not c._border_geometry_rules_applied then return end
 
-    local layout = c.screen.selected_tag and c.screen.selected_tag.layout or nil
+    -- c.screen can be nil while outputs reconfigure (client detached before
+    -- a new screen is assigned)
+    local scr = c.screen
+    local layout = scr and scr.selected_tag and scr.selected_tag.layout or nil
 
     context = context or ""
 
