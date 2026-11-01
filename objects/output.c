@@ -1,4 +1,5 @@
 #include "output.h"
+#include "../somewm.h"
 #include "screen.h"
 #include "signal.h"
 #include "luaa.h"
@@ -718,18 +719,27 @@ luaA_output_get_hdr_supported(lua_State *L, output_t *o)
 	return 1;
 }
 
-static int
-luaA_output_set_hdr(lua_State *L, output_t *o)
+/* SDR white level committed into the HDR transform: the sdr_white property
+ * wins, then SOMEWM_SDR_WHITE_NITS, then 0 for wlroots' own default. */
+static double
+output_sdr_white(output_t *o)
 {
-	bool hdr = lua_toboolean(L, -1);
-	struct wlr_output_state state;
+	if (o && o->sdr_white_luminance > 0)
+		return o->sdr_white_luminance;
+	const char *env = getenv("SOMEWM_SDR_WHITE_NITS");
+	if (env != NULL) {
+		double nits = strtod(env, NULL);
+		if (nits > 0)
+			return nits;
+	}
+	return 0;
+}
 
-	if (!o || !o->valid || !o->monitor || !o->monitor->wlr_output)
-		return 0;
-	struct wlr_output *wo = o->monitor->wlr_output;
-	if (hdr && (!(wo->supported_primaries & WLR_COLOR_NAMED_PRIMARIES_BT2020)
-			|| !(wo->supported_transfer_functions & WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ)))
-		return luaL_error(L, "output %s does not support HDR (BT.2020/PQ)", wo->name);
+/* Push the HDR image description (or clear it) through one commit. */
+static int
+output_commit_hdr(lua_State *L, output_t *o, struct wlr_output *wo, bool hdr)
+{
+	struct wlr_output_state state;
 
 	wlr_output_state_init(&state);
 	/* Changing connector color metadata can require a modeset on amdgpu;
@@ -739,6 +749,7 @@ luaA_output_set_hdr(lua_State *L, output_t *o)
 		struct wlr_output_image_description desc = {
 			.primaries = WLR_COLOR_NAMED_PRIMARIES_BT2020,
 			.transfer_function = WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ,
+			.sdr_white_luminance = output_sdr_white(o),
 		};
 		/* Zero mastering fields mean "not indicated" under CTA-861. */
 		if (wo->default_primaries)
@@ -774,6 +785,54 @@ luaA_output_set_hdr(lua_State *L, output_t *o)
 		wlr_log(WLR_ERROR, "output: failed to commit hdr for %s", wo->name);
 	}
 	wlr_output_state_finish(&state);
+	return 0;
+}
+
+static int
+luaA_output_set_hdr(lua_State *L, output_t *o)
+{
+	bool hdr = lua_toboolean(L, -1);
+
+	if (!o || !o->valid || !o->monitor || !o->monitor->wlr_output)
+		return 0;
+	struct wlr_output *wo = o->monitor->wlr_output;
+	if (hdr && (!(wo->supported_primaries & WLR_COLOR_NAMED_PRIMARIES_BT2020)
+			|| !(wo->supported_transfer_functions & WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ)))
+		return luaL_error(L, "output %s does not support HDR (BT.2020/PQ)", wo->name);
+	/* Without an output color transform the scene renders sRGB values
+	 * straight into the PQ surface: white survives but colors don't.
+	 * Only the Vulkan renderer implements it; GLES2 does not. */
+	if (hdr && !drw->features.output_color_transform)
+		return luaL_error(L, "output %s needs a renderer with output color "
+			"transform for HDR (WLR_RENDERER=vulkan)", wo->name);
+	return output_commit_hdr(L, o, wo, hdr);
+}
+
+/* SDR white level in nits inside the HDR signal. A non-positive value
+ * restores the transfer function's default (203 nits for PQ). */
+static int
+luaA_output_get_sdr_white(lua_State *L, output_t *o)
+{
+	double nits = output_sdr_white(o);
+	lua_pushnumber(L, nits > 0 ? nits : 203);
+	return 1;
+}
+
+static int
+luaA_output_set_sdr_white(lua_State *L, output_t *o)
+{
+	double v = luaL_checknumber(L, -1);
+	if (!o)
+		return 0;
+	o->sdr_white_luminance = v > 0 ? v : 0;
+	struct wlr_output *wo = o->valid && o->monitor ? o->monitor->wlr_output : NULL;
+	const struct wlr_output_image_description *desc =
+		wo ? wo->image_description : NULL;
+	/* Re-commit live when HDR is already on: the wire fields stay identical,
+	 * so this only rebuilds the transform and repaints. */
+	if (desc && desc->primaries == WLR_COLOR_NAMED_PRIMARIES_BT2020
+			&& desc->transfer_function == WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ)
+		output_commit_hdr(L, o, wo, true);
 	return 0;
 }
 
@@ -846,6 +905,7 @@ luaA_output_index(lua_State *L)
 	if (strcmp(key, "adaptive_sync") == 0) return luaA_output_get_adaptive_sync(L, o);
 	if (strcmp(key, "hdr") == 0) return luaA_output_get_hdr(L, o);
 	if (strcmp(key, "hdr_supported") == 0) return luaA_output_get_hdr_supported(L, o);
+	if (strcmp(key, "sdr_white") == 0) return luaA_output_get_sdr_white(L, o);
 
 	/* Check for _private table */
 	if (strcmp(key, "_private") == 0) {
@@ -924,6 +984,13 @@ luaA_output_newindex(lua_State *L)
 	if (strcmp(key, "hdr") == 0) {
 		lua_pushvalue(L, 3);
 		luaA_output_set_hdr(L, o);
+		lua_pop(L, 1);
+		return 0;
+	}
+
+	if (strcmp(key, "sdr_white") == 0) {
+		lua_pushvalue(L, 3);
+		luaA_output_set_sdr_white(L, o);
 		lua_pop(L, 1);
 		return 0;
 	}
@@ -1220,6 +1287,7 @@ output_class_setup(lua_State *L)
 		{ "adaptive_sync", (lua_class_propfunc_t) luaA_output_set_adaptive_sync, (lua_class_propfunc_t) luaA_output_get_adaptive_sync, (lua_class_propfunc_t) luaA_output_set_adaptive_sync },
 		{ "hdr", (lua_class_propfunc_t) luaA_output_set_hdr, (lua_class_propfunc_t) luaA_output_get_hdr, (lua_class_propfunc_t) luaA_output_set_hdr },
 		{ "hdr_supported", NULL, (lua_class_propfunc_t) luaA_output_get_hdr_supported, NULL },
+		{ "sdr_white", (lua_class_propfunc_t) luaA_output_set_sdr_white, (lua_class_propfunc_t) luaA_output_get_sdr_white, (lua_class_propfunc_t) luaA_output_set_sdr_white },
 	};
 	luaA_class_add_properties(&output_class, properties, countof(properties));
 }

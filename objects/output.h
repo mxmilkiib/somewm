@@ -14,6 +14,8 @@ typedef struct output_t {
 	bool valid;        /* false after physical disconnect */
 	bool is_virtual;   /* true for fake screen outputs (no wlr_output backing) */
 	char *vname;       /* name override for virtual outputs without wlr_output */
+	double sdr_white_luminance; /* SDR white in nits inside HDR; 0 = default.
+	 * Session-scoped: SOMEWM_SDR_WHITE_NITS is the persistent form. */
 } output_t;
 
 #define OUTPUT_MT "output"
