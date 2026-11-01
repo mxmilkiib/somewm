@@ -804,7 +804,16 @@ setup(void)
 	 * can also specify a renderer using the WLR_RENDERER env var.
 	 * The renderer is responsible for defining the various pixel formats it
 	 * supports for shared memory, this configures that for clients. */
-	if (!(drw = wlr_renderer_autocreate(backend)))
+	/* An explicit WLR_RENDERER=vulkan that cannot initialize drops back to
+	 * the autocreate order (GLES2, then pixman) rather than dying; output.hdr
+	 * then refuses to commit for lack of an output color transform. */
+	const char *wanted_renderer = getenv("WLR_RENDERER");
+	if (!(drw = wlr_renderer_autocreate(backend)) && wanted_renderer
+			&& strcmp(wanted_renderer, "vulkan") == 0) {
+		unsetenv("WLR_RENDERER");
+		drw = wlr_renderer_autocreate(backend);
+	}
+	if (!drw)
 		die("couldn't create renderer\n"
 			"Try setting WLR_RENDERER=gles2 or WLR_RENDERER=pixman\n"
 			"Run with WLR_DEBUG=1 for more details");
