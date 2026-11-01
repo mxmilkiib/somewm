@@ -907,6 +907,9 @@ setup(void)
 			wlr_scene_set_color_manager_v1(scene, color_mgr);
 		else
 			wlr_log(WLR_ERROR, "color management: manager creation failed");
+		if (!drw->features.output_color_transform)
+			wlr_log(WLR_INFO, "color management: renderer applies no output "
+				"transform; HDR output needs WLR_RENDERER=vulkan");
 		free(tfs);
 		free(primaries);
 	}
