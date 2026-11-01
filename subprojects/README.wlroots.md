@@ -1,13 +1,14 @@
 # Bundled wlroots
 
-Upstream release: 0.20.2, the tarball named and checksummed in `subprojects/wlroots.wrap`.
-Diff: `subprojects/packagefiles/wlroots-corners.diff`, named by `diff_files` in the wrap. Meson applies it with `patch -p1` after unpacking, so the paths in it are `a/...` and `b/...` relative to the unpacked tree. One diff, one ledger. No second hunk set lands without Jimmy's word.
+Source: the `mxmilkiib/wlroots` fork on GitHub, cloned by the `wrap-git` in `subprojects/wlroots.wrap` at the named revision, on a base of upstream release 0.20.2. The fork carries two commits on top of the release: the rounded-corners patch (committed verbatim; `subprojects/packagefiles/wlroots-corners.diff` remains the ledger below) and `sdr_white_luminance` on `wlr_output_image_description`, which lets the compositor place SDR white above the transfer function's 203-nit default in the scene's output transform and the hardware-cursor transform. Earlier the corners patch was a `diff_files` hunk applied to the release tarball; the wrap still names the directory `wlroots-0.20.2` so every in-tree path is unchanged.
+
+Diff (still the ledger for the corners hunk set): `subprojects/packagefiles/wlroots-corners.diff`. The paths in it are `a/...` and `b/...` relative to the unpacked tree. One diff, one ledger. No second hunk set lands without Jimmy's word.
 
 What the diff adds: a scene buffer takes four corner radii and a list of rounded clips; a scene rect takes four corner radii, a rounded cutout (the hole a border ring leaves) and the same clip list; the gles2 and pixman render passes cut textures and rects by them. A buffer with every radius 0 and no clip takes the same calls it takes upstream: the same texture options, the same program and uniforms, the same pixman mask. A rect with every radius 0, no cutout and no clip takes the same `add_rect` call as upstream, the `glClear` shortcut included. The one change the flat path sees is a vertex varying it does not read.
 
 Every radius goes through one rule, the one CSS gives `border-radius`: for each of the four edges, the edge length over the sum of the two radii on it; when the smallest ratio is below 1, all four radii shrink by it. Four equal radii beyond the box make a pill; 24,24,0,0 on a 1000 by 30 box stays 24.
 
-Not patched: `render/vulkan`. The subproject is built with `renderers=gles2`, so that directory is not compiled and the new option fields are simply unread there.
+Vulkan: `render/vulkan` carries its own port (fork commit "render/vulkan: rounded corners"), since SPIR-V shaders and push constants differ from GL. Round pipelines bind a second descriptor set — a shared dynamic-UBO ring of `wlr_vk_round_params` — and two shaders, `texture_round.frag` and `quad_round.frag`, compute coverage from `gl_FragCoord` minus the box origin (transform-safe, no vertex change). The subproject is built `renderers=gles2,vulkan` because HDR output needs Vulkan's color transform; rounded corners now draw on both.
 
 ## Regenerating the diff
 
