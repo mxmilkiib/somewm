@@ -104,7 +104,7 @@ HEADLESS=1 SOMEWM=./build-test/somewm SOMEWM_CLIENT=./build-test/somewm-client \
 HEADLESS=1 WLR_HEADLESS_OUTPUTS=2 SOMEWM=./build-test/somewm SOMEWM_CLIENT=./build-test/somewm-client \
     ./tests/run-integration.sh tests/test-screen-hotplug.lua tests/test-selmon-mouse-motion.lua tests/test-tag-persistence.lua \
     tests/test-screenshot-interactive-two-outputs.lua tests/test-carousel-output-clip.lua \
-    tests/test-layer-surface-follows-screen-focus.lua
+    tests/test-layer-surface-follows-screen-focus.lua tests/test-layer-surface-follows-output-move.lua
 ```
 
 ### Run Specific Test
