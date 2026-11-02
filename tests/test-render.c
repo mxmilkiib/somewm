@@ -2552,6 +2552,146 @@ static void test_cursor_anim_steps_frames_on_the_clock(void) {
 	fixture_finish(&f, &no_hooks);
 }
 
+/* A repeat handoff with the same key and token is a no-op: the armed set
+ * keeps stepping from where it was. A new token re-arms with the new set. */
+static void test_cursor_anim_token_gates_handoffs(void) {
+	struct fixture f;
+	fixture_init(&f);
+	struct anim_fixture af;
+	anim_fixture_init(&af);
+	struct image_entry entry;
+	uint64_t key;
+	struct wlr_scene_node *node = cursor_leaf(&f, &entry, &key);
+
+	cairo_surface_t *frames[] = { solid_frame(255, 0, 0),
+		solid_frame(0, 0, 255) };
+	cairo_surface_t *next[] = { solid_frame(0, 255, 0),
+		solid_frame(255, 255, 0) };
+	uint32_t delays[] = { 20, 20 };
+	render_cursor_anim(f.rs, &af.out, key, frames, delays, 2, 1, af.loop);
+	wl_event_loop_dispatch(af.loop, 100);
+	CHECK_EQ(raster_pixel(node, 16, 16), 0xff0000ffu);
+
+	render_cursor_anim(f.rs, &af.out, key,
+		(cairo_surface_t *const *)next, delays, 2, 1, af.loop);
+	wl_event_loop_dispatch(af.loop, 100);
+	CHECK_EQ(raster_pixel(node, 16, 16), 0xffff0000u);
+
+	render_cursor_anim(f.rs, &af.out, key,
+		(cairo_surface_t *const *)next, delays, 2, 2, af.loop);
+	wl_event_loop_dispatch(af.loop, 100);
+	CHECK_EQ(raster_pixel(node, 16, 16), 0xffffff00u);
+
+	render_cursor_anim(f.rs, NULL, 0, NULL, NULL, 0, 0, NULL);
+	cairo_surface_destroy(frames[0]);
+	cairo_surface_destroy(frames[1]);
+	cairo_surface_destroy(next[0]);
+	cairo_surface_destroy(next[1]);
+	cairo_surface_destroy(entry.native);
+	wl_event_loop_destroy(af.loop);
+	fixture_finish(&f, &no_hooks);
+}
+
+/* A themed cursor going away hands in len < 2 and the clock disarms: the
+ * leaf keeps whatever frame it last showed. */
+static void test_cursor_anim_len_under_two_disarms(void) {
+	struct fixture f;
+	fixture_init(&f);
+	struct anim_fixture af;
+	anim_fixture_init(&af);
+	struct image_entry entry;
+	uint64_t key;
+	struct wlr_scene_node *node = cursor_leaf(&f, &entry, &key);
+
+	cairo_surface_t *frames[] = { solid_frame(255, 0, 0),
+		solid_frame(0, 0, 255) };
+	uint32_t delays[] = { 20, 20 };
+	render_cursor_anim(f.rs, &af.out, key, frames, delays, 2, 1, af.loop);
+	wl_event_loop_dispatch(af.loop, 100);
+	CHECK_EQ(raster_pixel(node, 16, 16), 0xff0000ffu);
+
+	render_cursor_anim(f.rs, NULL, 0, NULL, NULL, 0, 0, NULL);
+	wl_event_loop_dispatch(af.loop, 100);
+	wl_event_loop_dispatch(af.loop, 100);
+	CHECK_EQ(raster_pixel(node, 16, 16), 0xff0000ffu);
+
+	render_cursor_anim(NULL, &af.out, key,
+		(cairo_surface_t *const *)frames, delays, 2, 1, af.loop);
+	cairo_surface_destroy(frames[0]);
+	cairo_surface_destroy(frames[1]);
+	cairo_surface_destroy(entry.native);
+	wl_event_loop_destroy(af.loop);
+	fixture_finish(&f, &no_hooks);
+}
+
+/* The keyed node being swept disarms the clock on its next tick; a later
+ * handoff with the same token arms a fresh set rather than no-oping. */
+static void test_cursor_anim_swept_leaf_self_disarms(void) {
+	struct fixture f;
+	fixture_init(&f);
+	struct anim_fixture af;
+	anim_fixture_init(&af);
+	struct image_entry entry;
+	uint64_t key;
+	struct wlr_scene_node *node = cursor_leaf(&f, &entry, &key);
+
+	cairo_surface_t *frames[] = { solid_frame(255, 0, 0),
+		solid_frame(0, 0, 255) };
+	uint32_t delays[] = { 20, 20 };
+	render_cursor_anim(f.rs, &af.out, key, frames, delays, 2, 2, af.loop);
+
+	render_reconcile(f.rs, commands_of(NULL, 0), &no_hooks, no_bounds);
+	wl_event_loop_dispatch(af.loop, 100);
+
+	Clay_RenderCommand cmds[] = { cmd_image(7, 0, 0, 32, 32, &entry) };
+	render_reconcile(f.rs, commands_of(cmds, 1), &no_hooks, no_bounds);
+	node = child_at(render_tree(f.parent), 0);
+	cairo_surface_t *next[] = { solid_frame(0, 255, 0),
+		solid_frame(255, 255, 0) };
+	render_cursor_anim(f.rs, &af.out, key,
+		(cairo_surface_t *const *)next, delays, 2, 2, af.loop);
+	wl_event_loop_dispatch(af.loop, 100);
+	CHECK_EQ(raster_pixel(node, 16, 16), 0xffffff00u);
+
+	render_cursor_anim(f.rs, NULL, 0, NULL, NULL, 0, 0, NULL);
+	cairo_surface_destroy(frames[0]);
+	cairo_surface_destroy(frames[1]);
+	cairo_surface_destroy(next[0]);
+	cairo_surface_destroy(next[1]);
+	cairo_surface_destroy(entry.native);
+	wl_event_loop_destroy(af.loop);
+	fixture_finish(&f, &no_hooks);
+}
+
+/* Xcursor writers ship zero delays; unclamped that would spin the clock, so
+ * the handoff floors them at one vsync-ish step. */
+static void test_cursor_anim_zero_delay_clamps(void) {
+	struct fixture f;
+	fixture_init(&f);
+	struct anim_fixture af;
+	anim_fixture_init(&af);
+	struct image_entry entry;
+	uint64_t key;
+	struct wlr_scene_node *node = cursor_leaf(&f, &entry, &key);
+
+	cairo_surface_t *frames[] = { solid_frame(255, 0, 0),
+		solid_frame(0, 0, 255) };
+	uint32_t delays[] = { 0, 0 };
+	render_cursor_anim(f.rs, &af.out, key, frames, delays, 2, 1, af.loop);
+
+	wl_event_loop_dispatch(af.loop, 5);
+	CHECK_EQ(raster_pixel(node, 16, 16), 0xffff0000u);
+	wl_event_loop_dispatch(af.loop, 100);
+	CHECK_EQ(raster_pixel(node, 16, 16), 0xff0000ffu);
+
+	render_cursor_anim(f.rs, NULL, 0, NULL, NULL, 0, 0, NULL);
+	cairo_surface_destroy(frames[0]);
+	cairo_surface_destroy(frames[1]);
+	cairo_surface_destroy(entry.native);
+	wl_event_loop_destroy(af.loop);
+	fixture_finish(&f, &no_hooks);
+}
+
 int main(void) {
 	static const struct {
 		const char *name;
@@ -2604,6 +2744,10 @@ int main(void) {
 		{ "the edge rule in the hit test", test_edge_rule_hit },
 		{ "clip source matches the buffer grid", test_clip_source_matches_the_buffer_grid },
 		{ "cursor anim steps frames on the clock", test_cursor_anim_steps_frames_on_the_clock },
+		{ "cursor anim token gates handoffs", test_cursor_anim_token_gates_handoffs },
+		{ "cursor anim len under two disarms", test_cursor_anim_len_under_two_disarms },
+		{ "cursor anim swept leaf self-disarms", test_cursor_anim_swept_leaf_self_disarms },
+		{ "cursor anim zero delay clamps", test_cursor_anim_zero_delay_clamps },
 		{ "verifier catches divergence", test_verifier_catches_divergence },
 	};
 
