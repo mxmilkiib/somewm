@@ -7,7 +7,7 @@
 FROM ubuntu:26.04
 
 ARG LUA_INTERPRETER
-ARG LUA_DEV_PACKAGE
+ARG LUA_PACKAGES
 
 # The hosted runners export LANG=C.UTF-8 and the compositor adopts it at
 # startup; test-prompt-unicode asserts that it did.
@@ -60,8 +60,7 @@ RUN ln -fs /usr/share/zoneinfo/Etc/UTC /etc/localtime \
       hwdata \
       libdisplay-info-dev \
       libliftoff-dev \
-      ${LUA_INTERPRETER} \
-      ${LUA_DEV_PACKAGE} \
+      ${LUA_PACKAGES} \
       lua-busted \
       lua-lgi \
       luarocks \
@@ -83,17 +82,34 @@ RUN ln -fs /usr/share/zoneinfo/Etc/UTC /etc/localtime \
  && python3 -m pip install --upgrade --break-system-packages meson \
  && rm -rf /var/lib/apt/lists/*
 
-# Ubuntu ships lgi and busted for Lua 5.1 and 5.3 only, so the 5.2 image
-# builds them from source into /usr/local, where they shadow the 5.3 ones.
-RUN if [ "$LUA_INTERPRETER" = lua5.2 ]; then \
+# Ubuntu has no lua5.5 package, so that image builds it from source. The
+# generated .pc carries -Wl,-E, matching Debian's lua*.pc: lgi-check links
+# liblua statically and a dlopen'd lgi resolves the executable's Lua symbols
+# only when they are exported.
+RUN if [ "$LUA_INTERPRETER" = lua5.5 ]; then \
       set -eu; \
-      sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources; \
-      apt-get update; \
-      cd /tmp; \
-      apt-get source lua-lgi; \
-      cd lua-lgi-*/; \
-      make -C lgi LUA_VERSION=5.2 PREFIX=/usr/local LUA_CFLAGS="$(pkg-config --cflags lua5.2)" VERSION=0.9.2; \
-      make -C lgi install LUA_VERSION=5.2 PREFIX=/usr/local LUA_CFLAGS="$(pkg-config --cflags lua5.2)" VERSION=0.9.2; \
-      luarocks --lua-version=5.2 --tree=/usr/local install busted 2.3.0-1; \
-      rm -rf /tmp/lua-lgi* /var/lib/apt/lists/*; \
+      apt-get update \
+      && apt-get install -y --no-install-recommends curl \
+      && cd /tmp \
+      && curl -fsSL https://www.lua.org/ftp/lua-5.5.0.tar.gz | tar xz \
+      && make -C lua-5.5.0 -j"$(nproc)" all install \
+      && mkdir -p /usr/local/lib/pkgconfig \
+      && printf 'prefix=/usr/local\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\nName: Lua\nDescription: Lua language\nVersion: 5.5.0\nLibs: -L${libdir} -llua -Wl,-E -lm -ldl\nCflags: -I${includedir}\n' \
+        > /usr/local/lib/pkgconfig/lua5.5.pc \
+      && rm -rf /tmp/lua-5.5.0 /var/lib/apt/lists/*; \
     fi
+
+# Ubuntu ships lgi and busted for Lua 5.1 and 5.3 only, so the other images
+# build them from source into /usr/local, where they shadow the packaged ones.
+RUN case "$LUA_INTERPRETER" in lua5.2|lua5.4|lua5.5) ;; *) exit 0 ;; esac; \
+    set -eu; \
+    LUA_MINOR="${LUA_INTERPRETER#lua}"; \
+    sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources; \
+    apt-get update; \
+    cd /tmp; \
+    apt-get source lua-lgi; \
+    cd lua-lgi-*/; \
+    make -C lgi LUA_VERSION="$LUA_MINOR" PREFIX=/usr/local LUA_CFLAGS="$(pkg-config --cflags $LUA_INTERPRETER)" VERSION=0.9.2; \
+    make -C lgi install LUA_VERSION="$LUA_MINOR" PREFIX=/usr/local LUA_CFLAGS="$(pkg-config --cflags $LUA_INTERPRETER)" VERSION=0.9.2; \
+    luarocks --lua-version="$LUA_MINOR" --tree=/usr/local install busted 2.3.0-1; \
+    rm -rf /tmp/lua-lgi* /var/lib/apt/lists/*

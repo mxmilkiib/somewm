@@ -39,7 +39,7 @@ jobs:
         run: |
           set -eu
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          for v in "luajit libluajit-5.1-dev" "lua5.2 liblua5.2-dev" "lua5.3 liblua5.3-dev"; do
+          for v in "luajit luajit libluajit-5.1-dev" "lua5.2 lua5.2 liblua5.2-dev" "lua5.3 lua5.3 liblua5.3-dev" "lua5.4 lua5.4 liblua5.4-dev" "lua5.5"; do
             set -- $v
             ref="${{ steps.tag.outputs.prefix }}-$1"
             if docker manifest inspect "$ref" >/dev/null 2>&1; then
@@ -47,7 +47,7 @@ jobs:
               continue
             fi
             docker build -f .github/ci.Dockerfile \
-              --build-arg LUA_INTERPRETER="$1" --build-arg LUA_DEV_PACKAGE="$2" \
+              --build-arg LUA_INTERPRETER="$1" --build-arg LUA_PACKAGES="${*:2}" \
               -t "$ref" .github
             docker push "$ref"
           done
@@ -83,6 +83,12 @@ jobs:
           - name: Lua 5.3
             pkg: lua5.3
             interpreter: lua5.3
+          - name: Lua 5.4
+            pkg: lua5.4
+            interpreter: lua5.4
+          - name: Lua 5.5
+            pkg: lua5.5
+            interpreter: lua5.5
 
     name: Build & Test (${{ matrix.lua.name }})
 
@@ -138,6 +144,12 @@ jobs:
           - name: Lua 5.3
             pkg: lua5.3
             interpreter: lua5.3
+          - name: Lua 5.4
+            pkg: lua5.4
+            interpreter: lua5.4
+          - name: Lua 5.5
+            pkg: lua5.5
+            interpreter: lua5.5
 
     name: Restart (${{ matrix.lua.name }})
 
