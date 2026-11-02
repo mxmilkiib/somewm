@@ -990,8 +990,18 @@ struct widget_tree *widget_tree_hold(struct widget_tree *d)
         *d->storage = (struct widget_storage) { .references = 1, .payload = *d };
         d->storage->payload.storage = NULL;
         d->storage->payload.ids = NULL;
+        /* Copies do not own the publish cache: freeing one must never
+         * release the arrays the original still tracks. */
+        d->storage->payload.published_boxes = NULL;
+        d->storage->payload.published_ids = NULL;
+        d->storage->payload.published_scrolled = NULL;
+        d->storage->payload.published_len = 0;
     }
     *copy = *d;
+    copy->published_boxes = NULL;
+    copy->published_ids = NULL;
+    copy->published_scrolled = NULL;
+    copy->published_len = 0;
     copy->ids = ids;
     if (ids) memcpy(ids, d->ids, d->nodes_len * sizeof(*ids));
     copy->storage->references++;
@@ -1076,6 +1086,13 @@ widget_nodes_paint_border(struct widget_tree *d, uint64_t client, const float rg
 void
 widget_nodes_clear(struct widget_tree *d)
 {
+    free(d->published_boxes);
+    free(d->published_ids);
+    free(d->published_scrolled);
+    d->published_boxes = NULL;
+    d->published_ids = NULL;
+    d->published_scrolled = NULL;
+    d->published_len = 0;
     if (d->storage) {
         uint64_t generation = d->shape_generation;
         storage_release(d->storage);

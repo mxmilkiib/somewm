@@ -4081,6 +4081,46 @@ solved_signal(lua_State *L, struct widget_tree *tree)
 	int top = lua_gettop(L) - 1;
 	int n = widget_boxes_read(&host, boxes, ids, scrolled);
 
+	/* An unchanged solve publishes nothing new: the Lua side would walk the
+	 * whole tree writing back the same boxes it already holds. On a busy
+	 * frame (window drag) that walk is the dominant cost for trees that did
+	 * not move, so compare before emitting. */
+	if (n == tree->published_len
+			&& (n == 0 || (memcmp(boxes, tree->published_boxes,
+					n * sizeof(*boxes)) == 0
+				&& memcmp(ids, tree->published_ids,
+					n * sizeof(*ids)) == 0
+				&& memcmp(scrolled, tree->published_scrolled,
+					n * sizeof(*scrolled)) == 0))) {
+		lua_settop(L, top);
+		return;
+	}
+	if (n != tree->published_len) {
+		free(tree->published_boxes);
+		free(tree->published_ids);
+		free(tree->published_scrolled);
+		tree->published_boxes = malloc(n ? n * sizeof(*tree->published_boxes) : 1);
+		tree->published_ids = malloc(n ? n * sizeof(*tree->published_ids) : 1);
+		tree->published_scrolled = malloc(n ? n * sizeof(*tree->published_scrolled) : 1);
+		if (!tree->published_boxes || !tree->published_ids
+				|| !tree->published_scrolled) {
+			free(tree->published_boxes);
+			free(tree->published_ids);
+			free(tree->published_scrolled);
+			tree->published_boxes = NULL;
+			tree->published_ids = NULL;
+			tree->published_scrolled = NULL;
+			tree->published_len = -1;   /* dedupe off on allocation failure */
+		} else {
+			tree->published_len = n;
+		}
+	}
+	if (tree->published_boxes) {
+		memcpy(tree->published_boxes, boxes, n * sizeof(*boxes));
+		memcpy(tree->published_ids, ids, n * sizeof(*ids));
+		memcpy(tree->published_scrolled, scrolled, n * sizeof(*scrolled));
+	}
+
 	lua_createtable(L, n, 0);
 	for (int k = 0; k < n; k++) {
 		lua_createtable(L, 0, 6);

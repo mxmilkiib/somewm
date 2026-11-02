@@ -43,6 +43,12 @@ struct widget_tree {
 	 * the last frame would read back the boxes of the one it replaced. */
 	bool declared;
     bool publish_pending;
+	/* What the last clay::solved published: an identical solve skips
+	 * re-emitting the signal and its Lua-side publish walk. */
+	int (*published_boxes)[4];
+	uint32_t *published_ids;
+	float *published_scrolled;
+	int published_len;
 	/* The actual root element of the completed declaration, including a
 	 * host slot that owns its drawable contribution directly. No geometry. */
 	uint32_t root_id;
