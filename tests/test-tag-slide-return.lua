@@ -13,13 +13,17 @@ local s = screen[1]
 
 local function dump() return awesome._clay_tree(s) end
 
-local function client_x()
+local function client_x(class)
     for line in dump():gmatch('[^\n]+') do
-        if line:match('^%s*CLIENT ') then
+        if line:match('^%s*CLIENT ' .. (class or '%u+')) then
             local x = line:match('box (%-?%d+),%-?%d+ %d+x')
             if x then return tonumber(x) end
         end
     end
+end
+
+local function frames()
+    return tonumber(dump():match('frames (%d+)'))
 end
 
 runner.run_async(function()
@@ -39,7 +43,7 @@ runner.run_async(function()
     local report = os.tmpname()
     awful.spawn{binary, 'SLIDE_A', report, '0', 'ff0000cc', '0'}
     awful.spawn{binary, 'SLIDE_B', report, '0', '00ff00cc', '0'}
-    assert(async.wait_for_client('SLIDE_A', 2))
+    local a = assert(async.wait_for_client('SLIDE_A', 2))
     assert(async.wait_for_client('SLIDE_B', 2))
     async.sleep(.3)
 
@@ -52,6 +56,33 @@ runner.run_async(function()
     assert(client_x(), 'A lost its frame on the return: ' .. dump())
     async.sleep(1)
     assert(client_x(), 'A never settled: ' .. dump())
+
+    -- The same return for a floating client, woken the way the tasklist
+    -- does it: view the tag, then raise and focus through activate.
+    a.floating = true
+    a:geometry{x = 240, y = 140}
+    async.sleep(.1)
+    local wanted = a:geometry()
+    for round = 1, 2 do
+        other:view_only()
+        async.sleep(.15)
+        original:view_only()
+        a.minimized = false
+        a:emit_signal('request::activate', 'tasklist', {raise = true})
+        async.sleep(.15)
+        assert(client_x(), 'round ' .. round ..
+            ': A lost its frame on the activate return: ' .. dump())
+        local f1 = frames()
+        async.sleep(.9)
+        local f2 = frames()
+        local x = assert(client_x(), 'round ' .. round ..
+            ': A never settled: ' .. dump())
+        assert(f2 > f1 or math.abs(x - wanted.x) <= 2, 'round ' .. round ..
+            ': A wedged mid-slide at x=' .. x .. ' (frames ' ..
+            f1 .. '->' .. f2 .. '): ' .. dump())
+        assert(math.abs(x - wanted.x) <= 2, 'round ' .. round ..
+            ': A settled at x=' .. x .. ' not ' .. wanted.x .. ': ' .. dump())
+    end
 
     io.stderr:write('[PASS] a returning client drops its tag slide ghost\n')
     runner.done()
