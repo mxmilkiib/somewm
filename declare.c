@@ -1398,6 +1398,11 @@ luaA_client_geometry_is_solved(lua_State *L)
 static void
 clients_settle(Monitor *m, struct declare_band *band)
 {
+    /* A transitioned box is paint, not a layout answer: writing it into
+     * the geometry a floating client declares from feeds the slide's
+     * target with its own position, standing it still mid-slide. The
+     * first idle frame publishes the settled box instead. */
+    if (clay_transitions_active()) return;
     for (size_t i = 0; i < band->settle_len; i++) {
         Client *c = declare_handle_get(band->settle[i].handle, NULL);
         Clay_ElementData data = Clay_GetElementData((Clay_ElementId) { .id = band->settle[i].id });
@@ -2967,6 +2972,8 @@ bars_settle(Monitor *m)
 {
 	size_t len = bars_len;
 
+	/* As in clients_settle: a transitioned box is not a layout answer. */
+	if (clay_transitions_active()) return;
 	bars_len = 0;
 	for (size_t i = 0; i < len; i++) {
 		drawin_t *d = bars[i].d;
@@ -3028,6 +3035,8 @@ nodes_settle(Monitor *m, struct declare_band *band)
 static void
 popups_settle(Monitor *m)
 {
+	/* As in clients_settle: a transitioned box is not a layout answer. */
+	if (clay_transitions_active()) return;
 	for (drawin_t *d = screen_drawin_next(active_screen->screen, NULL); d;
 			d = screen_drawin_next(active_screen->screen, d)) {
 		if (d->bar.edge || d->attachment.kind || !declarable_drawin(d)
