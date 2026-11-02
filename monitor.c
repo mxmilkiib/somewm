@@ -841,6 +841,17 @@ updatemons(struct wl_listener *listener, void *data)
 	wlr_cursor_move(cursor, NULL, 0, 0);
 	declare_cursor_changed();
 
+	/* A layout change can leave the re-clamped cursor over a different
+	 * output with no motion event to notice (kanshi applying a profile at
+	 * login moves outputs under the parked cursor). Keep selmon on the
+	 * cursor's output or layer-shell clients without an explicit output
+	 * (rofi) open on the stale monitor. */
+	{
+		Monitor *mon = xytomon(cursor->x, cursor->y);
+		if (mon)
+			selmon = mon;
+	}
+
 	in_updatemons = 0;
 	wlr_output_manager_v1_set_configuration(output_mgr, config);
 	in_updatemons = 0;
