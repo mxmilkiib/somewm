@@ -4825,12 +4825,12 @@ luaA_client_paint_border(lua_State *L)
     client_t *c = luaA_checkudata(L, 1, &client_class);
     bool painted = false;
 
-    if (c->scene && c->screen) {
+    if (c->scene && c->screen && c->node) {
         float rgba[4];
 
         client_border_rgba(c, rgba);
         painted = widget_nodes_paint_border(&c->screen->layout,
-            declare_handle_for(c, DECLARE_KIND_CLIENT), rgba);
+            node_handle(c->node), rgba);
         Monitor *m = painted ? luaA_monitor_get_by_screen(L, c->screen) : NULL;
         if (m && m->declare)
             declare_output_mark_dirty(m->declare);
