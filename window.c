@@ -359,6 +359,29 @@ commitnotify(struct wl_listener *listener, void *data)
 	}
 }
 
+/* A configure send dropped while a serial was in flight is never retried
+ * by the reconciler: its hook runs only when the solved box moves, and a
+ * client that acks but does not commit (mpv holding an unchanged size)
+ * never clears c->resize for it. Once the held serial is acked the wire
+ * is free; re-run the configure leg when the box or states on the wire
+ * lag the solved box, so the dropped configure goes out. */
+static void
+ackconfigurenotify(struct wl_listener *listener, void *data)
+{
+	Client *c = wl_container_of(listener, c, ack_configure);
+	struct wlr_xdg_surface_configure *configure = data;
+	struct wlr_xdg_toplevel *toplevel = c->surface.xdg->toplevel;
+
+	if (!c->resize || configure->serial < c->resize || !toplevel)
+		return;
+	if ((int32_t)c->surface_box.width == toplevel->scheduled.width
+			&& (int32_t)c->surface_box.height == toplevel->scheduled.height
+			&& toplevel->scheduled.fullscreen == c->fullscreen
+			&& toplevel->scheduled.maximized == !!c->maximized)
+		return;
+	client_configure_to_box(c);
+}
+
 /* The popup's toplevel and its output; -1 with no toplevel yet. */
 static int
 popup_toplevel(Popup *p, Client **c, LayerSurface **l, Monitor **m)
@@ -619,6 +642,7 @@ client_remove_all_listeners(client_t *c)
 		 * Only remove here if unmapnotify didn't run (c->scene still set). */
 		if (c->scene) {
 			wl_list_remove(&c->commit.link);
+			wl_list_remove(&c->ack_configure.link);
 		}
 		wl_list_remove(&c->map.link);
 		wl_list_remove(&c->unmap.link);
@@ -694,6 +718,8 @@ client_reregister_listeners(client_t *c)
 			 * Initialize initial_commit.link so client_remove_all_listeners
 			 * can safely call wl_list_remove on it during consecutive reloads. */
 			LISTEN(&c->surface.xdg->surface->events.commit, &c->commit, commitnotify);
+			LISTEN(&c->surface.xdg->events.ack_configure,
+				&c->ack_configure, ackconfigurenotify);
 			LISTEN(&c->surface.xdg->surface->events.map, &c->map, mapnotify);
 			LISTEN(&c->surface.xdg->surface->events.unmap, &c->unmap, unmapnotify);
 			wl_list_init(&c->initial_commit.link);
@@ -703,6 +729,7 @@ client_reregister_listeners(client_t *c)
 			LISTEN(&c->surface.xdg->surface->events.map, &c->map, mapnotify);
 			LISTEN(&c->surface.xdg->surface->events.unmap, &c->unmap, unmapnotify);
 			wl_list_init(&c->commit.link);
+			wl_list_init(&c->ack_configure.link);
 		}
 	}
 
@@ -927,6 +954,8 @@ mapnotify(struct wl_listener *listener, void *data)
 	 * XWayland uses configurex11 for resize, not commits. */
 	if (c->client_type == XDGShell) {
 		LISTEN(&client_surface(c)->events.commit, &c->commit, commitnotify);
+		LISTEN(&c->surface.xdg->events.ack_configure,
+			&c->ack_configure, ackconfigurenotify);
 	}
 
 	client_get_geometry(c, &c->geometry);
@@ -1689,11 +1718,15 @@ client_configure_to_box(Client *c)
 	if (c->mon)
 		client_set_bounds(c, c->mon->w.width, c->mon->w.height);
 
-	/* CRITICAL: Only send configure if there's no pending resize waiting
-	 * for client commit. Without this check, we flood the client with
-	 * configure events on every refresh cycle, which crashes Firefox and
-	 * other clients that can't handle rapid configure floods. */
-	if (!c->resize) {
+	/* Only send while no serial waits on the wire, so a refresh cycle
+	 * cannot flood a client that handles configures badly (Firefox).
+	 * An acked serial counts as settled even without a commit for it:
+	 * gating on the commit (c->resize) holds back every later send from
+	 * a client that acks and keeps its buffer, like an idle mpv, which
+	 * once left the fullscreen configure never sent at all. */
+	bool unacked = c->resize && c->client_type == XDGShell
+		&& c->resize > c->surface.xdg->pending.configure_serial;
+	if (!unacked) {
 		/* Sync xdg-shell fullscreen state with c->fullscreen so the client
 		 * knows it is fullscreen. Done here (not in client_set_fullscreen)
 		 * so it batches into the same configure as the size change. */
@@ -2061,6 +2094,7 @@ unmapnotify(struct wl_listener *listener, void *data)
 	 * Must be done before surface destruction as wlroots asserts listener lists are empty. */
 	if (c->client_type == XDGShell) {
 		wl_list_remove(&c->commit.link);
+		wl_list_remove(&c->ack_configure.link);
 	}
 
 	client_scene_node_destroy(c);

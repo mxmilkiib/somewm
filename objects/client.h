@@ -200,6 +200,7 @@ struct client_t
     /** Wayland listeners */
     struct wl_listener initial_commit; /* For initial XDG commit before scene surface exists */
     struct wl_listener commit;         /* For subsequent commits after scene surface exists */
+    struct wl_listener ack_configure;  /* For acked xdg configures: delivers sends a pending serial held back */
     struct wl_listener map;
     struct wl_listener maximize;
     struct wl_listener minimize;
