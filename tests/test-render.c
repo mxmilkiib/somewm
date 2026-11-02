@@ -13,7 +13,9 @@
 #include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <wayland-server-core.h>
 #include <wlr/render/interface.h>
+#include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_scene.h>
 
 #include "clay.h"
@@ -2480,6 +2482,76 @@ static void test_verifier_catches_divergence(void) {
 #endif
 }
 
+/* --- animated cursor clock ---
+ * render_cursor_anim hands a keyed leaf's frames to the render-side clock,
+ * which the event loop steps without a declare. The leaf here is a plain
+ * image node; a private loop drives the timer and a bare wlr_output absorbs
+ * the per-step schedule_frame, and a swap is read back as buffer pixels. */
+
+struct anim_fixture {
+	struct wl_event_loop *loop;
+	struct wlr_output out;
+};
+
+static void anim_fixture_init(struct anim_fixture *af) {
+	af->loop = wl_event_loop_create();
+	memset(&af->out, 0, sizeof(af->out));
+	af->out.event_loop = af->loop;
+	wl_list_init(&af->out.events.needs_frame.listener_list);
+	wl_list_init(&af->out.events.frame.listener_list);
+}
+
+static cairo_surface_t *solid_frame(uint32_t r, uint32_t g, uint32_t b) {
+	cairo_surface_t *s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 4, 4);
+	cairo_t *cr = cairo_create(s);
+	cairo_set_source_rgb(cr, r / 255.0, g / 255.0, b / 255.0);
+	cairo_paint(cr);
+	cairo_destroy(cr);
+	return s;
+}
+
+/* An image leaf with a red raster, ready for the clock to take over. */
+static struct wlr_scene_node *cursor_leaf(struct fixture *f,
+		struct image_entry *entry, uint64_t *key) {
+	fake_image_entry(entry, 4, 4);
+	cairo_t *cr = cairo_create(entry->native);
+	cairo_set_source_rgb(cr, 1, 0, 0);
+	cairo_paint(cr);
+	cairo_destroy(cr);
+	Clay_RenderCommand cmds[] = { cmd_image(7, 0, 0, 32, 32, entry) };
+	render_reconcile(f->rs, commands_of(cmds, 1), &no_hooks, no_bounds);
+	*key = (uint64_t)CLAY_RENDER_COMMAND_TYPE_IMAGE << 32 | 7;
+	return child_at(render_tree(f->parent), 0);
+}
+
+static void test_cursor_anim_steps_frames_on_the_clock(void) {
+	struct fixture f;
+	fixture_init(&f);
+	struct anim_fixture af;
+	anim_fixture_init(&af);
+	struct image_entry entry;
+	uint64_t key;
+	struct wlr_scene_node *node = cursor_leaf(&f, &entry, &key);
+
+	cairo_surface_t *frames[] = { solid_frame(255, 0, 0),
+		solid_frame(0, 0, 255) };
+	uint32_t delays[] = { 20, 20 };
+	render_cursor_anim(f.rs, &af.out, key, frames, delays, 2, 1, af.loop);
+
+	CHECK_EQ(raster_pixel(node, 16, 16), 0xffff0000u);
+	wl_event_loop_dispatch(af.loop, 100);
+	CHECK_EQ(raster_pixel(node, 16, 16), 0xff0000ffu);
+	wl_event_loop_dispatch(af.loop, 100);
+	CHECK_EQ(raster_pixel(node, 16, 16), 0xffff0000u);
+
+	render_cursor_anim(f.rs, NULL, 0, NULL, NULL, 0, 0, NULL);
+	cairo_surface_destroy(frames[0]);
+	cairo_surface_destroy(frames[1]);
+	cairo_surface_destroy(entry.native);
+	wl_event_loop_destroy(af.loop);
+	fixture_finish(&f, &no_hooks);
+}
+
 int main(void) {
 	static const struct {
 		const char *name;
@@ -2531,6 +2603,7 @@ int main(void) {
 		{ "text under a radius scope rasters once", test_text_under_radius_scope_rasters_once },
 		{ "the edge rule in the hit test", test_edge_rule_hit },
 		{ "clip source matches the buffer grid", test_clip_source_matches_the_buffer_grid },
+		{ "cursor anim steps frames on the clock", test_cursor_anim_steps_frames_on_the_clock },
 		{ "verifier catches divergence", test_verifier_catches_divergence },
 	};
 
