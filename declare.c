@@ -4639,7 +4639,13 @@ declare_output_frame(struct declare_output *dout, Monitor *m)
     band->exhausted = false;
     band->inspector_refused = false;
     Clay_SetCurrentContext(band->clay);
-    if (band->context_valid) {
+    /* Serializing the previous tree every frame serves only the post-failure
+     * half of `clay tree` and costs a full text walk per frame; opt in with
+     * SOMEWM_CLAY_DUMP when post-failure dumps are being chased. */
+    static int dump_trees = -1;
+    if (dump_trees < 0)
+        dump_trees = getenv("SOMEWM_CLAY_DUMP") != NULL;
+    if (dump_trees && band->context_valid) {
         buffer_t previous_tree = BUFFER_INIT;
         dump_tree(&previous_tree, band);
         free(band->retained_dump);
