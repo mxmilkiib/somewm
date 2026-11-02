@@ -31,3 +31,6 @@ docs/*
 
 # Nix build output
 result
+
+# instant-grep index
+.ig/
