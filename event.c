@@ -142,8 +142,12 @@ event_handle_mousegrabber(double x, double y, uint16_t extra_mask)
     if (!mousegrabber_isrunning())
         return false;
 
-    /* A stashed motion precedes this event: deliver it first. */
+    /* A stashed motion precedes this event: deliver it first. Its callback
+     * may end the grab (release seen in the live mask), leaving nothing to
+     * call for this event. */
     event_grabber_flush();
+    if (!mousegrabber_isrunning())
+        return true;
 
     mask = extra_mask | some_button_state_mask();
     grabber_run((int)x, (int)y, mask);
