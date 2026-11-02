@@ -103,7 +103,7 @@ runner.run_async(function()
 
     beautiful.animation_appear_duration = 1
     beautiful.animation_disappear, beautiful.animation_disappear_duration = 'grow', .4
-    beautiful.animation_tag_duration = .2
+    beautiful.animation_tag, beautiful.animation_tag_duration = 'grow', .2
     ruled.client.append_rule {
         rule = {class = 'ENTRANCE_CLIENT'},
         properties = {animation = {appear = 'grow'}, border_width = 0, floating = false},

@@ -29,7 +29,7 @@ describe("somewm.animation", function()
         local object = {}
         assert.is_nil(animation.word(object, "layout"))
         theme.animation_duration = 0.4
-        assert.same({properties = {"box", "border_color"}, duration = 0, tag_exit = "grow", tag_duration = 0.4}, animation.word(object, "layout"))
+        assert.same({properties = {"box", "border_color"}, duration = 0, tag_exit = "fade", tag_duration = 0.4}, animation.word(object, "layout"))
         assert.equals(0.4, animation.word(object, "layout").duration)
     end)
     it("reads object overrides ahead of both theme levels", function()
@@ -147,6 +147,35 @@ describe("somewm.animation", function()
         object.animation = {appear = false, tag = false}
         assert.is_nil(animation.word(object, "appear").enter)
         assert.is_nil(animation.word(object, "tag").tag_exit)
+    end)
+    it("splits a two-slide tag word into enter and exit directions", function()
+        theme.animation_tag, theme.animation_tag_duration = {"slide_right", "slide_left"}, 0.5
+        local word = animation.word({}, "tag")
+        assert.equals("slide_right", word.enter)
+        assert.equals("slide_left", word.tag_exit)
+        assert.equals(0.5, word.tag_duration)
+        theme.animation_tag = {"slide_up", "slide_down"}
+        word = animation.word({}, "tag")
+        assert.equals("slide_up", word.enter)
+        assert.equals("slide_down", word.tag_exit)
+        theme.animation_tag = {"fade", "slide_left"}
+        word = animation.word({}, "tag")
+        assert.same({"fade", "slide_left"}, word.enter)
+        assert.same({"fade", "slide_left"}, word.tag_exit)
+    end)
+    it("mirrors the tag entrance on a backward switch", function()
+        theme.animation_tag, theme.animation_tag_duration = {"slide_right", "slide_left"}, 0.5
+        local s, object = {}, {}
+        object.screen = s
+        animation.set_tag_pan(s, -1)
+        local word = animation.word(object, "tag")
+        assert.equals("slide_left", word.enter)
+        assert.equals("slide_left", word.tag_exit)
+        theme.animation_tag = "slide_right"
+        assert.equals("slide_left", animation.word(object, "tag").enter)
+        animation.set_tag_pan(s, 1)
+        assert.equals("slide_right", animation.word(object, "tag").enter)
+        animation.set_tag_pan(s, 0)
     end)
     it("keeps list occurrences stable across copied policy reads", function()
         theme.animation_duration = 1
