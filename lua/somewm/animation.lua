@@ -45,6 +45,11 @@ local seen = setmetatable({}, {__mode = "k"})
 -- @beautiful beautiful.animation_tag_duration
 -- @tparam[opt=nil] number animation_tag_duration
 
+--- A client minimizing, in seconds; needs an exit word from
+-- `animation_minimize` or `c.animation.minimize`, else it rides the tag exit.
+-- @beautiful beautiful.animation_minimize_duration
+-- @tparam[opt=nil] number animation_minimize_duration
+
 --- The border colour easing on a focus change, in seconds.
 -- @beautiful beautiful.animation_focus_duration
 -- @tparam[opt=nil] number animation_focus_duration
@@ -68,6 +73,11 @@ local seen = setmetatable({}, {__mode = "k"})
 -- @beautiful beautiful.animation_tag
 -- @tparam[opt="fade"] string|table animation_tag
 
+--- The exit on a minimize, same words as `animation_appear`. Unset, a
+-- minimized client departs with the tag exit.
+-- @beautiful beautiful.animation_minimize
+-- @tparam[opt=nil] string|table animation_minimize
+
 local theme_keys = {
     layout = "animation_layout_duration",
     maximize = "animation_maximize_duration",
@@ -76,6 +86,7 @@ local theme_keys = {
     appear = "animation_appear_duration",
     disappear = "animation_disappear_duration",
     tag = "animation_tag_duration",
+    minimize = "animation_minimize_duration",
 }
 
 local function object_field(object)
@@ -225,9 +236,14 @@ function animation.word(object, trigger)
     if animation.duration(object, "tag") > 0 then
         word.tag_exit, word.tag_duration = tag_out or entrance(object, "tag"), animation.duration(object, "tag")
     end
+    local min_word = entrance(object, "minimize")
+    if min_word then
+        word.minimize_exit, word.minimize_duration = min_word, animation.duration(object, "minimize")
+    end
     if not animation.enabled or capi.mousegrabber.isrunning() then
         if word.exit then word.exit_duration = 0 end
         if word.tag_exit then word.tag_duration = 0 end
+        if word.minimize_exit then word.minimize_duration = 0 end
     end
     return word
 end

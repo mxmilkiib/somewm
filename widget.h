@@ -104,10 +104,10 @@ struct widget_binding {
  * of zero means the node draws no fill or no ring. */
 struct widget_transition {
     bool enabled;
-    uint16_t enter_state, exit_state, tag_exit;
+    uint16_t enter_state, exit_state, tag_exit, minimize_exit;
     uint8_t exit_order;
     uint16_t properties;
-    float duration, exit_duration, tag_duration;
+    float duration, exit_duration, tag_duration, minimize_duration;
 };
 
 struct widget_node {
