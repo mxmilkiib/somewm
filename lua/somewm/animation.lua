@@ -69,7 +69,9 @@ local seen = setmetatable({}, {__mode = "k"})
 -- Defaults to `fade`; `c.animation.tag` can override it. A list of two slide
 -- words reads as {enter, exit}: {"slide_right", "slide_left"} slides the new
 -- tag in from the right edge while the old tag exits left, so the whole
--- client layer pans like a KDE desktop switch.
+-- client layer pans like a KDE desktop switch. A bare slide word is the
+-- enter half of that pair: "slide_right" reads as {"slide_right",
+-- "slide_left"}. A backward switch mirrors both halves.
 -- @beautiful beautiful.animation_tag
 -- @tparam[opt="fade"] string|table animation_tag
 
@@ -207,6 +209,13 @@ function animation.word(object, trigger)
         -- when this describe is not the tag entrance itself.
         local in_word, out_word = tag_pair(tag_enter)
         if in_word then tag_enter, tag_out = in_word, out_word end
+        -- A bare slide word names only the enter edge: the departing tag
+        -- exits the opposite edge, one conveyor. Resolved before the pan
+        -- mirror since declare.c mirrors the exit itself on a backward
+        -- switch.
+        if not tag_out and slide_words[tag_enter] then
+            tag_out = mirror_word(tag_enter)
+        end
         -- tag_exit stays the forward word; declare.c mirrors it at exit.
         -- A composed list keeps its authored direction; only a bare slide
         -- word or a pair's enter half pans the other way on a backward switch.
