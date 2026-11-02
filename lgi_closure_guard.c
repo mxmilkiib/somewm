@@ -152,8 +152,6 @@ void lgi_guard_mark_ready(void)
  * ================================================================ */
 
 /* Validate that the Lgi closure's internal state is usable.
- * Returns TRUE if the closure can safely be dispatched. */
-/* Validate that the Lgi closure's internal state is usable.
  * Returns TRUE if the closure can safely be dispatched.
  * Mirrors the checks closure_callback does before calling into Lua. */
 static gboolean
@@ -187,7 +185,10 @@ lgi_closure_is_valid(void *closure_arg)
 	gboolean valid = (lua_touserdata(thread_L, -1) != NULL);
 	lua_settop(thread_L, thread_top);
 
-	return valid;
+	if (!valid)
+		return FALSE;
+
+	return TRUE;
 }
 
 static void
@@ -317,3 +318,51 @@ ffi_closure_free_impl(void *closure)
 
 	real_ffi_closure_free(closure);
 }
+
+/* ================================================================
+ * lua_resume interposition — swallow stray resumes on completed
+ * coroutines.
+ *
+ * When a GIO async callback fires after the Gio.Async.start coroutine
+ * has already returned, lgi's closure_callback pushes the GIO args
+ * onto the thread stack and calls lua_resume.  The thread has
+ * status=0 (LUA_OK, completed) and no function at the base, so
+ * lua_resume tries to call stack[0] — garbage — producing "attempt
+ * to call a number value".  lgi rethrows that via unprotected
+ * lua_error, panicking SomeWM.
+ *
+ * Returning LUA_ERRRUN does not help: lgi rethrows that too.  Instead,
+ * pop the stray args, push false, and return LUA_OK so lgi treats it
+ * as a normal coroutine return with a false result.
+ * ================================================================ */
+
+/* The two-argument lua_resume is the 5.1/LuaJIT ABI; 5.2+ takes four
+ * arguments, so interposing there needs a different wrapper. */
+#if LUA_VERSION_NUM == 501
+
+static int (*real_lua_resume)(lua_State *, int) = NULL;
+
+int
+lua_resume(lua_State *L, int nargs)
+{
+	if (!real_lua_resume)
+		*(void **)&real_lua_resume = dlsym(RTLD_NEXT, "lua_resume");
+
+	int status = lua_status(L);
+	if (status == 0 /* LUA_OK */) {
+		int top = lua_gettop(L);
+		int base = top - nargs;
+		if (base <= 0) {
+			fprintf(stderr, "somewm: lgi_guard: swallowed resume on "
+				"completed coroutine (top=%d nargs=%d)\n",
+				top, nargs);
+			lua_settop(L, 0);
+			lua_pushboolean(L, 0);
+			return LUA_OK;
+		}
+	}
+
+	return real_lua_resume(L, nargs);
+}
+
+#endif
