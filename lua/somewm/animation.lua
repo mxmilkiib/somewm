@@ -152,11 +152,6 @@ local slide_mirror = {slide_left = "slide_right", slide_right = "slide_left",
 local tag_pan = setmetatable({}, {__mode = "k"})
 
 local function mirror_word(value)
-    if type(value) == "table" then
-        local out = {}
-        for i, word in ipairs(value) do out[i] = slide_mirror[word] or word end
-        return out
-    end
     return slide_mirror[value] or value
 end
 
@@ -213,7 +208,11 @@ function animation.word(object, trigger)
         local in_word, out_word = tag_pair(tag_enter)
         if in_word then tag_enter, tag_out = in_word, out_word end
         -- tag_exit stays the forward word; declare.c mirrors it at exit.
-        if (tag_pan[object.screen] or 0) < 0 then tag_enter = mirror_word(tag_enter) end
+        -- A composed list keeps its authored direction; only a bare slide
+        -- word or a pair's enter half pans the other way on a backward switch.
+        if (tag_pan[object.screen] or 0) < 0 and slide_words[tag_enter] then
+            tag_enter = mirror_word(tag_enter)
+        end
     end
     for _, name in ipairs(type(trigger) == "table" and trigger or {trigger}) do
         -- One element has one duration, so simultaneous box and border changes use the larger.
