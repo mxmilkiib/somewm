@@ -92,6 +92,7 @@
 #include "objects/drawable.h"
 #include "objects/button.h"
 #include "objects/key.h"
+#include "objects/mousegrabber.h"
 #include "luaa.h"
 #include "common/lualib.h"
 #include "signal.h"
@@ -2425,8 +2426,14 @@ client_resize_do(client_t *c, area_t geometry, bool silent, bool solved)
     area_t old_geometry;
     screen_t *new_screen = c->screen;
 
-    if(!silent && !solved && (!new_screen || !screen_area_in_screen(new_screen, geometry)))
-        new_screen = screen_getbycoord(geometry.x, geometry.y);
+    /* While a mouse grab runs, keep the client's screen fixed: a dragged
+     * window straddling an output edge would otherwise flip assignment on
+     * jitter, each flip re-attaching its node and re-arranging both outputs.
+     * mousegrabber_settle_screens() re-evaluates once when the grab ends. */
+    if(!silent && !solved && !mousegrabber_isrunning()
+       && (!new_screen || !screen_area_in_screen(new_screen, geometry)))
+        new_screen = screen_getbycoord(geometry.x + geometry.width / 2,
+                                       geometry.y + geometry.height / 2);
 
     /* Also store geometry including border */
     old_geometry = c->geometry;

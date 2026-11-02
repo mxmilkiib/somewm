@@ -31,6 +31,7 @@ void mousegrabber_handleevent(lua_State *, int, int, uint16_t);
 
 /* somewm-specific */
 bool mousegrabber_isrunning(void);
+void mousegrabber_settle_screens(void);
 void luaA_mousegrabber_setup(lua_State *L);
 void mousegrabber_hot_reload(lua_State *L);
 

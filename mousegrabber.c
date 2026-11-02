@@ -28,6 +28,8 @@
 
 #include "objects/mousegrabber.h"
 #include "objects/mouse.h"
+#include "objects/client.h"
+#include "objects/screen.h"
 #include "luaa.h"
 #include "common/lualib.h"
 #include "common/util.h"
@@ -70,6 +72,26 @@ mousegrabber_isrunning(void)
     return mousegrabber_active && globalconf.mousegrabber != LUA_REFNIL;
 }
 
+/** Re-evaluate screen assignment once a grab ends.
+ * client_resize_do skips the screen re-pick while a grab runs so a dragged
+ * client cannot flap between outputs on pointer jitter. On stop, each client
+ * whose geometry no longer overlaps its screen moves once, picked by centre
+ * point - the convention screen_removed() and fake_add() already use.
+ */
+void
+mousegrabber_settle_screens(void)
+{
+	foreach(c, globalconf.clients) {
+		if ((*c)->screen && screen_area_in_screen((*c)->screen, (*c)->geometry))
+			continue;
+		int cx = (*c)->geometry.x + (*c)->geometry.width / 2;
+		int cy = (*c)->geometry.y + (*c)->geometry.height / 2;
+		screen_t *s = screen_getbycoord(cx, cy);
+		if (s && s != (*c)->screen)
+			screen_client_moveto(*c, s, false);
+	}
+}
+
 /** Handle mouse motion events.
  * \param L Lua stack to push the pointer motion.
  * \param x The received mouse event x component.
@@ -95,10 +117,13 @@ mousegrabber_hot_reload(lua_State *L)
 
     free(mousegrabber_cursor_name);
     mousegrabber_cursor_name = NULL;
+    bool was_active = mousegrabber_active;
     luaL_unref(L, LUA_REGISTRYINDEX, globalconf.mousegrabber);
     globalconf.mousegrabber = LUA_REFNIL;
     mousegrabber_active = false;
     event_grabber_cancel();
+    if (was_active)
+        mousegrabber_settle_screens();
 }
 
 /** Stop grabbing the mouse pointer.
@@ -125,8 +150,11 @@ luaA_mousegrabber_stop(lua_State *L)
     }
 
     /* Mark as inactive; drop any motion stashed for it. */
+    bool was_active = mousegrabber_active;
     mousegrabber_active = false;
     event_grabber_cancel();
+    if (was_active)
+        mousegrabber_settle_screens();
 
     declare_mark_all_dirty();
     return 0;
