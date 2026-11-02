@@ -17,8 +17,10 @@
 #include <wlr/render/interface.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_scene.h>
+#include <wlr/xcursor.h>
 
 #include "clay.h"
+#include "cursor_anim.h"
 #include "render.h"
 #include "render_image.h"
 #include "render_text.h"
@@ -2692,6 +2694,197 @@ static void test_cursor_anim_zero_delay_clamps(void) {
 	fixture_finish(&f, &no_hooks);
 }
 
+/* --- cursor animation set ---
+ * The declare side builds a cursor_anim_set out of a wlr_xcursor: uniform
+ * frames become stepped surfaces, mixed sizes or hotspots leave the set
+ * empty so the leaf keeps its once-authored box and hotspot. The structs
+ * are plain data, so the build runs in process on fabricated frames. */
+
+static struct wlr_xcursor_image *xc_frame(uint32_t w, uint32_t h,
+		uint32_t hx, uint32_t hy, uint32_t delay, uint32_t pixel) {
+	struct wlr_xcursor_image *img = calloc(1, sizeof(*img));
+	img->width = w;
+	img->height = h;
+	img->hotspot_x = hx;
+	img->hotspot_y = hy;
+	img->delay = delay;
+	img->buffer = malloc((size_t)w * h * 4);
+	uint32_t *px = (uint32_t *)img->buffer;
+	for (size_t i = 0; i < (size_t)w * h; i++)
+		px[i] = pixel;
+	return img;
+}
+
+static void xc_frame_destroy(struct wlr_xcursor_image *img) {
+	free(img->buffer);
+	free(img);
+}
+
+/* Three same-size same-hotspot frames become a stepped set; the delays
+ * differ and are kept, they are what the clock steps on. */
+static void test_cursor_anim_build_rasters_uniform_frames(void) {
+	struct cursor_anim_set set = { 0 };
+	struct wlr_xcursor_image *imgs[] = {
+		xc_frame(4, 4, 1, 1, 20, 0xffff0000u),
+		xc_frame(4, 4, 1, 1, 40, 0xff00ff00u),
+		xc_frame(4, 4, 1, 1, 60, 0xff0000ffu),
+	};
+	struct wlr_xcursor xc = {
+		.image_count = sizeof(imgs) / sizeof(imgs[0]),
+		.images = imgs,
+	};
+
+	cursor_anim_build(&set, &xc, 1);
+	CHECK_EQ(set.len, 3);
+	CHECK(set.xc == &xc);
+	CHECK_EQ(set.gen, 1);
+	CHECK_EQ(set.delays[0], 20);
+	CHECK_EQ(set.delays[1], 40);
+	CHECK_EQ(set.delays[2], 60);
+	CHECK_EQ(cairo_image_surface_get_width(set.frames[2]), 4);
+	CHECK_EQ(((const uint32_t *)cairo_image_surface_get_data(
+			set.frames[2]))[0], 0xff0000ffu);
+
+	cursor_anim_free(&set);
+	CHECK(set.frames == NULL);
+	for (size_t i = 0; i < 3; i++)
+		xc_frame_destroy(imgs[i]);
+}
+
+/* Frames that differ in size keep the set empty: the leaf's box is
+ * authored once per declare, so a stepped texture could not grow or
+ * shrink it. The set still records (xc, gen) so the next declare's build
+ * is a no-op rather than a rescan. */
+static void test_cursor_anim_build_mixed_size_stays_empty(void) {
+	struct cursor_anim_set set = { 0 };
+	struct wlr_xcursor_image *imgs[] = {
+		xc_frame(4, 4, 1, 1, 20, 0xffff0000u),
+		xc_frame(8, 4, 1, 1, 20, 0xff00ff00u),
+	};
+	struct wlr_xcursor xc = {
+		.image_count = sizeof(imgs) / sizeof(imgs[0]),
+		.images = imgs,
+	};
+
+	cursor_anim_build(&set, &xc, 1);
+	CHECK_EQ(set.len, 0);
+	CHECK(set.frames == NULL);
+	CHECK(set.delays == NULL);
+	CHECK(set.xc == &xc);
+
+	for (size_t i = 0; i < 2; i++)
+		xc_frame_destroy(imgs[i]);
+}
+
+/* A hotspot that moves between frames stays static for the same reason:
+ * the hotspot is baked into the leaf's position at declare time. */
+static void test_cursor_anim_build_mixed_hotspot_stays_empty(void) {
+	struct cursor_anim_set set = { 0 };
+	struct wlr_xcursor_image *imgs[] = {
+		xc_frame(4, 4, 0, 0, 20, 0xffff0000u),
+		xc_frame(4, 4, 2, 1, 20, 0xff00ff00u),
+	};
+	struct wlr_xcursor xc = {
+		.image_count = sizeof(imgs) / sizeof(imgs[0]),
+		.images = imgs,
+	};
+
+	cursor_anim_build(&set, &xc, 1);
+	CHECK_EQ(set.len, 0);
+	CHECK(set.frames == NULL);
+
+	for (size_t i = 0; i < 2; i++)
+		xc_frame_destroy(imgs[i]);
+}
+
+/* A repeat build on the same (set, gen) keeps the rasters; a bumped image
+ * generation or a different xcursor - what the magnify handoff's 4x theme
+ * load returns - replaces them. */
+static void test_cursor_anim_build_rebuilds_on_change(void) {
+	struct cursor_anim_set set = { 0 };
+	struct wlr_xcursor_image *a_imgs[] = {
+		xc_frame(4, 4, 1, 1, 20, 0xffff0000u),
+		xc_frame(4, 4, 1, 1, 20, 0xff00ff00u),
+	};
+	struct wlr_xcursor a = { .image_count = 2, .images = a_imgs };
+	struct wlr_xcursor_image *b_imgs[] = {
+		xc_frame(4, 4, 1, 1, 20, 0xff0000ffu),
+		xc_frame(4, 4, 1, 1, 20, 0xffffff00u),
+		xc_frame(4, 4, 1, 1, 20, 0xffff00ffu),
+	};
+	struct wlr_xcursor b = { .image_count = 3, .images = b_imgs };
+
+	cursor_anim_build(&set, &a, 1);
+	cairo_surface_t *armed = set.frames[0];
+	CHECK_EQ(set.len, 2);
+
+	cursor_anim_build(&set, &a, 1);
+	CHECK(set.frames[0] == armed);
+
+	cursor_anim_build(&set, &a, 2);
+	CHECK(set.frames[0] != armed);
+	CHECK_EQ(set.len, 2);
+
+	cursor_anim_build(&set, &b, 2);
+	CHECK_EQ(set.len, 3);
+	CHECK(set.xc == &b);
+
+	cursor_anim_free(&set);
+	for (size_t i = 0; i < 2; i++)
+		xc_frame_destroy(a_imgs[i]);
+	for (size_t i = 0; i < 3; i++)
+		xc_frame_destroy(b_imgs[i]);
+}
+
+/* The empty set a mixed frame run leaves is handed on as len < 2, which
+ * disarms the clock: the leaf freezes on the frame it last showed. This
+ * is the declare side of the len < 2 disarm tested above. */
+static void test_cursor_anim_static_set_disarms_clock(void) {
+	struct fixture f;
+	fixture_init(&f);
+	struct anim_fixture af;
+	anim_fixture_init(&af);
+	struct image_entry entry;
+	uint64_t key;
+	struct wlr_scene_node *node = cursor_leaf(&f, &entry, &key);
+
+	struct cursor_anim_set set = { 0 };
+	struct wlr_xcursor_image *imgs[] = {
+		xc_frame(4, 4, 1, 1, 20, 0xffff0000u),
+		xc_frame(4, 4, 1, 1, 20, 0xff00ff00u),
+	};
+	struct wlr_xcursor xc = { .image_count = 2, .images = imgs };
+	cursor_anim_build(&set, &xc, 1);
+	render_cursor_anim(f.rs, &af.out, key,
+		(cairo_surface_t *const *)set.frames, set.delays, set.len, 1,
+		af.loop);
+	wl_event_loop_dispatch(af.loop, 100);
+	CHECK_EQ(raster_pixel(node, 16, 16), 0xff00ff00u);
+
+	struct wlr_xcursor_image *mixed[] = {
+		xc_frame(4, 4, 1, 1, 20, 0xffff0000u),
+		xc_frame(8, 4, 1, 1, 20, 0xff00ff00u),
+	};
+	struct wlr_xcursor still = { .image_count = 2, .images = mixed };
+	cursor_anim_build(&set, &still, 2);
+	CHECK_EQ(set.len, 0);
+	render_cursor_anim(f.rs, &af.out, key,
+		(cairo_surface_t *const *)set.frames, set.delays, set.len, 2,
+		af.loop);
+	wl_event_loop_dispatch(af.loop, 100);
+	CHECK_EQ(raster_pixel(node, 16, 16), 0xff00ff00u);
+
+	render_cursor_anim(f.rs, NULL, 0, NULL, NULL, 0, 0, NULL);
+	cursor_anim_free(&set);
+	for (size_t i = 0; i < 2; i++) {
+		xc_frame_destroy(imgs[i]);
+		xc_frame_destroy(mixed[i]);
+	}
+	cairo_surface_destroy(entry.native);
+	wl_event_loop_destroy(af.loop);
+	fixture_finish(&f, &no_hooks);
+}
+
 int main(void) {
 	static const struct {
 		const char *name;
@@ -2748,6 +2941,11 @@ int main(void) {
 		{ "cursor anim len under two disarms", test_cursor_anim_len_under_two_disarms },
 		{ "cursor anim swept leaf self-disarms", test_cursor_anim_swept_leaf_self_disarms },
 		{ "cursor anim zero delay clamps", test_cursor_anim_zero_delay_clamps },
+		{ "cursor anim build rasters uniform frames", test_cursor_anim_build_rasters_uniform_frames },
+		{ "cursor anim build mixed size stays empty", test_cursor_anim_build_mixed_size_stays_empty },
+		{ "cursor anim build mixed hotspot stays empty", test_cursor_anim_build_mixed_hotspot_stays_empty },
+		{ "cursor anim build rebuilds on change", test_cursor_anim_build_rebuilds_on_change },
+		{ "cursor anim static set disarms clock", test_cursor_anim_static_set_disarms_clock },
 		{ "verifier catches divergence", test_verifier_catches_divergence },
 	};
 

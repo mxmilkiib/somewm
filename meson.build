@@ -532,7 +532,7 @@ somewm_client = executable(
 # tree==scene verifier is on here whatever the build's sanitizer and test settings are.
 test_render = executable(
   'test-render',
-  ['tests/test-render.c', render_sources],
+  ['tests/test-render.c', 'cursor_anim.c', render_sources],
   include_directories: somewm_inc,
   link_with: clay_lib,
   dependencies: [wlroots, wayland_server, cairo, pangocairo, librsvg, m_dep],
