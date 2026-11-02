@@ -36,6 +36,7 @@
 
 #include "clay.h"
 #include "clay_impl.h"
+#include "cursor_anim.h"
 #include "declare.h"
 #include "objects/drawable.h"
 #include "objects/screen.h"
@@ -244,15 +245,11 @@ struct declare_output {
 	const struct wlr_xcursor_image *cursor_frame;
 	uint64_t cursor_gen;
 	bool cursor_shown;
-	/* The themed cursor's animation frames as cairo surfaces with their
+	/* The themed cursor's animation set: frame surfaces with their
 	 * millisecond delays, built once per (xcursor set, gen) and handed to
 	 * the render layer's clock, which steps the leaf's texture without a
 	 * declare per frame. */
-	cairo_surface_t **cursor_anim;
-	uint32_t *cursor_anim_delays;
-	size_t cursor_anim_len;
-	const struct wlr_xcursor *cursor_anim_xc;
-	uint64_t cursor_anim_gen;
+	struct cursor_anim_set cursor_anim;
 	/* Requested inspector visibility, committed panel width for input gating,
      * and the press latched for the next solve. Failed frames keep the
      * committed panel's hit area until a successful retry removes it. */
@@ -3644,86 +3641,12 @@ cursor_xcursor(Monitor *m, float multiplier)
 	return xc && xc->image_count ? xc : NULL;
 }
 
-static cairo_surface_t *cursor_frame_surface(const struct wlr_xcursor_image *frame);
-
-static void
-cursor_anim_free(struct declare_output *dout)
-{
-	for (size_t i = 0; i < dout->cursor_anim_len; i++)
-		if (dout->cursor_anim[i])
-			cairo_surface_destroy(dout->cursor_anim[i]);
-	free(dout->cursor_anim);
-	free(dout->cursor_anim_delays);
-	dout->cursor_anim = NULL;
-	dout->cursor_anim_delays = NULL;
-	dout->cursor_anim_len = 0;
-}
-
-/* The output's animation surfaces for the displayed xcursor set, rebuilt
- * when the set or the seat's image generation moves on. Frames that differ
- * in size or hotspot stay a static first frame: the leaf's box and hotspot
- * are authored once per declare, and stepping them would need the declare
- * per frame this scheme exists to avoid. */
-static void
-cursor_anim_build(struct declare_output *dout, struct wlr_xcursor *xc)
-{
-	if (dout->cursor_anim_xc == xc && dout->cursor_anim_gen == cursor_image.gen)
-		return;
-	cursor_anim_free(dout);
-	dout->cursor_anim_xc = xc;
-	dout->cursor_anim_gen = cursor_image.gen;
-	const struct wlr_xcursor_image *f0 = xc->images[0];
-	for (uint32_t i = 1; i < xc->image_count; i++) {
-		const struct wlr_xcursor_image *f = xc->images[i];
-		if (f->width != f0->width || f->height != f0->height
-				|| f->hotspot_x != f0->hotspot_x || f->hotspot_y != f0->hotspot_y)
-			return;
-	}
-	dout->cursor_anim = calloc(xc->image_count, sizeof(*dout->cursor_anim));
-	dout->cursor_anim_delays =
-		malloc(xc->image_count * sizeof(*dout->cursor_anim_delays));
-	if (!dout->cursor_anim || !dout->cursor_anim_delays) {
-		cursor_anim_free(dout);
-		return;
-	}
-	for (uint32_t i = 0; i < xc->image_count; i++) {
-		dout->cursor_anim[i] = cursor_frame_surface(xc->images[i]);
-		dout->cursor_anim_delays[i] = xc->images[i]->delay;
-		if (!dout->cursor_anim[i]) {
-			cursor_anim_free(dout);
-			return;
-		}
-	}
-	dout->cursor_anim_len = xc->image_count;
-}
-
 /* A themed cursor not on this output, or one replaced by a client's own
  * surface, stops this output's clock. */
 static void
 cursor_anim_off(struct declare_output *dout)
 {
 	render_cursor_anim(dout->band.render, NULL, 0, NULL, NULL, 0, 0, NULL);
-}
-
-/* A copy of an xcursor frame's pixels: ARGB32 premultiplied in both. */
-static cairo_surface_t *
-cursor_frame_surface(const struct wlr_xcursor_image *frame)
-{
-	cairo_surface_t *s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32,
-		frame->width, frame->height);
-	int stride = cairo_image_surface_get_stride(s);
-	unsigned char *dst = cairo_image_surface_get_data(s);
-
-	if (cairo_surface_status(s) != CAIRO_STATUS_SUCCESS || !dst) {
-		cairo_surface_destroy(s);
-		return NULL;
-	}
-	cairo_surface_flush(s);
-	for (uint32_t y = 0; y < frame->height; y++)
-		memcpy(dst + y * stride, frame->buffer + (size_t)y * frame->width * 4,
-			(size_t)frame->width * 4);
-	cairo_surface_mark_dirty(s);
-	return s;
 }
 
 static void
@@ -3806,11 +3729,11 @@ declare_cursor(Monitor *m)
 			CLAY_STRING("cursor"), (uint32_t)handle, 0);
 		declare_leaf("cursor", handle, DECLARE_SRC_THEME, DECLARE_SRC_THEME,
 			element, &s);
-		cursor_anim_build(dout, xc);
+		cursor_anim_build(&dout->cursor_anim, xc, cursor_image.gen);
 		render_cursor_anim(dout->band.render, dout->wlr_output,
 			(uint64_t)CLAY_RENDER_COMMAND_TYPE_IMAGE << 32 | element.id,
-			dout->cursor_anim, dout->cursor_anim_delays,
-			dout->cursor_anim_len,
+			dout->cursor_anim.frames, dout->cursor_anim.delays,
+			dout->cursor_anim.len,
 			(uint64_t)(uintptr_t)xc ^ cursor_image.gen,
 			some_get_event_loop());
 	} else {
@@ -4459,7 +4382,7 @@ declare_output_destroy(struct declare_output *dout)
 	image_entry_set(&dout->wallpaper, NULL);
 	image_entry_set(&dout->cursor, NULL);
 	cursor_anim_off(dout);
-	cursor_anim_free(dout);
+	cursor_anim_free(&dout->cursor_anim);
 	free(dout);
 }
 

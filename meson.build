@@ -398,6 +398,7 @@ somewm_sources = [
   'protocols.c',
   'monitor.c',
   'declare.c',
+  'cursor_anim.c',
   'widget.c',
   'input.c',
   'window.c',
