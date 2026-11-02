@@ -888,6 +888,9 @@ motionnotify(uint32_t time, struct wlr_input_device *device, double dx, double d
 		wlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
 		some_notify_activity();
 
+		/* Real pointer motion ends the startup re-centre window. */
+		globalconf.startup_centre_pending = false;
+
 		/* Update selected monitor when cursor crosses monitor boundaries.
 		 * Without this, layer-shell clients (rofi, etc.) that don't specify
 		 * an output get assigned to the stale selmon in createlayersurface(). */

@@ -26,6 +26,7 @@
 #include <lua.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <time.h>
 #include <xkbcommon/xkbcommon.h>
 #include "common/array.h"
 #include "common/buffer.h"
@@ -317,6 +318,14 @@ typedef struct
      * already fired in this process lifetime. */
     bool somewm_ready_seen;
     bool xwayland_ready_seen;
+
+    /** Login settle window for the startup cursor position: while pending,
+     *  updatemons() re-centres the pointer on the primary screen after every
+     *  layout change, so an output-manager apply (kanshi) cannot strand it
+     *  on whatever output its coordinates happen to land in. Cleared by the
+     *  first real pointer motion or once the deadline passes. */
+    bool startup_centre_pending;
+    struct timespec startup_centre_deadline;
 
     /** Count of presented output frames (incremented in rendermon only when a
      *  commit actually had damage to present). Lets tests observe that a redraw

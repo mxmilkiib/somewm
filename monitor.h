@@ -29,6 +29,9 @@ void outputmgrtest(struct wl_listener *listener, void *data);
 void powermgrsetmode(struct wl_listener *listener, void *data);
 void requestmonstate(struct wl_listener *listener, void *data);
 
+/* Startup cursor position */
+void monitor_arm_startup_centre(void);
+
 /* Queries */
 Monitor *dirtomon(enum wlr_direction dir);
 void focusmon(const Arg *arg);

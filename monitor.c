@@ -617,6 +617,38 @@ requestmonstate(struct wl_listener *listener, void *data)
 	updatemons(NULL, NULL);
 }
 
+/* Warp the cursor to the centre of the primary screen's monitor.
+ * some_set_cursor_position() also moves selmon along with the warp. */
+static void
+centre_cursor_on_primary(void)
+{
+	screen_t *s;
+	Monitor *m;
+
+	if (!globalconf_L
+			|| !(s = luaA_screen_get_primary_screen(globalconf_L))
+			|| !(m = s->monitor))
+		return;
+	some_set_cursor_position(
+			m->m.x + m->m.width / 2.0,
+			m->m.y + m->m.height / 2.0, 0);
+}
+
+/* Park the cursor at the centre of the primary screen and open the login
+ * settle window: while startup_centre_pending holds, updatemons() re-asserts
+ * the position on every layout change. Output-manager clients (kanshi)
+ * apply their profile moments after startup and can otherwise strand the
+ * pointer on whatever output its coordinates land in. The window closes on
+ * the first real pointer motion or once the deadline passes. */
+void
+monitor_arm_startup_centre(void)
+{
+	clock_gettime(CLOCK_MONOTONIC, &globalconf.startup_centre_deadline);
+	globalconf.startup_centre_deadline.tv_sec += 10;
+	globalconf.startup_centre_pending = true;
+	centre_cursor_on_primary();
+}
+
 void
 updatemons(struct wl_listener *listener, void *data)
 {
@@ -840,6 +872,17 @@ updatemons(struct wl_listener *listener, void *data)
 	 * wl_pointer.motion event for the clients. */
 	wlr_cursor_move(cursor, NULL, 0, 0);
 	declare_cursor_changed();
+
+	/* While the login settle window is open, re-assert the startup
+	 * position before reading the cursor's output below. */
+	if (globalconf.startup_centre_pending) {
+		struct timespec now;
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		if (now.tv_sec < globalconf.startup_centre_deadline.tv_sec)
+			centre_cursor_on_primary();
+		else
+			globalconf.startup_centre_pending = false;
+	}
 
 	/* A layout change can leave the re-clamped cursor over a different
 	 * output with no motion event to notice (kanshi applying a profile at

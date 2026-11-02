@@ -667,8 +667,11 @@ run(char *startup_cmd)
 
 	printstatus();
 
-	/* At this point the outputs are initialized, choose initial selmon based on
-	 * cursor position, and set default cursor image */
+	/* At this point the outputs are initialized. Park the cursor at the
+	 * centre of the primary screen rather than whatever output layout
+	 * (0,0) happens to land in, choose initial selmon based on cursor
+	 * position, and set default cursor image */
+	monitor_arm_startup_centre();
 	selmon = xytomon(cursor->x, cursor->y);
 
 	/* TODO hack to get cursor to display in its initial location (100, 100)
