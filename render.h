@@ -9,6 +9,9 @@
 
 struct wlr_scene_tree;
 struct wlr_scene_node;
+struct wlr_output;
+struct wl_event_loop;
+typedef struct _cairo_surface cairo_surface_t;
 
 struct render_state;
 struct render_text_attr;
@@ -308,5 +311,18 @@ int render_nodes_swept(struct render_state *rs);
 /* Whether the last reconcile temporarily hid its enabled ancestor while
  * replacing owned primitive nodes. Stable and observable scenes never batch. */
 bool render_visibility_batched(struct render_state *rs);
+
+/* Themed-cursor animation, clocked by the event loop rather than declared
+ * per frame step: key is the cursor leaf's command key, surfaces the
+ * animation's frames, delays_ms their millisecond delays. The renderer
+ * rasters the set at the node's own size once, then a timer swaps the scene
+ * buffer's texture and schedules a frame, so a step costs one upload and a
+ * repaint of the cursor box instead of a declare. token identifies the set;
+ * a repeat call with the same key and token is a no-op, and len < 2
+ * disarms. The clock also disarms itself when the keyed node is swept. */
+void render_cursor_anim(struct render_state *rs, struct wlr_output *out,
+	uint64_t key, cairo_surface_t *const *surfaces,
+	const uint32_t *delays_ms, size_t len, uint64_t token,
+	struct wl_event_loop *loop);
 
 #endif

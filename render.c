@@ -22,9 +22,11 @@
 #include <wlr/interfaces/wlr_buffer.h>
 #include <wlr/render/interface.h>
 #include <wlr/types/wlr_alpha_modifier_v1.h>
+#include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/util/log.h>
+#include <wayland-server.h>
 
 #include "common/util.h"
 #include "render.h"
@@ -267,6 +269,26 @@ struct owner_constraint {
     bool clips, fits_border, clips_content;
 };
 
+/* Themed xcursor animation, clocked by the event loop rather than declared
+ * per frame step: the leaf's rnode keeps its solved slot while the clock
+ * swaps the scene buffer's texture to the next prebuilt raster and
+ * schedules a frame, which damages just the node's box. The set is handed
+ * in by the declare pass; token keys the surfaces so a repeated handoff of
+ * the same set is a no-op, and the clock disarms itself when the keyed
+ * node leaves the scene. */
+struct cursor_anim_state {
+	struct wl_event_source *timer;
+	struct wl_event_loop *loop;
+	struct wlr_output *out;
+	uint64_t key;
+	uint64_t token;
+	cairo_surface_t **surfaces;
+	struct cairo_buffer **buffers;
+	uint32_t *delays;
+	size_t len, index;
+	int raster_w, raster_h;
+};
+
 struct render_state {
     struct owner_constraint *constraints;
     size_t constraints_len, constraints_cap;
@@ -317,6 +339,7 @@ struct render_state {
 	 * identity: every device_len below reduces to the logical length, so a
 	 * non-HiDPI output rasters exactly as before. */
 	float scale;
+	struct cursor_anim_state cursor_anim;
 };
 
 static void shadow_cache_release(struct render_state *rs, struct shadow_cache *cache);
@@ -3441,8 +3464,138 @@ int render_reconcile(struct render_state *rs, Clay_RenderCommandArray commands,
 	return muts;
 }
 
+/* --- animated cursor ---
+ *
+ * A themed xcursor with more than one frame shows them on the event loop:
+ * the declare pass builds the set's cairo surfaces once and hands them over
+ * with the leaf's command key, and the clock swaps the scene buffer to the
+ * next prebuilt raster each delay. A step costs one texture upload and a
+ * repaint of the cursor box — the upstream alternative, images[0] forever,
+ * was chosen precisely because declaring a frame per step keeps an idle
+ * output declaring for as long as a busy cursor is up. */
+
+static void cursor_anim_clear(struct render_state *rs) {
+	struct cursor_anim_state *a = &rs->cursor_anim;
+	if (a->timer) {
+		wl_event_source_remove(a->timer);
+		a->timer = NULL;
+	}
+	for (size_t i = 0; i < a->len; i++) {
+		if (a->surfaces && a->surfaces[i])
+			cairo_surface_destroy(a->surfaces[i]);
+		if (a->buffers && a->buffers[i])
+			wlr_buffer_drop(&a->buffers[i]->base);
+	}
+	free(a->surfaces);
+	free(a->buffers);
+	free(a->delays);
+	*a = (struct cursor_anim_state){0};
+}
+
+/* Raster every frame once, at the node's own raster size, so a swap is a
+ * pointer change rather than a paint. Returns false until the node has a
+ * raster to size by, or when a frame fails to allocate. */
+static bool cursor_anim_rasters(struct render_state *rs, struct rnode *n) {
+	struct cursor_anim_state *a = &rs->cursor_anim;
+	int w = n->raster_width, h = n->raster_height;
+	if (w < 1 || h < 1)
+		return false;
+	if (a->buffers && a->raster_w == w && a->raster_h == h)
+		return true;
+	for (size_t i = 0; i < a->len; i++)
+		if (a->buffers && a->buffers[i]) {
+			wlr_buffer_drop(&a->buffers[i]->base);
+			a->buffers[i] = NULL;
+		}
+	a->raster_w = w;
+	a->raster_h = h;
+	for (size_t i = 0; i < a->len; i++) {
+		cairo_surface_t *src = a->surfaces[i];
+		int sw = cairo_image_surface_get_width(src);
+		int sh = cairo_image_surface_get_height(src);
+		struct cairo_buffer *cb = sw > 0 && sh > 0
+			? cairo_buffer_create(w, h) : NULL;
+		if (!cb) {
+			for (size_t j = 0; j < i; j++)
+				wlr_buffer_drop(&a->buffers[j]->base);
+			free(a->buffers);
+			a->buffers = NULL;
+			return false;
+		}
+		cairo_t *cr = cairo_create(cb->surface);
+		cairo_scale(cr, (double)w / sw, (double)h / sh);
+		cairo_set_source_surface(cr, src, 0, 0);
+		cairo_paint(cr);
+		cairo_destroy(cr);
+		cairo_surface_flush(cb->surface);
+		a->buffers[i] = cb;
+	}
+	return true;
+}
+
+static int cursor_anim_tick(void *data) {
+	struct render_state *rs = data;
+	struct cursor_anim_state *a = &rs->cursor_anim;
+	size_t idx = a->key ? rmap_get(rs, a->key) : SIZE_MAX;
+	if (idx == SIZE_MAX || !rs->nodes[idx].node
+			|| rs->nodes[idx].node->type != WLR_SCENE_NODE_BUFFER) {
+		/* The leaf retired this pass (hidden, moved off, set swapped):
+		 * disarm; a later declare hands a fresh set in. */
+		cursor_anim_clear(rs);
+		return 0;
+	}
+	struct rnode *n = &rs->nodes[idx];
+	struct wlr_scene_buffer *sb = wlr_scene_buffer_from_node(n->node);
+	if (cursor_anim_rasters(rs, n)) {
+		a->index = (a->index + 1) % a->len;
+		raster_set_buffer(sb, a->buffers[a->index]);
+		wlr_output_schedule_frame(a->out);
+	}
+	wl_event_source_timer_update(a->timer, a->delays[a->index]);
+	return 0;
+}
+
+void render_cursor_anim(struct render_state *rs, struct wlr_output *out,
+		uint64_t key, cairo_surface_t *const *surfaces,
+		const uint32_t *delays_ms, size_t len, uint64_t token,
+		struct wl_event_loop *loop) {
+	if (!rs)
+		return;
+	struct cursor_anim_state *a = &rs->cursor_anim;
+	if (a->timer && a->key == key && a->token == token && len >= 2)
+		return;
+	cursor_anim_clear(rs);
+	if (len < 2 || !surfaces || !delays_ms || !out || !key || !loop)
+		return;
+	a->surfaces = calloc(len, sizeof(*a->surfaces));
+	a->delays = malloc(len * sizeof(*a->delays));
+	a->buffers = calloc(len, sizeof(*a->buffers));
+	if (!a->surfaces || !a->delays || !a->buffers) {
+		cursor_anim_clear(rs);
+		return;
+	}
+	for (size_t i = 0; i < len; i++) {
+		a->surfaces[i] = cairo_surface_reference(surfaces[i]);
+		/* xcursor writers do ship zero delays; that would spin the clock. */
+		a->delays[i] = delays_ms[i] ? delays_ms[i] : 17;
+	}
+	a->len = len;
+	a->index = 0;
+	a->out = out;
+	a->key = key;
+	a->token = token;
+	a->loop = loop;
+	a->timer = wl_event_loop_add_timer(loop, cursor_anim_tick, rs);
+	if (!a->timer) {
+		cursor_anim_clear(rs);
+		return;
+	}
+	wl_event_source_timer_update(a->timer, a->delays[0]);
+}
+
 void render_destroy(struct render_state *rs,
 		const struct render_client_hooks *hooks) {
+    cursor_anim_clear(rs);
     free(rs->constraints);
 	free(rs->fades);
     free(rs->fade_aliases);

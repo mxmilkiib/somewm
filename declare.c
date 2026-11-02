@@ -244,6 +244,15 @@ struct declare_output {
 	const struct wlr_xcursor_image *cursor_frame;
 	uint64_t cursor_gen;
 	bool cursor_shown;
+	/* The themed cursor's animation frames as cairo surfaces with their
+	 * millisecond delays, built once per (xcursor set, gen) and handed to
+	 * the render layer's clock, which steps the leaf's texture without a
+	 * declare per frame. */
+	cairo_surface_t **cursor_anim;
+	uint32_t *cursor_anim_delays;
+	size_t cursor_anim_len;
+	const struct wlr_xcursor *cursor_anim_xc;
+	uint64_t cursor_anim_gen;
 	/* Requested inspector visibility, committed panel width for input gating,
      * and the press latched for the next solve. Failed frames keep the
      * committed panel's hit area until a successful retry removes it. */
@@ -3617,12 +3626,13 @@ declare_cursor_magnify(double scale, double duration)
     cursor_mark();
 }
 
-/* The xcursor frame this output shows for the themed name, or NULL when the
- * theme has neither it nor "default". An animated cursor shows its first
- * frame: a frame per animation step would keep an idle output declaring
- * for as long as a busy cursor is up. */
-static const struct wlr_xcursor_image *
-cursor_xcursor_frame(Monitor *m, float multiplier)
+/* The xcursor this output shows for the themed name, or NULL when the
+ * theme has neither it nor "default". The leaf keeps the first frame and
+ * the animation steps on the render side: a frame per step would keep an
+ * idle output declaring for as long as a busy cursor is up, so a timer
+ * swaps the realized texture instead (render_cursor_anim). */
+static struct wlr_xcursor *
+cursor_xcursor(Monitor *m, float multiplier)
 {
 	float scale = m->wlr_output->scale * multiplier;
 	struct wlr_xcursor *xc;
@@ -3631,7 +3641,68 @@ cursor_xcursor_frame(Monitor *m, float multiplier)
 	xc = wlr_xcursor_manager_get_xcursor(cursor_mgr, cursor_image.name, scale);
 	if (!xc)
 		xc = wlr_xcursor_manager_get_xcursor(cursor_mgr, "default", scale);
-	return xc && xc->image_count ? xc->images[0] : NULL;
+	return xc && xc->image_count ? xc : NULL;
+}
+
+static cairo_surface_t *cursor_frame_surface(const struct wlr_xcursor_image *frame);
+
+static void
+cursor_anim_free(struct declare_output *dout)
+{
+	for (size_t i = 0; i < dout->cursor_anim_len; i++)
+		if (dout->cursor_anim[i])
+			cairo_surface_destroy(dout->cursor_anim[i]);
+	free(dout->cursor_anim);
+	free(dout->cursor_anim_delays);
+	dout->cursor_anim = NULL;
+	dout->cursor_anim_delays = NULL;
+	dout->cursor_anim_len = 0;
+}
+
+/* The output's animation surfaces for the displayed xcursor set, rebuilt
+ * when the set or the seat's image generation moves on. Frames that differ
+ * in size or hotspot stay a static first frame: the leaf's box and hotspot
+ * are authored once per declare, and stepping them would need the declare
+ * per frame this scheme exists to avoid. */
+static void
+cursor_anim_build(struct declare_output *dout, struct wlr_xcursor *xc)
+{
+	if (dout->cursor_anim_xc == xc && dout->cursor_anim_gen == cursor_image.gen)
+		return;
+	cursor_anim_free(dout);
+	dout->cursor_anim_xc = xc;
+	dout->cursor_anim_gen = cursor_image.gen;
+	const struct wlr_xcursor_image *f0 = xc->images[0];
+	for (uint32_t i = 1; i < xc->image_count; i++) {
+		const struct wlr_xcursor_image *f = xc->images[i];
+		if (f->width != f0->width || f->height != f0->height
+				|| f->hotspot_x != f0->hotspot_x || f->hotspot_y != f0->hotspot_y)
+			return;
+	}
+	dout->cursor_anim = calloc(xc->image_count, sizeof(*dout->cursor_anim));
+	dout->cursor_anim_delays =
+		malloc(xc->image_count * sizeof(*dout->cursor_anim_delays));
+	if (!dout->cursor_anim || !dout->cursor_anim_delays) {
+		cursor_anim_free(dout);
+		return;
+	}
+	for (uint32_t i = 0; i < xc->image_count; i++) {
+		dout->cursor_anim[i] = cursor_frame_surface(xc->images[i]);
+		dout->cursor_anim_delays[i] = xc->images[i]->delay;
+		if (!dout->cursor_anim[i]) {
+			cursor_anim_free(dout);
+			return;
+		}
+	}
+	dout->cursor_anim_len = xc->image_count;
+}
+
+/* A themed cursor not on this output, or one replaced by a client's own
+ * surface, stops this output's clock. */
+static void
+cursor_anim_off(struct declare_output *dout)
+{
+	render_cursor_anim(dout->band.render, NULL, 0, NULL, NULL, 0, 0, NULL);
 }
 
 /* A copy of an xcursor frame's pixels: ARGB32 premultiplied in both. */
@@ -3664,8 +3735,10 @@ declare_cursor(Monitor *m)
 	Clay_ElementDeclaration s;
 
 	dout->cursor_shown = false;
-	if (xytomon(cursor->x, cursor->y) != m)
+	if (xytomon(cursor->x, cursor->y) != m) {
+		cursor_anim_off(dout);
 		return;
+	}
 	cursor_declared_x = x;
 	cursor_declared_y = y;
 	cursor_declared_gen = cursor_image.gen;
@@ -3677,8 +3750,10 @@ declare_cursor(Monitor *m)
 
 		cursor_image.declared_w = w;
 		cursor_image.declared_h = h;
-		if (!cursor_image.tree || w < 1 || h < 1)
+		if (!cursor_image.tree || w < 1 || h < 1) {
+			cursor_anim_off(dout);
 			return;
+		}
 		if (!cursor_surface_node)
 			cursor_surface_node = declare_node_create(NULL, NODE_SURFACE, DECLARE_KIND_CURSOR, surface);
 		handle = node_handle(cursor_surface_node);
@@ -3689,42 +3764,59 @@ declare_cursor(Monitor *m)
 		declare_leaf("cursor", handle, DECLARE_SRC_PROTOCOL, DECLARE_SRC_PROTOCOL,
 			Clay__HashStringWithOffset(CLAY_STRING("cursor"),
 			(uint32_t)handle, 0), &s);
+		cursor_anim_off(dout);
 	} else if (cursor_image.name) {
-		const struct wlr_xcursor_image *normal = cursor_xcursor_frame(m, 1);
-        double magnification = declare_cursor_magnification();
-        const struct wlr_xcursor_image *frame = magnification > 1
-            ? cursor_xcursor_frame(m, 4) : normal;
-        if (!frame) frame = normal;
-        float scale = m->wlr_output->scale / magnification;
-        if (cursor_scale_duration > 0)
-            declare_output_mark_dirty(dout);
+		struct wlr_xcursor *normal = cursor_xcursor(m, 1);
+		double magnification = declare_cursor_magnification();
+		struct wlr_xcursor *xc = magnification > 1
+			? cursor_xcursor(m, 4) : normal;
+		if (!xc) xc = normal;
+		float scale = m->wlr_output->scale / magnification;
+		if (cursor_scale_duration > 0)
+			declare_output_mark_dirty(dout);
 
-		if (!frame || !normal)
+		if (!xc || !normal) {
+			cursor_anim_off(dout);
 			return;
+		}
+		const struct wlr_xcursor_image *frame = xc->images[0];
+		const struct wlr_xcursor_image *size_frame = normal->images[0];
 		if (dout->cursor_frame != frame || dout->cursor_gen != cursor_image.gen) {
 			image_entry_set(&dout->cursor, cursor_frame_surface(frame));
 			dout->cursor_frame = frame;
 			dout->cursor_gen = cursor_image.gen;
 		}
-		if (!dout->cursor.native)
+		if (!dout->cursor.native) {
+			cursor_anim_off(dout);
 			return;
+		}
 		if (!cursor_theme_node)
 			cursor_theme_node = declare_node_create(NULL, NODE_SURFACE, DECLARE_KIND_CURSOR, cursor);
 		handle = node_handle(cursor_theme_node);
-        int width = (int)round(normal->width / scale);
-        int height = (int)round(normal->height / scale);
-        /* Theme sizes may use different artwork and hotspot proportions.
-         * Anchor the image actually displayed at its own scaled hotspot. */
-        int hx = (int)round((double)frame->hotspot_x * width / frame->width);
-        int hy = (int)round((double)frame->hotspot_y * height / frame->height);
-        s = leaf_at(Z_CURSOR, x - hx, y - hy, width, height);
+		int width = (int)round(size_frame->width / scale);
+		int height = (int)round(size_frame->height / scale);
+		/* Theme sizes may use different artwork and hotspot proportions.
+		 * Anchor the image actually displayed at its own scaled hotspot. */
+		int hx = (int)round((double)frame->hotspot_x * width / frame->width);
+		int hy = (int)round((double)frame->hotspot_y * height / frame->height);
+		s = leaf_at(Z_CURSOR, x - hx, y - hy, width, height);
 		s.image.imageData = &dout->cursor;
 		s.userData = leaf_userdata(handle, 1.0f);
+		Clay_ElementId element = Clay__HashStringWithOffset(
+			CLAY_STRING("cursor"), (uint32_t)handle, 0);
 		declare_leaf("cursor", handle, DECLARE_SRC_THEME, DECLARE_SRC_THEME,
-			Clay__HashStringWithOffset(CLAY_STRING("cursor"),
-			(uint32_t)handle, 0), &s);
-	} else
+			element, &s);
+		cursor_anim_build(dout, xc);
+		render_cursor_anim(dout->band.render, dout->wlr_output,
+			(uint64_t)CLAY_RENDER_COMMAND_TYPE_IMAGE << 32 | element.id,
+			dout->cursor_anim, dout->cursor_anim_delays,
+			dout->cursor_anim_len,
+			(uint64_t)(uintptr_t)xc ^ cursor_image.gen,
+			some_get_event_loop());
+	} else {
+		cursor_anim_off(dout);
 		return;
+	}
 	dout->cursor_shown = true;
 }
 
@@ -4366,6 +4458,8 @@ declare_output_destroy(struct declare_output *dout)
 	node_tree_destroy(dout->tree);
 	image_entry_set(&dout->wallpaper, NULL);
 	image_entry_set(&dout->cursor, NULL);
+	cursor_anim_off(dout);
+	cursor_anim_free(dout);
 	free(dout);
 }
 
