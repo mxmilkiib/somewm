@@ -951,9 +951,10 @@ motionnotify(uint32_t time, struct wlr_input_device *device, double dx, double d
 		return;
 	}
 
-	/* If mousegrabber is active, route event to Lua callback (AwesomeWM behavior:
-	 * check mousegrabber BEFORE enter/leave signals to filter them during grabs) */
-	if (event_handle_mousegrabber(cursor->x, cursor->y, 0))
+	/* If mousegrabber is active, stash the motion for the next grabber flush
+	 * (AwesomeWM behavior: check mousegrabber BEFORE enter/leave signals to
+	 * filter them during grabs) */
+	if (event_handle_mousegrabber_motion(cursor->x, cursor->y))
 		return; /* Don't process event further (skip enter/leave signals, pointerfocus) */
 
 	/* Track which object is under the cursor and emit enter/leave/move signals

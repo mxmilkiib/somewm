@@ -18,6 +18,7 @@
 #include "globalconf.h"
 #include "luaa.h"
 #include "ewmh.h"
+#include "event.h"
 #include "event_queue.h"
 #include "input.h"
 #include "objects/client.h"
@@ -265,10 +266,11 @@ some_refresh(void)
 	clock_gettime(CLOCK_MONOTONIC, &bench_ts[0]);
 #endif
 
-	/* Step 0: Drain queued events - dispatch batched signals to Lua.
-	 * Must happen before the refresh signal so Lua handlers see
-	 * up-to-date state when layout runs.
-	 * Included in the lua_refresh stage timing. */
+	/* Step 0: Deliver a mousegrabber motion stash that outlived its frame
+	 * wait, then drain queued events - dispatch batched signals to Lua.
+	 * The grabber callback queues signals of its own, so it runs first
+	 * for them to reach this same drain. */
+	event_grabber_flush_stale();
 	some_event_queue_drain(globalconf_L);
 
 	/* Step 1: Emit refresh signal - triggers Lua layout calculations */

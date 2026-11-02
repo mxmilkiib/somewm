@@ -38,6 +38,7 @@
 #include "clay_impl.h"
 #include "cursor_anim.h"
 #include "declare.h"
+#include "event.h"
 #include "objects/drawable.h"
 #include "objects/screen.h"
 #include "render.h"
@@ -4609,6 +4610,10 @@ declare_output_frame(struct declare_output *dout, Monitor *m)
 
 	band->frames++;
 	inspecting = inspector_declares(dout);
+
+	/* Deliver the stashed mousegrabber motion before declare: the callback's
+	 * geometry writes land in this frame's describe rather than next's. */
+	event_grabber_flush();
 
 	/* Compile pending inputs, declare and solve once, then reconcile.
 	 * Dirty marks raised from here on schedule the next frame. */

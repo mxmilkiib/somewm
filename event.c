@@ -18,30 +18,34 @@
 #include "luaa.h"
 #include "common/luaobject.h"
 #include <stdio.h>
+#include <time.h>
 
-/** Handle event with mousegrabber if active
- * Ported from AwesomeWM's event_handle_mousegrabber()
- *
- * The mask passed to the grabber is built from the tracked button state;
- * extra_mask bits are ORed in. Scroll buttons (4-7) are synthesized from
- * axis events and never held, so they only ever arrive via extra_mask.
- *
- * \param x Mouse X coordinate
- * \param y Mouse Y coordinate
- * \param extra_mask X11-style button mask bits to add to the tracked state
- * \return true if event consumed by mousegrabber
- */
-bool
-event_handle_mousegrabber(double x, double y, uint16_t extra_mask)
+/* Motion events reaching an active mousegrabber are coalesced to the latest
+ * position before delivery. X11 already folds MotionNotify this way, which is
+ * the rate awesome's synchronous callback was written for; Wayland hands us
+ * every device event instead, so a fast pointer can out-poll the frame rate
+ * and run the whole Lua move path many times inside one frame. The stash is
+ * flushed once per output frame (declare.c) or after GRABBER_FLUSH_US,
+ * whichever comes first. */
+#define GRABBER_FLUSH_US 8000
+
+static bool grabber_pending;
+static int grabber_x, grabber_y;
+static int64_t grabber_us;
+
+static int64_t
+grabber_now_us(void)
 {
-    lua_State *L;
-    uint16_t mask;
+    struct timespec ts;
 
-    if (!mousegrabber_isrunning())
-        return false;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
 
-    L = globalconf_get_lua_State();
-    mask = extra_mask | some_button_state_mask();
+static void
+grabber_run(int x, int y, uint16_t mask)
+{
+    lua_State *L = globalconf_get_lua_State();
 
     /* Push coords table to stack */
     mousegrabber_handleevent(L, (int)x, (int)y, mask);
@@ -69,6 +73,80 @@ event_handle_mousegrabber(double x, double y, uint16_t extra_mask)
     }
 
     lua_pop(L, 1);  /* Pop coords table */
+}
+
+/** Deliver the stashed motion to the grabber, once, with the freshest button
+ * state. Called by the frame (declare.c) and, as a starvation fallback, by
+ * the refresh cycle when the stash goes stale. */
+void
+event_grabber_flush(void)
+{
+    if (!grabber_pending)
+        return;
+    grabber_pending = false;
+    if (mousegrabber_isrunning())
+        grabber_run(grabber_x, grabber_y, some_button_state_mask());
+}
+
+/* Deliver the stash only when it has waited longer than GRABBER_FLUSH_US:
+ * a grabber that never dirties the screen still hears motion, bounded. */
+void
+event_grabber_flush_stale(void)
+{
+    if (grabber_pending && grabber_now_us() - grabber_us >= GRABBER_FLUSH_US)
+        event_grabber_flush();
+}
+
+/* Drop any stashed motion without delivering it (grab released/reloaded). */
+void
+event_grabber_cancel(void)
+{
+    grabber_pending = false;
+}
+
+/** A motion event while a grab is active is stashed for the next flush
+ * instead of running the Lua callback per event.
+ * \return true if the grabber consumed it
+ */
+bool
+event_handle_mousegrabber_motion(double x, double y)
+{
+    if (!mousegrabber_isrunning())
+        return false;
+
+    grabber_x = (int)x;
+    grabber_y = (int)y;
+    if (!grabber_pending)
+        grabber_us = grabber_now_us();
+    grabber_pending = true;
+    return true;
+}
+
+/** Handle event with mousegrabber if active
+ * Ported from AwesomeWM's event_handle_mousegrabber()
+ *
+ * The mask passed to the grabber is built from the tracked button state;
+ * extra_mask bits are ORed in. Scroll buttons (4-7) are synthesized from
+ * axis events and never held, so they only ever arrive via extra_mask.
+ *
+ * \param x Mouse X coordinate
+ * \param y Mouse Y coordinate
+ * \param extra_mask X11-style button mask bits to add to the tracked state
+ * \return true if event consumed by mousegrabber
+ */
+bool
+event_handle_mousegrabber(double x, double y, uint16_t extra_mask)
+{
+    uint16_t mask;
+
+    if (!mousegrabber_isrunning())
+        return false;
+
+    /* A stashed motion precedes this event: deliver it first. */
+    event_grabber_flush();
+
+    mask = extra_mask | some_button_state_mask();
+    grabber_run((int)x, (int)y, mask);
     return true;
 }
 

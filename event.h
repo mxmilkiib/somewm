@@ -26,6 +26,16 @@ void event_drawable_under_mouse(lua_State *L, int ud);
  */
 bool event_handle_mousegrabber(double x, double y, uint16_t extra_mask);
 
+/** Stash a motion event for the next grabber flush instead of running the
+ * callback per event (event.c). \return true if the grabber consumed it. */
+bool event_handle_mousegrabber_motion(double x, double y);
+
+/* Deliver stashed motion to the grabber callback; the stale variant only
+ * fires when the stash has outlived the frame wait (event.c). */
+void event_grabber_flush(void);
+void event_grabber_flush_stale(void);
+void event_grabber_cancel(void);
+
 /** Deliver scroll ticks to an active mousegrabber as press+release pairs. */
 void event_handle_mousegrabber_scroll(double x, double y, uint32_t button,
                                       int ticks);

@@ -35,6 +35,7 @@
 #include "somewm_api.h"
 #include "input.h"
 #include "declare.h"
+#include "event.h"
 
 #include <string.h>
 #include <stdbool.h>
@@ -97,6 +98,7 @@ mousegrabber_hot_reload(lua_State *L)
     luaL_unref(L, LUA_REGISTRYINDEX, globalconf.mousegrabber);
     globalconf.mousegrabber = LUA_REFNIL;
     mousegrabber_active = false;
+    event_grabber_cancel();
 }
 
 /** Stop grabbing the mouse pointer.
@@ -122,8 +124,9 @@ luaA_mousegrabber_stop(lua_State *L)
         globalconf.mousegrabber = LUA_REFNIL;
     }
 
-    /* Mark as inactive */
+    /* Mark as inactive; drop any motion stashed for it. */
     mousegrabber_active = false;
+    event_grabber_cancel();
 
     declare_mark_all_dirty();
     return 0;
