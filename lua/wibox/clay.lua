@@ -37,6 +37,8 @@ local beautiful = require("beautiful")
 local gcolor = require("gears.color")
 local gshape = require("gears.shape")
 local gsurface = require("gears.surface")
+local wbase = require("wibox.widget.base")
+local swm_animation = require("somewm.animation")
 
 local cairo = require("lgi").cairo
 local clay = {}
@@ -534,7 +536,7 @@ local function describe(w, fg, st, item, offer)
     local field = w._private.animation
     local once = st.animation_once[w]
     if once == nil then
-        once = require("wibox.widget.base").take_animation(w) or false
+        once = wbase.take_animation(w) or false
         st.animation_once[w] = once
     end
     local supported = {forced_width = true, forced_height = true}
@@ -599,7 +601,7 @@ end
 function clay.animate(w, node, mapping, st, item)
     if not st then return end
     local policy = st.animation_policies[item]
-    node.transition = require("somewm.animation").widget_word(w, mapping, policy)
+    node.transition = swm_animation.widget_word(w, mapping, policy)
 end
 
 local empty_list = {}
