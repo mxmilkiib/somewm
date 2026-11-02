@@ -76,6 +76,20 @@ luaA_dofunction(lua_State *L, int nargs, int nret)
 #endif
     /* Move function before arguments */
     lua_insert(L, - nargs - 1);
+    /* Guard: verify the value at the function position is actually callable.
+     * A stale signal callback reference can resolve to a non-function value
+     * (e.g. a lightuserdata with null pointer = 0x300000000000 in LuaJIT)
+     * when the original Lua function object has been freed and its memory
+     * reused. Without this check, lua_pcall jumps to the stale address and
+     * segfaults. */
+    if(!lua_isfunction(L, - nargs - 1))
+    {
+        warn("luaA_dofunction: skipping non-function callback (type=%s, "
+             "likely stale signal ref), popping %d args",
+             lua_typename(L, lua_type(L, - nargs - 1)), nargs);
+        lua_pop(L, nargs + 1);
+        return false;
+    }
     /* Push error handling function */
     lua_pushcfunction(L, luaA_dofunction_error);
     /* Move error handling function before args and function */
@@ -117,6 +131,18 @@ int luaA_call_handler(lua_State *L, int handler)
     /* push function and move it before args */
     lua_rawgeti(L, LUA_REGISTRYINDEX, handler);
     lua_insert(L, - nargs - 1);
+
+    /* Guard: verify the handler ref resolves to a function. A stale
+     * registry ref can point to a non-function value after the original
+     * function is freed and the registry slot is reused. */
+    if(!lua_isfunction(L, - nargs - 1))
+    {
+        warn("luaA_call_handler: handler ref %d is not a function (type=%s), "
+             "skipping call", handler,
+             lua_typename(L, lua_type(L, - nargs - 1)));
+        lua_pop(L, nargs + 2);  /* args + function + error handler */
+        return 0;
+    }
 
     if(lua_pcall(L, nargs, LUA_MULTRET, error_func_pos))
     {
