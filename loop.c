@@ -271,17 +271,21 @@ some_refresh(void)
 	 * The grabber callback queues signals of its own, so it runs first
 	 * for them to reach this same drain. */
 	/* Stall probe: time each stage so a blocked iteration names its culprit
-	 * rather than hiding inside the whole-iteration warning. */
+	 * rather than hiding inside the whole-iteration warning.
+	 * Prints only when SOMEWM_STALL is set. */
+	static int stalls = -1;
+	if (stalls < 0)
+		stalls = getenv("SOMEWM_STALL") != NULL;
 	struct timespec rt[7];
-	clock_gettime(CLOCK_MONOTONIC, &rt[0]);
+	if (stalls) clock_gettime(CLOCK_MONOTONIC, &rt[0]);
 
 	event_grabber_flush_stale();
 	some_event_queue_drain(globalconf_L);
-	clock_gettime(CLOCK_MONOTONIC, &rt[1]);
+	if (stalls) clock_gettime(CLOCK_MONOTONIC, &rt[1]);
 
 	/* Step 1: Emit refresh signal - triggers Lua layout calculations */
 	luaA_emit_signal_global("refresh");
-	clock_gettime(CLOCK_MONOTONIC, &rt[2]);
+	if (stalls) clock_gettime(CLOCK_MONOTONIC, &rt[2]);
 
 #ifdef SOMEWM_BENCH
 	clock_gettime(CLOCK_MONOTONIC, &bench_ts[1]);
@@ -291,7 +295,7 @@ some_refresh(void)
 	 * AwesomeWM calls drawin_refresh() BEFORE client_refresh() in awesome_refresh().
 	 * This ensures wibar geometry is applied before client layout calculations. */
 	drawin_refresh();
-	clock_gettime(CLOCK_MONOTONIC, &rt[3]);
+	if (stalls) clock_gettime(CLOCK_MONOTONIC, &rt[3]);
 
 #ifdef SOMEWM_BENCH
 	clock_gettime(CLOCK_MONOTONIC, &bench_ts[2]);
@@ -300,14 +304,14 @@ some_refresh(void)
 	/* Step 3: Apply client changes (geometry, borders, focus)
 	 * This matches AwesomeWM's client_refresh() which handles all client updates. */
 	client_refresh();
-	clock_gettime(CLOCK_MONOTONIC, &rt[4]);
+	if (stalls) clock_gettime(CLOCK_MONOTONIC, &rt[4]);
 
 #ifdef SOMEWM_BENCH
 	clock_gettime(CLOCK_MONOTONIC, &bench_ts[3]);
 #endif
 
 	ewmh_stacking_refresh();
-	clock_gettime(CLOCK_MONOTONIC, &rt[5]);
+	if (stalls) clock_gettime(CLOCK_MONOTONIC, &rt[5]);
 
 #ifdef SOMEWM_BENCH
 	clock_gettime(CLOCK_MONOTONIC, &bench_ts[4]);
@@ -316,16 +320,18 @@ some_refresh(void)
 	/* Step 6: Destroy windows queued for deferred destruction (XWayland only)
 	 * This matches AwesomeWM's deferred destruction pattern to avoid race conditions */
 	client_destroy_later();
-	clock_gettime(CLOCK_MONOTONIC, &rt[6]);
+	if (stalls) {
+		clock_gettime(CLOCK_MONOTONIC, &rt[6]);
 
-	static const char *const stage_names[] = {
-		"drain", "refresh-signal", "drawin", "client", "ewmh", "destroy"
-	};
-	for (int i = 0; i < 6; i++) {
-		long ms = (rt[i + 1].tv_sec - rt[i].tv_sec) * 1000
-			+ (rt[i + 1].tv_nsec - rt[i].tv_nsec) / 1000000;
-		if (ms > 100)
-			fprintf(stderr, "REFRESHSTALL %s=%ldms\n", stage_names[i], ms);
+		static const char *const stage_names[] = {
+			"drain", "refresh-signal", "drawin", "client", "ewmh", "destroy"
+		};
+		for (int i = 0; i < 6; i++) {
+			long ms = (rt[i + 1].tv_sec - rt[i].tv_sec) * 1000
+				+ (rt[i + 1].tv_nsec - rt[i].tv_nsec) / 1000000;
+			if (ms > 100)
+				fprintf(stderr, "REFRESHSTALL %s=%ldms\n", stage_names[i], ms);
+		}
 	}
 
 #ifdef SOMEWM_BENCH

@@ -547,12 +547,16 @@ rendermon(struct wl_listener *listener, void *data)
 	 * tag switch): re-evaluate pointer focus after reconciliation. */
 	/* Frame-stage stall probe: declare (Lua/clay) and commit (drm atomic,
 	 * incl. HDR colour transforms) are timed separately so a blocked
-	 * iteration can be blamed on the right one. */
+	 * iteration can be blamed on the right one.
+	 * Prints only when SOMEWM_STALL is set. */
+	static int stalls = -1;
+	if (stalls < 0)
+		stalls = getenv("SOMEWM_STALL") != NULL;
 	struct timespec t0, t1, t2;
-	clock_gettime(CLOCK_MONOTONIC, &t0);
+	if (stalls) clock_gettime(CLOCK_MONOTONIC, &t0);
 	if (m->declare && declare_output_frame(m->declare, m) > 0)
 		motionnotify(0, NULL, 0, 0, 0, 0);
-	clock_gettime(CLOCK_MONOTONIC, &t1);
+	if (stalls) clock_gettime(CLOCK_MONOTONIC, &t1);
 
 	/* needs_frame is true only when there is something to present;
 	 * wlr_scene_output_commit() returns true without presenting otherwise, so
@@ -562,14 +566,16 @@ rendermon(struct wl_listener *listener, void *data)
 		wlr_log(WLR_DEBUG, "[HOTPLUG] rendermon commit failed: %s",
 			m->wlr_output->name);
 	} else {
-		clock_gettime(CLOCK_MONOTONIC, &t2);
-		long declare_ms = (t1.tv_sec - t0.tv_sec) * 1000
-			+ (t1.tv_nsec - t0.tv_nsec) / 1000000;
-		long commit_ms = (t2.tv_sec - t1.tv_sec) * 1000
-			+ (t2.tv_nsec - t1.tv_nsec) / 1000000;
-		if (declare_ms > 100 || commit_ms > 100)
-			fprintf(stderr, "FRAMESTALL %s declare=%ldms commit=%ldms\n",
-				m->wlr_output->name, declare_ms, commit_ms);
+		if (stalls) {
+			clock_gettime(CLOCK_MONOTONIC, &t2);
+			long declare_ms = (t1.tv_sec - t0.tv_sec) * 1000
+				+ (t1.tv_nsec - t0.tv_nsec) / 1000000;
+			long commit_ms = (t2.tv_sec - t1.tv_sec) * 1000
+				+ (t2.tv_nsec - t1.tv_nsec) / 1000000;
+			if (declare_ms > 100 || commit_ms > 100)
+				fprintf(stderr, "FRAMESTALL %s declare=%ldms commit=%ldms\n",
+					m->wlr_output->name, declare_ms, commit_ms);
+		}
 		if (presented)
 			globalconf.frame_commit_count++;
 #ifdef SOMEWM_BENCH

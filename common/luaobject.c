@@ -284,6 +284,16 @@ sigstall_end(lua_State *L, sigstall_t saved)
         lua_sethook(L, NULL, 0, 0);
 }
 
+/* stall probes print only when SOMEWM_STALL is set */
+static int
+stall_probes_enabled(void)
+{
+    static int enabled = -1;
+    if (enabled < 0)
+        enabled = getenv("SOMEWM_STALL") != NULL;
+    return enabled;
+}
+
 void
 signal_object_emit(lua_State *L, signal_array_t *arr, const char *name, int nargs)
 {
@@ -317,26 +327,30 @@ signal_object_emit(lua_State *L, signal_array_t *arr, const char *name, int narg
             bench_signal_handler_calls++;
 #endif
             /* stall probe: name handlers over 100ms and their site */
-            char src[256] = "?";
-            lua_Debug ar;
-            lua_pushvalue(L, -1);
-            if (lua_getinfo(L, ">S", &ar))
-                snprintf(src, sizeof(src), "%s:%d",
-                    ar.short_src, ar.linedefined);
-            struct timespec st0, st1;
-            clock_gettime(CLOCK_MONOTONIC, &st0);
-            sigstall_t sv = sigstall_begin(L);
-            luaA_dofunction(L, nargs, 0);
-            clock_gettime(CLOCK_MONOTONIC, &st1);
-            long st_ms = (st1.tv_sec - st0.tv_sec) * 1000
-                + (st1.tv_nsec - st0.tv_nsec) / 1000000;
-            int have = sigstall.have_stack;
-            char stk[1024];
-            memcpy(stk, sigstall.stack, sizeof(stk));
-            sigstall_end(L, sv);
-            if (st_ms > 100)
-                fprintf(stderr, "SIGSTALL class %s=%ldms %s stack: %s\n",
-                    name, st_ms, src, have ? stk : "?");
+            if (stall_probes_enabled()) {
+                char src[256] = "?";
+                lua_Debug ar;
+                lua_pushvalue(L, -1);
+                if (lua_getinfo(L, ">S", &ar))
+                    snprintf(src, sizeof(src), "%s:%d",
+                        ar.short_src, ar.linedefined);
+                struct timespec st0, st1;
+                clock_gettime(CLOCK_MONOTONIC, &st0);
+                sigstall_t sv = sigstall_begin(L);
+                luaA_dofunction(L, nargs, 0);
+                clock_gettime(CLOCK_MONOTONIC, &st1);
+                long st_ms = (st1.tv_sec - st0.tv_sec) * 1000
+                    + (st1.tv_nsec - st0.tv_nsec) / 1000000;
+                int have = sigstall.have_stack;
+                char stk[1024];
+                memcpy(stk, sigstall.stack, sizeof(stk));
+                sigstall_end(L, sv);
+                if (st_ms > 100)
+                    fprintf(stderr, "SIGSTALL class %s=%ldms %s stack: %s\n",
+                        name, st_ms, src, have ? stk : "?");
+            } else {
+                luaA_dofunction(L, nargs, 0);
+            }
         }
     }
 
@@ -402,33 +416,37 @@ luaA_object_emit_signal(lua_State *L, int oud,
 #endif
             /* stall probe: a handler over 100ms blocks the loop; name it
              * and its definition site (func sits below nargs+1 args) */
-            char src[256] = "?";
-            lua_Debug ar;
-            lua_pushvalue(L, -1);
-            if (lua_getinfo(L, ">S", &ar))
-                snprintf(src, sizeof(src), "%s:%d",
-                    ar.short_src, ar.linedefined);
-            struct timespec st0, st1;
-            clock_gettime(CLOCK_MONOTONIC, &st0);
-            sigstall_t sv = sigstall_begin(L);
-            luaA_dofunction(L, nargs + 1, 0);
-            clock_gettime(CLOCK_MONOTONIC, &st1);
-            long st_ms = (st1.tv_sec - st0.tv_sec) * 1000
-                + (st1.tv_nsec - st0.tv_nsec) / 1000000;
-            int have = sigstall.have_stack;
-            char stk[1024];
-            memcpy(stk, sigstall.stack, sizeof(stk));
-            sigstall_end(L, sv);
-            if (st_ms > 100)
-                fprintf(stderr, "SIGSTALL %s=%ldms %s stack: %s\n",
-                    name, st_ms, src, have ? stk : "?");
+            if (stall_probes_enabled()) {
+                char src[256] = "?";
+                lua_Debug ar;
+                lua_pushvalue(L, -1);
+                if (lua_getinfo(L, ">S", &ar))
+                    snprintf(src, sizeof(src), "%s:%d",
+                        ar.short_src, ar.linedefined);
+                struct timespec st0, st1;
+                clock_gettime(CLOCK_MONOTONIC, &st0);
+                sigstall_t sv = sigstall_begin(L);
+                luaA_dofunction(L, nargs + 1, 0);
+                clock_gettime(CLOCK_MONOTONIC, &st1);
+                long st_ms = (st1.tv_sec - st0.tv_sec) * 1000
+                    + (st1.tv_nsec - st0.tv_nsec) / 1000000;
+                int have = sigstall.have_stack;
+                char stk[1024];
+                memcpy(stk, sigstall.stack, sizeof(stk));
+                sigstall_end(L, sv);
+                if (st_ms > 100)
+                    fprintf(stderr, "SIGSTALL %s=%ldms %s stack: %s\n",
+                        name, st_ms, src, have ? stk : "?");
+            } else {
+                luaA_dofunction(L, nargs + 1, 0);
+            }
         }
     }
 
     /* Then emit signal on the class */
     lua_pushvalue(L, oud);
     lua_insert(L, - nargs - 1);
-    {
+    if (stall_probes_enabled()) {
         struct timespec st0, st1;
         clock_gettime(CLOCK_MONOTONIC, &st0);
         sigstall_t sv = sigstall_begin(L);
@@ -443,6 +461,8 @@ luaA_object_emit_signal(lua_State *L, int oud,
         if (st_ms > 100)
             fprintf(stderr, "SIGSTALL class %s=%ldms stack: %s\n",
                 name, st_ms, have ? stk : "?");
+    } else {
+        luaA_class_emit_signal(L, luaA_class_get(L, - nargs - 1), name, nargs + 1);
     }
 }
 
