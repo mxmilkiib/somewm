@@ -3958,14 +3958,46 @@ declare_widget_context(const struct widget_host *host)
 	return dout ? dout->band.clay : NULL;
 }
 
-static const struct widget_tree *published_tree(const struct widget_host *host)
+static const struct declared_host *published_host(const struct widget_host *host)
 {
     if (!host->m || !host->m->declare) return NULL;
     struct declare_band *band = &host->m->declare->band;
     for (size_t i = 0; i < band->hosts_len; i++)
         if (band->hosts[i].host.id == host->id && band->hosts[i].host.drawable == host->drawable)
-            return band->hosts[i].view;
+            return &band->hosts[i];
     return NULL;
+}
+
+static const struct widget_tree *published_tree(const struct widget_host *host)
+{
+    const struct declared_host *p = published_host(host);
+    return p ? p->view : NULL;
+}
+
+/* The hits query reads the boxes of the output's last solve, but the host
+ * it is handed is rebuilt from the drawable's current state, which can run
+ * a geometry change ahead of that solve - a drawin mapped or moved by the
+ * same event drain that then asks for its hits. When the live and
+ * committed hosts differ in anything the declaration consumed, Clay's
+ * boxes describe where the drawable was, not where it is, and the query
+ * can only answer wrong. */
+static bool
+host_solve_stale(const struct widget_host *live, const struct widget_host *solved)
+{
+	return live->x != solved->x || live->y != solved->y
+		|| live->w != solved->w || live->h != solved->h
+		|| live->radius != solved->radius
+		|| memcmp(live->radii, solved->radii, sizeof(live->radii)) != 0
+		|| live->visible != solved->visible
+		|| live->in_parent != solved->in_parent
+		|| live->flow != solved->flow
+		|| live->path_clip != solved->path_clip
+		|| live->inner_clip != solved->inner_clip
+		|| live->frame_clip != solved->frame_clip
+		|| live->layout != solved->layout
+		|| live->told[0] != solved->told[0] || live->told[1] != solved->told[1]
+		|| live->fit[0] != solved->fit[0] || live->fit[1] != solved->fit[1]
+		|| live->src[0] != solved->src[0] || live->src[1] != solved->src[1];
 }
 
 static struct render_presentation host_presentation(const struct widget_host *host)
@@ -3987,7 +4019,8 @@ declare_widget_hits(const struct widget_host *host, double x, double y, int *out
 	if (!host->visible || x < 0 || y < 0 || x >= host->w || y >= host->h)
 		return 0;
 
-	struct widget_tree *d = (struct widget_tree *)published_tree(host);
+	const struct declared_host *solved = published_host(host);
+	struct widget_tree *d = solved ? (struct widget_tree *)solved->view : NULL;
 	Monitor *m = host->m;
 	struct declare_output *dout = m ? m->declare : NULL;
 	struct declare_band *band;
@@ -3996,8 +4029,11 @@ declare_widget_hits(const struct widget_host *host, double x, double y, int *out
 	Clay_ElementIdArray ids;
 	int n = 0;
 
+	/* A stale solve cannot agree with the scene hit the caller took, so it
+	 * is not a divergence: answer nothing until a frame catches the host
+	 * up, which keeps the scene==clay check below meaningful. */
 	if (!dout || !d || !d->declared || !(band = dout->band.clay ? &dout->band : NULL)
-			|| !band->context_valid)
+			|| !band->context_valid || host_solve_stale(host, &solved->host))
 		return 0;
 	/* The query answers only a visible host inside its box. It runs against
 	 * the boxes of the output's last solve, in output coordinates, and
