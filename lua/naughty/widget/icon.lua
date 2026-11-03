@@ -161,7 +161,7 @@ clay.describe_class(icon, function(w, _, _, _, offer)
 
     return { w = fw, h = fh, wsrc = "derived", hsrc = "derived",
         align = centered and { x = "center", y = "center" } or nil,
-        specs = { { image = image._native, name = "image",
+        specs = { { image = image._native, surface = image, name = "image",
             w = math.ceil(iw * scale), h = math.ceil(ih * scale),
             wsrc = "derived", hsrc = "derived" } } }
 end)

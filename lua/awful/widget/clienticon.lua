@@ -78,7 +78,9 @@ clay.describe_class(clienticon, function(w)
         return {}
     end
 
-    local image = { image = s._native, name = "image", aspect = sw / sh,
+    -- surface pins the lgi object to the spec so GC cannot destroy the
+    -- cairo surface before C references _native
+    local image = { image = s._native, surface = s, name = "image", aspect = sw / sh,
         image_width = sw, image_height = sh, wsrc = "protocol", hsrc = "protocol" }
 
     return { specs = { image } }
