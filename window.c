@@ -1846,8 +1846,12 @@ void
 resize(Client *c, struct wlr_box geo, int interact)
 {
 	struct wlr_box *bbox;
+	struct wlr_surface *surface;
 
-	if (!c->mon || !client_surface(c)->mapped)
+	if (!c->mon || !client_has_surface(c))
+		return;
+	surface = client_surface(c);
+	if (!surface || !surface->mapped)
 		return;
 
 	struct wlr_box old_geometry = c->geometry;
@@ -1917,10 +1921,12 @@ void
 setfullscreen(Client *c, int fullscreen)
 {
 	int was_fullscreen = c->fullscreen;
+	struct wlr_surface *surface;
 
 	c->fullscreen = fullscreen;
 	client_update_layer(c);
-	if (!c->mon || !client_surface(c)->mapped)
+	if (!c->mon || !client_has_surface(c)
+			|| !(surface = client_surface(c)) || !surface->mapped)
 		return;
 
 	/* Fullscreen is mutually exclusive with maximized states */
