@@ -1561,6 +1561,7 @@ function clay.compile(self, root, context, width, height, words)
         prof_ops0 = prof_ops_ms, prof_ops_n0 = prof_ops_n,
         prof_fill0 = prof_fill_ms, prof_fill_n0 = prof_fill_n,
         prof_color0 = prof_gcolor_ms, prof_color_n0 = prof_gcolor_n,
+        prof_t0 = os.clock(),
         drawable = self.drawable }
     cache.stale = {}
     local bound = {}
@@ -1648,9 +1649,9 @@ function clay.compile(self, root, context, width, height, words)
                 e[1], e[2], e[3], e[4])
         end
         io.stderr:write(string.format(
-            "DECLAREPROF total=%.0fms compiled=%d reused=%d"
+            "DECLAREPROF compile=%.0fms describe=%.0fms compiled=%d reused=%d"
             .. " ops=x%d/%.0fms fill=x%d/%.0fms color=x%d/%.0fms %s\n",
-            prof_total, st.compiled, st.reused,
+            (os.clock() - st.prof_t0) * 1000, prof_total, st.compiled, st.reused,
             prof_ops_n - st.prof_ops_n0, prof_ops_ms - st.prof_ops0,
             prof_fill_n - st.prof_fill_n0, prof_fill_ms - st.prof_fill0,
             prof_gcolor_n - st.prof_color_n0, prof_gcolor_ms - st.prof_color0,
