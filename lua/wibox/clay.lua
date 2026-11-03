@@ -56,6 +56,8 @@ local cairo = require("lgi").cairo
 local clay = {}
 -- SOMEWM_CLAY_NO_CACHE=1 starts every compile from an empty fragment cache.
 local no_cache = os.getenv("SOMEWM_CLAY_NO_CACHE") == "1"
+-- SOMEWM_DECLARE_PROF=1 dumps a per-class describe histogram on slow compiles.
+local prof_enabled = os.getenv("SOMEWM_DECLARE_PROF") == "1"
 local identities = setmetatable({}, {__mode = "k"})
 local next_identity = 0
 local next_occurrence = 0
@@ -1650,7 +1652,7 @@ function clay.compile(self, root, context, width, height, words)
         prof_list[#prof_list + 1] = { name, p[1], p[2], p[3] }
         prof_total = prof_total + p[1]
     end
-    if prof_total > 100 then
+    if prof_enabled and prof_total > 100 then
         table.sort(prof_list, function(a, b) return a[2] > b[2] end)
         local out = {}
         for i = 1, math.min(8, #prof_list) do
