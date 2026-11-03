@@ -94,8 +94,12 @@ associatex11(struct wl_listener *listener, void *data)
 		c->border_color_set = false;
 	}
 
-	LISTEN(&surface->events.map, &c->map, mapnotify);
-	LISTEN(&surface->events.unmap, &c->unmap, unmapnotify);
+	/* Guard against a re-associate (or a hot-reload re-registration) adding
+	 * a link that is already live; a double insert corrupts the list. */
+	if (wl_list_empty(&c->map.link))
+		LISTEN(&surface->events.map, &c->map, mapnotify);
+	if (wl_list_empty(&c->unmap.link))
+		LISTEN(&surface->events.unmap, &c->unmap, unmapnotify);
 }
 
 static void
@@ -280,6 +284,12 @@ createnotifyx11(struct wl_listener *listener, void *data)
 	/* Set the window ID for EWMH/X11 property lookups */
 	c->window = xsurface->window_id;
 
+	/* map/unmap are only registered on associate. Keep the links
+	 * initialized in the meantime so teardown paths can tell "not in a
+	 * list" from a removed-but-stale link (wl_list_empty). */
+	wl_list_init(&c->map.link);
+	wl_list_init(&c->unmap.link);
+
 	/* NOTE: Do NOT call ewmh_client_check_hints() here!
 	 * At this point the XWayland surface exists but may not be fully initialized.
 	 * Making XCB property queries here can interfere with the XWayland protocol.
@@ -307,8 +317,13 @@ void
 dissociatex11(struct wl_listener *listener, void *data)
 {
 	Client *c = wl_container_of(listener, c, dissociate);
+	/* wl_list_remove leaves stale pointers in the link; re-init so a later
+	 * removal sees "not in a list" instead of writing through dangling
+	 * pointers into the dead surface's listener list. */
 	wl_list_remove(&c->map.link);
+	wl_list_init(&c->map.link);
 	wl_list_remove(&c->unmap.link);
+	wl_list_init(&c->unmap.link);
 }
 
 void

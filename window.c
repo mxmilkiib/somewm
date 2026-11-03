@@ -629,10 +629,17 @@ client_remove_all_listeners(client_t *c)
 		wl_list_remove(&c->configure.link);
 		wl_list_remove(&c->dissociate.link);
 		wl_list_remove(&c->set_hints.link);
-		/* If associate was called, map/unmap listeners need cleanup */
-		if (c->map.link.prev && c->map.link.next) {
+		/* If associate was called, map/unmap listeners need cleanup. A
+		 * removed link keeps stale prev/next pointers, so "in a list" is
+		 * tested via wl_list_empty and the links are re-initialized after
+		 * removal to keep that test meaningful. */
+		if (!wl_list_empty(&c->map.link)) {
 			wl_list_remove(&c->map.link);
+			wl_list_init(&c->map.link);
+		}
+		if (!wl_list_empty(&c->unmap.link)) {
 			wl_list_remove(&c->unmap.link);
+			wl_list_init(&c->unmap.link);
 		}
 	} else
 	{
@@ -645,7 +652,9 @@ client_remove_all_listeners(client_t *c)
 			wl_list_remove(&c->ack_configure.link);
 		}
 		wl_list_remove(&c->map.link);
+		wl_list_init(&c->map.link);
 		wl_list_remove(&c->unmap.link);
+		wl_list_init(&c->unmap.link);
 		wl_list_remove(&c->maximize.link);
 		wl_list_remove(&c->minimize.link);
 	}
@@ -696,10 +705,13 @@ client_reregister_listeners(client_t *c)
 		LISTEN(&xsurface->events.set_hints, &c->set_hints, sethints);
 		LISTEN(&xsurface->events.set_title, &c->set_title, updatetitle);
 
-		/* If mapped (has surface association), register map/unmap */
+		/* If mapped (has surface association), register map/unmap. Skip
+		 * links that are still live; a double insert corrupts the list. */
 		if (c->scene && xsurface->surface) {
-			LISTEN(&xsurface->surface->events.map, &c->map, mapnotify);
-			LISTEN(&xsurface->surface->events.unmap, &c->unmap, unmapnotify);
+			if (wl_list_empty(&c->map.link))
+				LISTEN(&xsurface->surface->events.map, &c->map, mapnotify);
+			if (wl_list_empty(&c->unmap.link))
+				LISTEN(&xsurface->surface->events.unmap, &c->unmap, unmapnotify);
 		}
 	} else
 	{
