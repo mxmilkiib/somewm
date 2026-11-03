@@ -34,7 +34,19 @@
 
 local gdebug = require("gears.debug")
 local beautiful = require("beautiful")
-local gcolor = require("gears.color")
+-- declare profiler counters (snapshot per compile in the dump below)
+local prof_ops_ms, prof_ops_n = 0, 0
+local prof_fill_ms, prof_fill_n = 0, 0
+local prof_gcolor_ms, prof_gcolor_n = 0, 0
+
+local raw_gcolor = require("gears.color")
+local gcolor = function(...)
+    local t = os.clock()
+    local r = raw_gcolor(...)
+    prof_gcolor_ms = prof_gcolor_ms + (os.clock() - t) * 1000
+    prof_gcolor_n = prof_gcolor_n + 1
+    return r
+end
 local gshape = require("gears.shape")
 local gsurface = require("gears.surface")
 local wbase = require("wibox.widget.base")
@@ -89,28 +101,62 @@ function clay.shape_ops(shape, w, h, dx, dy, ...)
     return ops
 end
 
---- The corner radius a shape stands for, or nil for one Clay cannot name.
--- A shape is an arbitrary painter: the two gears shapes that are rectangles
--- are known by identity, and any other function by the path it draws;
--- `rounded_bar` and the rest keep drawing themselves.
-
-local function same_path(a, b)
-    if #a ~= #b then
-        return false
-    end
-    for i, value in ipairs(a) do
-        if value ~= b[i] then
-            return false
-        end
-    end
-    return true
+local raw_shape_ops = clay.shape_ops
+function clay.shape_ops(...)
+    local t = os.clock()
+    local r = raw_shape_ops(...)
+    prof_ops_ms = prof_ops_ms + (os.clock() - t) * 1000
+    prof_ops_n = prof_ops_n + 1
+    return r
 end
 
---- The radius a shape function draws when its path is
--- gears.shape.rounded_rect's, which is what a theme's `function(cr, w, h)
--- gears.shape.rounded_rect(cr, w, h, r) end` draws: the same path at two
--- sizes, with the radius read off the path's first point (0, r). Cached
--- per function; false for one that draws anything else.
+--- The corner radius a shape stands for, or nil for one Clay cannot name.
+-- A shape is an arbitrary painter: the two gears shapes that are rectangles
+-- are known by identity, and any other function by the calls it issues;
+-- `rounded_bar` and the rest keep drawing themselves.
+
+--- The call sequence a shape issues, captured on a recorder that executes
+-- nothing: for radius detection only the calls matter, so a cairo
+-- context's per-op lgi dispatch is skipped entirely.
+local function shape_calls(shape, w, h, ...)
+    local calls = {}
+    local recorder = setmetatable({}, { __index = function(_, name)
+        return function(_, ...)
+            calls[#calls + 1] = { name = name, ... }
+        end
+    end })
+    return pcall(shape, recorder, w, h, ...) and calls
+end
+
+--- The radius a shape function draws when it issues rounded_rect's exact
+-- call sequence - move_to(0, r), four corner-centred arcs of radius r,
+-- close_path - with r read off the move. Shapes that reach the same path
+-- through other calls, and anything else, count as custom.
+local function rounded_rect_radius(calls, w, h)
+    if not calls or #calls ~= 6 then return nil end
+    local m, close = calls[1], calls[6]
+    if m.name ~= "move_to" or m[1] ~= 0 or close.name ~= "close_path" then
+        return nil
+    end
+    local r = m[2]
+    if type(r) ~= "number" or r < 0 then return nil end
+    local eps = 0.01
+    local expect = { { r, r }, { w - r, r }, { w - r, h - r }, { r, h - r } }
+    for i = 1, 4 do
+        local a, e = calls[i + 1], expect[i]
+        if (a.name ~= "arc" and a.name ~= "arc_negative") or #a < 5
+                or math.abs(a[1] - e[1]) > eps
+                or math.abs(a[2] - e[2]) > eps
+                or math.abs(a[3] - r) > eps then
+            return nil
+        end
+    end
+    return r
+end
+
+--- The radius a shape function draws when it calls rounded_rect's
+-- sequence: the same r at two probed sizes. Cached per function; false
+-- for one that draws anything else.
 local shape_radii = setmetatable({}, { __mode = "k" })
 
 local function closure_radius(shape)
@@ -118,18 +164,10 @@ local function closure_radius(shape)
 
     if r == nil then
         local w, h = 160, 96
-        local path = clay.shape_ops(shape, w, h)
-
-        r = false
-        if path[1] == 0 and path[2] == 0 then
-            local radius = path[3]
-
-            if same_path(path, clay.shape_ops(gshape.rounded_rect, w, h, 0, 0, radius))
-                    and same_path(clay.shape_ops(shape, 2 * w, 2 * h),
-                        clay.shape_ops(gshape.rounded_rect, 2 * w, 2 * h, 0, 0, radius)) then
-                r = radius
-            end
-        end
+        local r1 = rounded_rect_radius(shape_calls(shape, w, h), w, h)
+        r = r1 and rounded_rect_radius(
+                shape_calls(shape, 2 * w, 2 * h), 2 * w, 2 * h) == r1
+            and r1 or false
         shape_radii[shape] = r
     end
     return r or nil
@@ -203,6 +241,15 @@ function clay.fill(col, dx, dy)
         fill.stops[#fill.stops + 1] = stop
     end
     return fill
+end
+
+local raw_fill = clay.fill
+function clay.fill(...)
+    local t = os.clock()
+    local r = raw_fill(...)
+    prof_fill_ms = prof_fill_ms + (os.clock() - t) * 1000
+    prof_fill_n = prof_fill_n + 1
+    return r
 end
 
 --- Put a fill record on a node that paints its colour as bg: a solid is
@@ -1264,7 +1311,15 @@ function compile_node(st, widget, parent, fg, offer, spec, alpha, parent_fit, al
     local given = offer
 
     st.compiled = st.compiled + 1
+    -- declare profiler: own-time of each widget's describe, per class
+    local prof_t0 = os.clock()
     local node, node_fg = describe(widget, fg, st, item, offer)
+    local prof_dt = (os.clock() - prof_t0) * 1000
+    local prof_cn = class_name(widget) or "?"
+    local prof_p = st.prof[prof_cn] or { 0, 0, 0 }
+    prof_p[1], prof_p[2] = prof_p[1] + prof_dt, prof_p[2] + 1
+    if prof_dt > prof_p[3] then prof_p[3] = prof_dt end
+    st.prof[prof_cn] = prof_p
 
     if not node then
         cache.entries[item] = nil
@@ -1502,7 +1557,10 @@ function clay.compile(self, root, context, width, height, words)
     local building = {slots = {}, children = {}}
     local st = { building = {[owner] = building}, compiled = 0, reused = 0,
         active = {}, animation_policies = {}, animation_once = {}, context = context, opaque_host = opaque_host,
-        cache = cache, stale = cache.stale,
+        cache = cache, stale = cache.stale, prof = {},
+        prof_ops0 = prof_ops_ms, prof_ops_n0 = prof_ops_n,
+        prof_fill0 = prof_fill_ms, prof_fill_n0 = prof_fill_n,
+        prof_color0 = prof_gcolor_ms, prof_color_n0 = prof_gcolor_n,
         drawable = self.drawable }
     cache.stale = {}
     local bound = {}
@@ -1575,6 +1633,29 @@ function clay.compile(self, root, context, width, height, words)
     tree = combine(tree, opaque_host, true)
     tree.widgets = cache.widgets
     tree.compiled, tree.reused = st.compiled, st.reused
+    -- declare profiler: dump the per-class own-time histogram of a slow compile
+    local prof_list, prof_total = {}, 0
+    for name, p in pairs(st.prof) do
+        prof_list[#prof_list + 1] = { name, p[1], p[2], p[3] }
+        prof_total = prof_total + p[1]
+    end
+    if prof_total > 100 then
+        table.sort(prof_list, function(a, b) return a[2] > b[2] end)
+        local out = {}
+        for i = 1, math.min(8, #prof_list) do
+            local e = prof_list[i]
+            out[#out + 1] = string.format("%s=%.0fms(x%d,max%.0f)",
+                e[1], e[2], e[3], e[4])
+        end
+        io.stderr:write(string.format(
+            "DECLAREPROF total=%.0fms compiled=%d reused=%d"
+            .. " ops=x%d/%.0fms fill=x%d/%.0fms color=x%d/%.0fms %s\n",
+            prof_total, st.compiled, st.reused,
+            prof_ops_n - st.prof_ops_n0, prof_ops_ms - st.prof_ops0,
+            prof_fill_n - st.prof_fill_n0, prof_fill_ms - st.prof_fill0,
+            prof_gcolor_n - st.prof_color_n0, prof_gcolor_ms - st.prof_color0,
+            table.concat(out, " ")))
+    end
     return tree, st.leaves
 end
 
