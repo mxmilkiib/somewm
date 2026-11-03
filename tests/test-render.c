@@ -1071,6 +1071,26 @@ static void test_client_surface_hooks(void) {
 	fixture_finish(&f, &hooks);
 }
 
+static void test_borrowed_tree_child_offset_is_not_mismatch(void) {
+	struct fixture f;
+	struct fake_clients fc;
+	struct render_client_hooks hooks;
+	fixture_init_clients(&f, &fc, &hooks);
+
+	struct wlr_scene_buffer *surface = wlr_scene_buffer_create(fc.trees[0], NULL);
+	wlr_scene_node_set_position(&surface->node, -7, 3);
+
+	Clay_RenderCommand cmds[] = { cmd_custom(1, 0, 25, 25, 400, 300) };
+	render_reconcile(f.rs, commands_of(cmds, 1), &hooks, no_bounds);
+	CHECK_EQ(fc.trees[0]->node.x, 25);
+	CHECK_EQ(fc.trees[0]->node.y, 25);
+	CHECK(fc.trees[0]->node.enabled);
+	CHECK_EQ(surface->node.x, -7);
+	CHECK_EQ(surface->node.y, 3);
+
+	fixture_finish(&f, &hooks);
+}
+
 static void test_client_corners_call_the_hook(void) {
 	struct fixture f;
 	struct fake_clients fc;
@@ -2904,6 +2924,7 @@ int main(void) {
         { "120 renderer host scopes without native clips", test_many_host_scopes },
 		{ "border clips to the bounds", test_border_clips_to_the_bounds },
 		{ "client surface hooks", test_client_surface_hooks },
+		{ "borrowed tree child offset is not a mismatch", test_borrowed_tree_child_offset_is_not_mismatch },
 		{ "custom crops to its clip", test_custom_crops_to_its_clip },
 		{ "client corners call the hook", test_client_corners_call_the_hook },
 		{ "a click in a client's corner falls through", test_click_in_a_client_corner_falls_through },

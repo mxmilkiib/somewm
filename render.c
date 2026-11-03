@@ -2780,27 +2780,6 @@ static bool rnode_scene_mismatch(const struct rnode *original) {
 		return true;
 	}
 	if (n->borrowed) {
-		struct wlr_scene_node *node = n->node;
-		int x = node->x, y = node->y;
-		while (node->type == WLR_SCENE_NODE_TREE) {
-			struct wlr_scene_tree *tree = wlr_scene_tree_from_node(node);
-			struct wlr_scene_node *child, *next = NULL;
-			wl_list_for_each(child, &tree->children, link) {
-				if (child->type == WLR_SCENE_NODE_BUFFER) {
-					return child->enabled && (x + child->x != (int)n->rbox.x ||
-						y + child->y != (int)n->rbox.y);
-				}
-				if (next == NULL && child->type == WLR_SCENE_NODE_TREE) {
-					next = child;
-				}
-			}
-			if (next == NULL) {
-				break;
-			}
-			node = next;
-			x += node->x;
-			y += node->y;
-		}
 		return false;
 	}
 	if (n->node->x != (int)n->rbox.x || n->node->y != (int)n->rbox.y) {
