@@ -272,7 +272,7 @@ end
 -- @param file The .desktop file.
 -- @return A table with file entries.
 -- @staticfct menubar.utils.parse_desktop_file
-function utils.parse_desktop_file(file)
+local function parse_desktop_file_uncached(file)
     local program = { show = true, file = file }
 
     -- Parse the .desktop file.
@@ -360,6 +360,24 @@ function utils.parse_desktop_file(file)
         program.cmdline = cmdline
     end
 
+    return program
+end
+
+-- memoize per path: each parse builds a GKeyFile through lgi, and the
+-- icon-resolution loop probes the same .desktop files on every manage.
+-- callers get a shallow copy so they can mutate the result freely
+local desktop_file_cache = {}
+
+function utils.parse_desktop_file(file)
+    local cached = desktop_file_cache[file]
+    if cached ~= nil then
+        if not cached then return nil end
+        local copy = {}
+        for k, v in pairs(cached) do copy[k] = v end
+        return copy
+    end
+    local program = parse_desktop_file_uncached(file)
+    desktop_file_cache[file] = program or false
     return program
 end
 
