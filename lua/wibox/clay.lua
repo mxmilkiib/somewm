@@ -101,10 +101,20 @@ function clay.shape_ops(shape, w, h, dx, dy, ...)
     return ops
 end
 
-local raw_shape_ops = clay.shape_ops
+local lua_shape_ops = clay.shape_ops
+-- records the path through a C proxy (luaa.c): no lgi dispatch, no
+-- copy_path records. nil on binaries without it; calls the proxy does
+-- not forward (matrix objects, patterns) fall back to the Lua recorder
+local c_shape_ops = awesome._clay_shape_ops
 function clay.shape_ops(...)
     local t = os.clock()
-    local r = raw_shape_ops(...)
+    local r
+    if c_shape_ops then
+        local ok, res = pcall(c_shape_ops, ...)
+        r = ok and res or lua_shape_ops(...)
+    else
+        r = lua_shape_ops(...)
+    end
     prof_ops_ms = prof_ops_ms + (os.clock() - t) * 1000
     prof_ops_n = prof_ops_n + 1
     return r
