@@ -1372,6 +1372,265 @@ luaA_awesome_test_widget_boxes(lua_State *L)
 	return 1;
 }
 
+/** Record a shape's path the way wibox/clay.lua's shape_ops does, in C:
+ * the shape draws on a proxy that forwards each call to a real cairo
+ * context, and cairo_copy_path flattens straight into the ops table - the
+ * per-call lgi dispatch and record iteration are skipped entirely.
+ * Anything the proxy does not know (matrix objects, patterns) errors so
+ * the Lua wrapper can fall back to its own recorder.
+ */
+
+typedef struct {
+	cairo_t *cr;
+	double dx, dy;
+	int ops_ref;
+} shape_rec_t;
+
+static void
+shape_rec_append(lua_State *L, shape_rec_t *r)
+{
+	cairo_path_t *path = cairo_copy_path(r->cr);
+	cairo_path_data_t *el;
+	int n, i, j;
+
+	lua_rawgeti(L, LUA_REGISTRYINDEX, r->ops_ref);
+	n = lua_objlen(L, -1);
+	for (i = 0; i < path->num_data; i += el->header.length) {
+		el = &path->data[i];
+		/* cairo's element kinds (MOVE=0, LINE=1, CURVE=2, CLOSE=3) are
+		 * the ops table's kinds verbatim */
+		lua_pushnumber(L, el->header.type);
+		lua_rawseti(L, -2, ++n);
+		for (j = 1; j < el->header.length; j++) {
+			lua_pushnumber(L, el[j].point.x + r->dx);
+			lua_rawseti(L, -2, ++n);
+			lua_pushnumber(L, el[j].point.y + r->dy);
+			lua_rawseti(L, -2, ++n);
+		}
+	}
+	cairo_path_destroy(path);
+	lua_pop(L, 1);
+}
+
+/* stroke/fill: record the current path and start a new one */
+static int
+shape_rec_flush(lua_State *L)
+{
+	shape_rec_t *r = lua_touserdata(L, lua_upvalueindex(1));
+	shape_rec_append(L, r);
+	cairo_new_path(r->cr);
+	return 0;
+}
+
+/* stroke_preserve/fill_preserve: record, keep the path */
+static int
+shape_rec_keep(lua_State *L)
+{
+	shape_rec_append(L, lua_touserdata(L, lua_upvalueindex(1)));
+	return 0;
+}
+
+/* calls that affect painting, not the recorded path */
+static int
+shape_rec_noop(lua_State *L)
+{
+	(void) L;
+	return 0;
+}
+
+static const char *const shape_rec_noops[] = {
+	"set_line_width", "set_line_cap", "set_line_join", "set_miter_limit",
+	"set_dash", "set_operator", "set_antialias", "set_fill_rule",
+	"set_tolerance", "set_source_rgb", "set_source_rgba", "set_source",
+	"set_source_surface", "clip", "clip_preserve", "paint",
+	"paint_with_alpha", "mask", "mask_surface", "push_group", "pop_group",
+	"pop_group_to_source", "reset_clip", NULL
+};
+
+enum {
+	M_MOVE_TO, M_LINE_TO, M_CURVE_TO,
+	M_REL_MOVE_TO, M_REL_LINE_TO, M_REL_CURVE_TO,
+	M_CLOSE_PATH, M_NEW_PATH, M_NEW_SUB_PATH,
+	M_ARC, M_ARC_NEGATIVE, M_RECTANGLE,
+	M_SAVE, M_RESTORE, M_TRANSLATE, M_SCALE, M_ROTATE, M_IDENTITY,
+	M_CURPOINT, M_PATHEXT, M_FILLEXT, M_STROKEEXT, M_HASCUR
+};
+
+static const char *const shape_rec_methods[] = {
+	"move_to", "line_to", "curve_to",
+	"rel_move_to", "rel_line_to", "rel_curve_to",
+	"close_path", "new_path", "new_sub_path",
+	"arc", "arc_negative", "rectangle",
+	"save", "restore", "translate", "scale", "rotate", "identity_matrix",
+	"get_current_point", "path_extents", "fill_extents",
+	"stroke_extents", "has_current_point", NULL
+};
+
+static int
+shape_rec_call(lua_State *L)
+{
+	shape_rec_t *r = lua_touserdata(L, lua_upvalueindex(1));
+	int id = lua_tointeger(L, lua_upvalueindex(2));
+	double x1, y1, x2, y2;
+
+	switch (id) {
+	case M_MOVE_TO:
+		cairo_move_to(r->cr, luaL_checknumber(L, 2), luaL_checknumber(L, 3));
+		break;
+	case M_LINE_TO:
+		cairo_line_to(r->cr, luaL_checknumber(L, 2), luaL_checknumber(L, 3));
+		break;
+	case M_CURVE_TO:
+		cairo_curve_to(r->cr, luaL_checknumber(L, 2), luaL_checknumber(L, 3),
+			luaL_checknumber(L, 4), luaL_checknumber(L, 5),
+			luaL_checknumber(L, 6), luaL_checknumber(L, 7));
+		break;
+	case M_REL_MOVE_TO:
+		cairo_rel_move_to(r->cr, luaL_checknumber(L, 2), luaL_checknumber(L, 3));
+		break;
+	case M_REL_LINE_TO:
+		cairo_rel_line_to(r->cr, luaL_checknumber(L, 2), luaL_checknumber(L, 3));
+		break;
+	case M_REL_CURVE_TO:
+		cairo_rel_curve_to(r->cr, luaL_checknumber(L, 2), luaL_checknumber(L, 3),
+			luaL_checknumber(L, 4), luaL_checknumber(L, 5),
+			luaL_checknumber(L, 6), luaL_checknumber(L, 7));
+		break;
+	case M_CLOSE_PATH: cairo_close_path(r->cr); break;
+	case M_NEW_PATH: cairo_new_path(r->cr); break;
+	case M_NEW_SUB_PATH: cairo_new_sub_path(r->cr); break;
+	case M_ARC:
+		cairo_arc(r->cr, luaL_checknumber(L, 2), luaL_checknumber(L, 3),
+			luaL_checknumber(L, 4), luaL_checknumber(L, 5),
+			luaL_checknumber(L, 6));
+		break;
+	case M_ARC_NEGATIVE:
+		cairo_arc_negative(r->cr, luaL_checknumber(L, 2), luaL_checknumber(L, 3),
+			luaL_checknumber(L, 4), luaL_checknumber(L, 5),
+			luaL_checknumber(L, 6));
+		break;
+	case M_RECTANGLE:
+		cairo_rectangle(r->cr, luaL_checknumber(L, 2), luaL_checknumber(L, 3),
+			luaL_checknumber(L, 4), luaL_checknumber(L, 5));
+		break;
+	case M_SAVE: cairo_save(r->cr); break;
+	case M_RESTORE: cairo_restore(r->cr); break;
+	case M_TRANSLATE:
+		cairo_translate(r->cr, luaL_checknumber(L, 2), luaL_checknumber(L, 3));
+		break;
+	case M_SCALE:
+		cairo_scale(r->cr, luaL_checknumber(L, 2), luaL_checknumber(L, 3));
+		break;
+	case M_ROTATE: cairo_rotate(r->cr, luaL_checknumber(L, 2)); break;
+	case M_IDENTITY: cairo_identity_matrix(r->cr); break;
+	case M_CURPOINT:
+		cairo_get_current_point(r->cr, &x1, &y1);
+		lua_pushnumber(L, x1);
+		lua_pushnumber(L, y1);
+		return 2;
+	case M_PATHEXT:
+		cairo_path_extents(r->cr, &x1, &y1, &x2, &y2);
+		goto extents;
+	case M_FILLEXT:
+		cairo_fill_extents(r->cr, &x1, &y1, &x2, &y2);
+		goto extents;
+	case M_STROKEEXT:
+		cairo_stroke_extents(r->cr, &x1, &y1, &x2, &y2);
+extents:
+		lua_pushnumber(L, x1);
+		lua_pushnumber(L, y1);
+		lua_pushnumber(L, x2);
+		lua_pushnumber(L, y2);
+		return 4;
+	case M_HASCUR:
+		lua_pushboolean(L, cairo_has_current_point(r->cr));
+		return 1;
+	}
+	return 0;
+}
+
+static int
+shape_rec_index(lua_State *L)
+{
+	shape_rec_t *r = lua_touserdata(L, lua_upvalueindex(1));
+	const char *name = luaL_checkstring(L, 2);
+	int i;
+
+	if (!strcmp(name, "stroke") || !strcmp(name, "fill")) {
+		lua_pushlightuserdata(L, r);
+		lua_pushcclosure(L, shape_rec_flush, 1);
+		return 1;
+	}
+	if (!strcmp(name, "stroke_preserve") || !strcmp(name, "fill_preserve")) {
+		lua_pushlightuserdata(L, r);
+		lua_pushcclosure(L, shape_rec_keep, 1);
+		return 1;
+	}
+	for (i = 0; shape_rec_noops[i]; i++)
+		if (!strcmp(name, shape_rec_noops[i])) {
+			lua_pushcfunction(L, shape_rec_noop);
+			return 1;
+		}
+	for (i = 0; shape_rec_methods[i]; i++)
+		if (!strcmp(name, shape_rec_methods[i])) {
+			lua_pushlightuserdata(L, r);
+			lua_pushinteger(L, i);
+			lua_pushcclosure(L, shape_rec_call, 2);
+			return 1;
+		}
+	return luaL_error(L, "shape recorder has no method '%s'", name);
+}
+
+/** Record a shape's path in logical pixels, offset by dx and dy.
+ * \param shape The shape function.
+ * \param w The width it is drawn at.
+ * \param h The height.
+ * \param[opt] dx X offset applied to the recorded points.
+ * \param[opt] dy Y offset.
+ * \param[opt] ... Extra arguments to the shape.
+ * \return The ops table.
+ */
+static int
+luaA_awesome_clay_shape_ops(lua_State *L)
+{
+	shape_rec_t r;
+	cairo_surface_t *surface;
+	int nargs = lua_gettop(L), i;
+
+	luaL_checktype(L, 1, LUA_TFUNCTION);
+	r.dx = luaL_optnumber(L, 4, 0);
+	r.dy = luaL_optnumber(L, 5, 0);
+
+	surface = cairo_image_surface_create(CAIRO_FORMAT_A8, 1, 1);
+	r.cr = cairo_create(surface);
+	cairo_surface_destroy(surface);
+
+	lua_newtable(L);
+	r.ops_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+
+	lua_newtable(L);                    /* proxy */
+	lua_newtable(L);                    /* its metatable */
+	lua_pushlightuserdata(L, &r);
+	lua_pushcclosure(L, shape_rec_index, 1);
+	lua_setfield(L, -2, "__index");
+	lua_setmetatable(L, -2);
+
+	lua_pushvalue(L, 1);                /* the shape */
+	lua_pushvalue(L, -2);               /* the proxy */
+	lua_pushvalue(L, 2);                /* w */
+	lua_pushvalue(L, 3);                /* h */
+	for (i = 6; i <= nargs; i++)
+		lua_pushvalue(L, i);
+	lua_call(L, 4 + (nargs > 5 ? nargs - 5 : 0), 0);
+
+	shape_rec_append(L, &r);
+
+	cairo_destroy(r.cr);
+	lua_rawgeti(L, LUA_REGISTRYINDEX, r.ops_ref);
+	luaL_unref(L, LUA_REGISTRYINDEX, r.ops_ref);
+	return 1;
+}
+
 /** Intern a Pango font description for a converted textbox, and answer the
  * id its text element declares as fontId (render_text.h). Nil for a
  * description the font table refuses, which keeps that textbox drawing
@@ -2441,6 +2700,7 @@ const luaL_Reg awesome_methods[] = {
 	{ "_clay_scroll_set", luaA_awesome_clay_scroll_set },
 	{ "_clay_font", luaA_awesome_clay_font },
 	{ "_clay_measure", luaA_awesome_clay_measure },
+	{ "_clay_shape_ops", luaA_awesome_clay_shape_ops },
 	{ "_surface_pixels", luaA_awesome_surface_pixels },
 	{ "_inspector_style", luaA_awesome_inspector_style },
 	{ "_test_declare_order", luaA_awesome_test_declare_order },
