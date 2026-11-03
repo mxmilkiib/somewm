@@ -32,7 +32,9 @@ old `combined/main` tip stays pinned as `old-combined-main` here and
 layer. The local `combined/main` branch is a retired mirror of the perf
 stack — the `plus` remote that fed it was the old clone path and was
 removed with the conversion, so it no longer refreshes. The `fork`
-remote is the user's GitHub mirror.
+remote is the user's GitHub mirror; the perf branch tracks
+`fork/perf/2026.10oct.30-upstream-fold`, so a plain `git push` in
+`somewm-next` mirrors it.
 
 The perf branch shares ancestry with upstream, so `origin/main..HEAD`
 counts are honest. The retired branches forked before the tree rewrite:
