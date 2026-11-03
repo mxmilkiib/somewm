@@ -4422,6 +4422,7 @@ declare_output_destroy(struct declare_output *dout)
 		dout->inspecting = false;
 		inspector_resync();
 	}
+	cursor_anim_off(dout);
 	declare_band_wipe(&dout->band);
 	node_destroy(dout->lock_node);
 	/* Objects can survive output removal, including hidden drawins. */
@@ -4431,7 +4432,6 @@ declare_output_destroy(struct declare_output *dout)
 	node_tree_destroy(dout->tree);
 	image_entry_set(&dout->wallpaper, NULL);
 	image_entry_set(&dout->cursor, NULL);
-	cursor_anim_off(dout);
 	cursor_anim_free(&dout->cursor_anim);
 	free(dout);
 }
