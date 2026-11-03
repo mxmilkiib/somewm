@@ -9,6 +9,7 @@
 
 -- Grab environment we need
 local Gio = require("lgi").Gio
+local GLib = require("lgi").GLib
 local gstring = require("gears.string")
 local gtable = require("gears.table")
 
@@ -46,12 +47,43 @@ end
 -- @tparam string filename The file path.
 -- @treturn boolean True if file exists and is readable.
 -- @staticfct gears.filesystem.file_readable
+
+-- memoize per path: icon-theme lookups stat thousands of candidate paths
+-- per miss and each query_info pays the full lgi/Gio dispatch chain, so the
+-- same candidates get re-stat'd on every update. results are held for a
+-- short TTL; a file appearing or vanishing takes that long to be noticed.
+local READABLE_CACHE_TTL = 30
+local readable_cache = {}
+local readable_cache_size = 0
+-- nil cannot sit in a table; a sentinel marks "the path does not exist",
+-- distinct from false (exists but unreadable or a directory)
+local MISSING = {}
+
 function filesystem.file_readable(filename)
-    local gfile = Gio.File.new_for_path(filename)
-    local gfileinfo = gfile:query_info("standard::type,access::can-read",
-                                       Gio.FileQueryInfoFlags.NONE)
-    return gfileinfo and gfileinfo:get_file_type() ~= "DIRECTORY" and
-        gfileinfo:get_attribute_boolean("access::can-read")
+    local now = os.time()
+    local ent = readable_cache[filename]
+    if ent and now - ent[2] <= READABLE_CACHE_TTL then
+        if ent[1] == MISSING then
+            return nil
+        end
+        return ent[1]
+    end
+    -- access(2)+stat(2) via GLib: plain function calls, no Gio object churn
+    -- (query_info pays ~10 lgi dispatch hops per candidate path)
+    local r
+    if GLib.file_test(filename, "EXISTS") then
+        r = GLib.access(filename, 4) == 0
+            and not GLib.file_test(filename, "IS_DIR")
+    end
+    if not ent then
+        if readable_cache_size > 65536 then
+            readable_cache = {}
+            readable_cache_size = 0
+        end
+        readable_cache_size = readable_cache_size + 1
+    end
+    readable_cache[filename] = { r == nil and MISSING or r, now }
+    return r
 end
 
 --- Check if a file exists, is executable and not a directory.
