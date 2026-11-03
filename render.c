@@ -2827,7 +2827,7 @@ static void verify_node(struct rnode *n) {
 		(int)n->rbox.width, (int)n->rbox.height,
 		(int)n->clip.x, (int)n->clip.y,
 		(int)n->clip.width, (int)n->clip.height);
-	abort();
+	if (verify_aborts()) abort();
 }
 
 #endif /* SOMEWM_RENDER_VERIFY */
@@ -2859,7 +2859,7 @@ static void verify_order(struct render_state *rs) {
 		if (child != expect) {
 			fprintf(stderr, "tree==scene: sibling order diverges from "
 				"command order\n");
-			abort();
+			if (verify_aborts()) abort();
 		}
 	}
 	/* Every command left over must be nodeless; one with a node means the
@@ -2870,7 +2870,7 @@ static void verify_order(struct render_state *rs) {
 		if (idx != SIZE_MAX && rs->nodes[idx].node != NULL) {
 			fprintf(stderr, "tree==scene: command %" PRIx64
 				" has no scene child\n", rs->order[oi - 1]);
-			abort();
+			if (verify_aborts()) abort();
 		}
 	}
 }

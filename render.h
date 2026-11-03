@@ -4,8 +4,23 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #include "clay.h"
+
+/* SOMEWM_RENDER_VERIFY builds the tree/scene/clay agreement checks into
+ * sanitizer and test builds. A divergence kills the compositor only when
+ * SOMEWM_VERIFY_ABORT is set in the environment; otherwise it logs and the
+ * frame carries on, since a desynced frame is survivable and a dead
+ * session is not. */
+static inline int
+verify_aborts(void)
+{
+	static int enabled = -1;
+	if (enabled < 0)
+		enabled = getenv("SOMEWM_VERIFY_ABORT") != NULL;
+	return enabled;
+}
 
 struct wlr_scene_tree;
 struct wlr_scene_node;

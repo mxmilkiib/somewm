@@ -2486,6 +2486,7 @@ static void test_verifier_catches_divergence(void) {
 		 * failure to report. */
 		if (!freopen("/dev/null", "w", stderr))
 			_exit(1);
+		setenv("SOMEWM_VERIFY_ABORT", "1", 1);
 		struct fixture f;
 		fixture_init(&f);
 		Clay_RenderCommand cmds[] = { cmd_rect(1, 0, 0, 10, 10, 0) };

@@ -4056,7 +4056,7 @@ declare_widget_hits(const struct widget_host *host, double x, double y, int *out
 		wlr_log(WLR_ERROR, "scene==clay: the scene hit drawable %dx%d+%d+%d "
 			"at %g,%g but Clay's query does not reach its root",
 			host->w, host->h, host->x + m->m.x, host->y + m->m.y, x, y);
-		abort();
+		if (verify_aborts()) abort();
 	}
 #endif
 	Clay_SetCurrentContext(previous);
