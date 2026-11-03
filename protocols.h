@@ -7,6 +7,8 @@
 #ifndef PROTOCOLS_H
 #define PROTOCOLS_H
 
+#include <sys/types.h>
+
 #include "somewm_types.h"
 
 typedef struct lua_State lua_State;
@@ -43,6 +45,8 @@ void foreign_toplevel_request_minimize(struct wl_listener *listener, void *data)
 
 /* Activation tokens */
 char *activation_token_create(const char *app_id);
+void activation_token_set_pid(const char *token, pid_t pid);
+void activation_token_child_exited(pid_t pid);
 void activation_token_cleanup(const char *token);
 void activation_token_cancel(const char *token);
 void activation_tokens_cancel_all(void);

@@ -154,6 +154,10 @@ spawn_child_exited(pid_t pid, int status)
 	int exit_callback;
 	guint i;
 
+	/* Reaped children arrive here whether or not they were tracked;
+	 * a pending activation token wants to hear about its holder dying. */
+	activation_token_child_exited(pid);
+
 	child = find_child(pid);
 
 	if (!child) {
@@ -581,6 +585,8 @@ luaA_spawn(lua_State *L)
 	pid = spawn_exec(argv, envp, flags, activation_token,
 			stdin_ptr, stdout_ptr, stderr_ptr, &error);
 	retval = pid > 0;
+	if (retval && activation_token)
+		activation_token_set_pid(activation_token, pid);
 
 	g_strfreev(argv);
 	g_strfreev(envp);

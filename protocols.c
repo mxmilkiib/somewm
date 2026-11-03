@@ -4,6 +4,7 @@
  * Layer shell, idle inhibit, session lock, foreign toplevel management,
  * and XDG activation token handling.
  */
+#include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -69,6 +70,7 @@ typedef struct {
 	char *token;              /* XDG activation token string */
 	char *app_id;             /* Application ID from spawn */
 	uint32_t timeout_id;      /* GLib timeout source ID for cleanup */
+	pid_t pid;                /* Spawned process holding the token, or 0 */
 } activation_token_t;
 
 /* Pending activation tokens (matches AwesomeWM's sn_waits pattern) */
@@ -683,6 +685,7 @@ char *activation_token_create(const char *app_id)
 	slot = &pending_tokens[pending_tokens_len++];
 	slot->token = strdup(token_name);
 	slot->app_id = app_id ? strdup(app_id) : NULL;
+	slot->pid = 0;
 
 	/* Setup 20-second timeout (matches AwesomeWM) */
 	slot->timeout_id = g_timeout_add_seconds(20, activation_token_timeout,
@@ -690,6 +693,53 @@ char *activation_token_create(const char *app_id)
 
 
 	return slot->token;
+}
+
+/* Record which spawned process carries the token (the child's env got
+ * XDG_ACTIVATION_TOKEN at exec). */
+void activation_token_set_pid(const char *token, pid_t pid)
+{
+	size_t i;
+
+	if (!token)
+		return;
+
+	for (i = 0; i < pending_tokens_len; i++)
+		if (strcmp(pending_tokens[i].token, token) == 0) {
+			pending_tokens[i].pid = pid;
+			return;
+		}
+}
+
+/* Grace for a token whose spawned process is already gone, in seconds.
+ * The spawn children are session/group leaders (POSIX_SPAWN_SETSID), so
+ * a copy of the token can only live on in descendants of the same group
+ * or in a delegate that got it out of band (single-instance apps forward
+ * it to the running instance over IPC). A dead group cancels the long
+ * wait but leaves the delegate a window to activate in. */
+#define TOKEN_EXIT_GRACE_S 5
+
+/* Called from spawn_child_exited for every reaped child. Once the whole
+ * process group is dead nothing local can still activate, so the token's
+ * timer is shortened to the grace period rather than riding out the
+ * usual timeout holding the spawn cursor. */
+void activation_token_child_exited(pid_t pid)
+{
+	size_t i;
+
+	for (i = 0; i < pending_tokens_len; i++) {
+		if (pending_tokens[i].pid != pid)
+			continue;
+		/* ESRCH means no process remains in the child's group; EPERM
+		 * means it exists but is owned by someone else. */
+		if (kill(-pid, 0) == 0 || errno == EPERM)
+			return;
+		g_source_remove(pending_tokens[i].timeout_id);
+		pending_tokens[i].timeout_id = g_timeout_add_seconds(
+			TOKEN_EXIT_GRACE_S, activation_token_timeout,
+			strdup(pending_tokens[i].token));
+		return;
+	}
 }
 
 /* Cleanup token (called from urgent handler on match) */
@@ -717,6 +767,7 @@ void activation_token_cleanup(const char *token)
 		}
 	}
 }
+
 /* Cancel a pending token and tell Lua the launch was aborted. Unlike
  * activation_token_cleanup this is for tokens that can no longer complete
  * (the spawn failed before exec), so spawn::canceled goes out to retract
@@ -746,7 +797,6 @@ void activation_token_cancel(const char *token)
 		}
 	}
 }
-
 void urgent(struct wl_listener *listener, void *data)
 {
 	struct wlr_xdg_activation_v1_request_activate_event *event;
