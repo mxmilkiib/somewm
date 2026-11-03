@@ -8,8 +8,10 @@
 export LC_NUMERIC=C
 #
 # Modes:
-#   HEADLESS=1 (default): Run with headless backend (reliable, for CI)
-#   HEADLESS=0: Run with wayland backend (visual, for debugging)
+#   HEADLESS=0 (default): Run nested on the session's wayland backend
+#     (visual, for debugging; injected absolute pointer coords scale onto
+#     the real output layout, so pointer-injection tests need HEADLESS=1)
+#   HEADLESS=1: Run with headless backend (reliable, for CI)
 #   PERSISTENT=0 (default): Start fresh compositor per test
 #   PERSISTENT=1: Keep compositor running, reset state between tests (10x faster)
 #
