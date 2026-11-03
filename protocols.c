@@ -717,6 +717,36 @@ void activation_token_cleanup(const char *token)
 		}
 	}
 }
+/* Cancel a pending token and tell Lua the launch was aborted. Unlike
+ * activation_token_cleanup this is for tokens that can no longer complete
+ * (the spawn failed before exec), so spawn::canceled goes out to retract
+ * the spawn cursor now instead of at the timeout. The token object itself
+ * is left for wlroots' own expiry: a late activate degrades to a plain
+ * "client" activation rather than being rejected outright. */
+void activation_token_cancel(const char *token)
+{
+	size_t i;
+
+	if (!token)
+		return;
+
+	for (i = 0; i < pending_tokens_len; i++) {
+		if (strcmp(pending_tokens[i].token, token) == 0) {
+			some_event_queue_global_with_table(SIG_SPAWN_CANCELED, 2,
+				"id", token);
+			g_source_remove(pending_tokens[i].timeout_id);
+			free(pending_tokens[i].token);
+			free(pending_tokens[i].app_id);
+
+			/* Shift remaining tokens */
+			memmove(&pending_tokens[i], &pending_tokens[i + 1],
+				(pending_tokens_len - i - 1) * sizeof(activation_token_t));
+			pending_tokens_len--;
+			return;
+		}
+	}
+}
+
 void urgent(struct wl_listener *listener, void *data)
 {
 	struct wlr_xdg_activation_v1_request_activate_event *event;

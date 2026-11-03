@@ -44,6 +44,7 @@ void foreign_toplevel_request_minimize(struct wl_listener *listener, void *data)
 /* Activation tokens */
 char *activation_token_create(const char *app_id);
 void activation_token_cleanup(const char *token);
+void activation_token_cancel(const char *token);
 void activation_tokens_cancel_all(void);
 void urgent(struct wl_listener *listener, void *data);
 

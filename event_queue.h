@@ -82,6 +82,7 @@ enum {
 	SIG_DPMS_ON,
 	SIG_SPAWN_TIMEOUT,       /* 1 arg: {id=token} */
 	SIG_SPAWN_COMPLETED,     /* 1 arg: {id=token} */
+	SIG_SPAWN_CANCELED,      /* 1 arg: {id=token} */
 	SIG_SWITCH_TOGGLE,       /* 1 arg: {device_name, type, state} */
 	SIG_SCREEN_FOCUS,
 	SIG_CLIENT_MAP,

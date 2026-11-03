@@ -67,6 +67,7 @@ static const char *signal_names[SIG_COUNT] = {
 	[SIG_DPMS_ON]                = "dpms::on",
 	[SIG_SPAWN_TIMEOUT]          = "spawn::timeout",
 	[SIG_SPAWN_COMPLETED]        = "spawn::completed",
+	[SIG_SPAWN_CANCELED]         = "spawn::canceled",
 	[SIG_SWITCH_TOGGLE]          = "switch::toggle",
 	[SIG_SCREEN_FOCUS]           = "screen::focus",
 	[SIG_CLIENT_MAP]             = "client::map",

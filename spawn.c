@@ -586,6 +586,10 @@ luaA_spawn(lua_State *L)
 	g_strfreev(envp);
 
 	if (!retval) {
+		/* spawn::initiated already went out; retract it or the spawn
+		 * cursor would ride out the whole token timeout. */
+		if (activation_token)
+			activation_token_cancel(activation_token);
 		lua_pushstring(L, error->message);
 		g_error_free(error);
 		return 1;
