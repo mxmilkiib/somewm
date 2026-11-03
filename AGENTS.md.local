@@ -1,0 +1,268 @@
+# Agent notes for somewm development
+
+Operational knowledge that CONTRIBUTING.md does not cover. Read this before
+launching test instances or debugging IPC.
+
+## What this tree is
+
+somewm is a Wayland-native reimplementation of AwesomeWM (X11-only): a new
+project with compatible Lua APIs, not a fork of AwesomeWM. Upstream is
+`github.com/trip-zip/somewm` (remote `origin`), maintained by Jimmy Cozza.
+
+This tree is the user's personal repo. The active personal stack is
+`perf/2026.10oct.30-upstream-fold` — upstream plus the user's own fixes
+and features folded onto the node-model upstream. The repo has two
+linked worktrees sharing one object store:
+
+- `~/src/somewm` — the main worktree, on `draft/test-builds`: the
+  scratch line for building test binaries. Check out whatever needs
+  building here; commits on it do not move the session branch.
+- `~/src/somewm-next` — a linked worktree that alone holds
+  `perf/2026.10oct.30-upstream-fold`, the confirmed-working branch the
+  live session builds and runs (see below). A branch can only be
+  checked out in one worktree, so scratch work cannot ride onto the
+  session branch by accident.
+
+(`~/src/somewm-next` was a separate clone with a rewritten history until
+2026-11-03, converted to a worktree after its tree was verified identical
+to this repo's tip; renamed from `~/src/somewm-plus` on 2026-11-02. The
+old `combined/main` tip stays pinned as `old-combined-main` here and
+`combined/main` on `fork`.) `~/src/somewm-fixed` holds
+`feature/2026.10oct.29-personal-layer`, a squashed reference of the same
+layer. The local `combined/main` branch is a retired mirror of the perf
+stack — the `plus` remote that fed it was the old clone path and was
+removed with the conversion, so it no longer refreshes. The `fork`
+remote is the user's GitHub mirror.
+
+The perf branch shares ancestry with upstream, so `origin/main..HEAD`
+counts are honest. The retired branches forked before the tree rewrite:
+`git rev-list --count old-combined-main...origin/main` reports hundreds
+behind while the real gap is a handful of commits. Judge those by
+subject (`git log --format=%s A..B` on both sides), never by SHA.
+
+## The live compositor builds from ~/src/somewm-next
+
+`~/bin/somewm` (a dotfiles wrapper script) execs `~/src/somewm-next`'s
+`build-asan/somewm` with `-L ~/src/somewm-next/lua`, rebuilding it with
+ninja when the tree is stale. The session launches it via the systemd drop-in
+`~/dotfiles/systemd/.config/systemd/user/somewm.service.d/override.conf`:
+
+    ExecStart=/home/milkii/bin/somewm
+
+`~/src/somewm-next` alone holds `perf/2026.10oct.30-upstream-fold`, the
+confirmed-working branch — work lands directly on it (or merges in from
+a topic branch), so patching the `somewm-next` source is the normal
+flow. Anything not meant for the session belongs on `~/src/somewm`'s
+own branch (`draft/test-builds` or a topic checkout there).
+
+- Lua edits: `ninja -C build somewm` is not needed; `awesome.restart()`
+  (hot-reload) re-reads rc.lua in the same process — but the live
+  process reads `somewm-next/lua`, so the change must land in that tree
+  to take effect.
+- C edits: `ninja -C ~/src/somewm-next/build-asan somewm`, then a **real**
+  restart — `systemctl --user restart somewm` re-execs the new binary
+  but kills all Wayland clients (there is no seamless re-exec).
+  `awesome.restart()` does NOT pick up C changes. Never restart without
+  the user's say-so.
+- Verify the live binary matches before debugging runtime behaviour:
+  `ps -o lstart= -p $(pgrep -x somewm)` vs
+  `stat -c %y ~/src/somewm-next/build-asan/somewm`.
+
+## Nested test instances and the IPC socket
+
+`ipc_init()` (ipc.c) picks its socket path as:
+
+1. `SOMEWM_SOCKET` if set
+2. otherwise `$XDG_RUNTIME_DIR/somewm-socket` — the **main session's path**
+
+Historically `ipc_init` unconditionally `unlink()`ed that path before
+`bind()`, so a nested instance launched without `SOMEWM_SOCKET` stole the
+running compositor's IPC socket: the socket file was unlinked and rebound,
+the main compositor's listener stayed open but unreachable, and
+`somewm-client` silently talked to the headless test instance (a dead
+giveaway: `screens=0` on a session with real outputs).
+
+`ipc.c` now probes the path before unlinking: a connectable socket means a
+live owner and `ipc_init` refuses to bind (compositor starts without IPC);
+a dead socket file is unlinked and rebound. A bound unix socket cannot be
+re-linked from outside, so recovery without restart requires injecting a
+new listener in-process (see below).
+
+### Safe manual launch
+
+```bash
+SOMEWM_TEST_NAME=test \
+SOMEWM_SOCKET=/run/user/1000/somewm-test/test/ipc.sock \
+WAYLAND_DISPLAY=wayland-0 \
+somewm -L ~/src/somewm-next/lua
+```
+
+All three env vars are required. `SOMEWM_SOCKET` is the one that prevents
+socket theft. The test orchestrator (`build/test_orchestrator`, exposed as
+`somewm-client test start`) sets all of this up itself
+(`test_orchestrator.c:569`) — prefer it where possible.
+
+### Always stop the instance afterwards
+
+A nested instance keeps running until killed, and stray ones accumulate:
+they hold a wlr output window on the user's screen, run the full rc.lua
+(including autostart spawns), and confuse `screen`/IPC queries. When done:
+
+- orchestrated: `somewm-client test stop --name <name>` (kills the pidfile'd
+  process and removes the state dir)
+- manual: `kill <pid>` and remove `$XDG_RUNTIME_DIR/somewm-test/<name>/`
+- `somewm-client test list` shows running and stale instances. `(stale)`
+  means the pidfile is missing or unreadable — it does NOT mean the
+  process is dead. A stale entry can still be a live compositor holding a
+  wlr window (seen 2026-11-03: two ~50min-old instances listed stale with
+  `?` PIDs). Confirm with `pgrep -ax somewm`, kill by PID, then remove
+  the state dir.
+
+### Headless testing — no on-screen window needed
+
+The nested instance does not have to appear on any real screen:
+
+```bash
+somewm-client test start --name t --host headless
+somewm-client test eval  --name t 'return awesome._test_add_output(1920, 1080)'
+somewm-client test stop  --name t
+```
+
+`--host headless` sets `WLR_BACKENDS=headless` + `WLR_RENDERER=pixman` —
+nothing is displayed anywhere. `awesome._test_add_output(w, h)` hotplugs a
+fake output (a real `screen` object appears); it also works on a normal
+wayland multi-backend by adding a headless sub-backend on demand. Headless
+outputs support `screen scale`, so multi-scale drawin/screenshot tests run
+entirely off-screen — e.g. two outputs at 1.0 and 1.25 let a wibox be moved
+between scales to verify `d->surface_scale` recreation. Screenshots of
+headless screens work normally. Limitations: software (pixman) rendering
+only, and no real input devices — use `--host wayland` when pointer/keyboard
+injection or a visible window matters.
+
+### run-integration.sh defaults to nested, not headless
+
+`tests/run-integration.sh` reads `HEADLESS=${HEADLESS:-0}` — its header
+comment claims headless is the default but the actual default is a nested
+window inside the session, and `make test-one` sets nothing. Under nested
+the output is whatever size the window happens to be, so
+`zwlr_virtual_pointer_v1_motion_absolute` scales the 1280x720 extent every
+test passes onto the real layout box: injected clicks and drags land at
+the wrong coordinates (~2x off). Pointer-injection tests are only
+meaningful with `HEADLESS=1`, where the output really is 1280x720.
+
+## IPC debugging
+
+- Protocol: newline-delimited commands; responses are `STATUS MSG\n[DATA]\n\n`.
+  `somewm-client ping` → `OK\nPONG`.
+- Client connects but reads hang forever = the listener is bound but the
+  event loop never accepts — the main thread is blocked somewhere. Check
+  `cat /proc/<pid>/wchan`; `unix_stream_read_generic` means a synchronous
+  socket read wedged the loop, `poll_schedule_timeout` means healthy epoll.
+- Lua-side dispatch bridge: `objects/ipc.c` (`ipc_dispatch_to_lua`), which
+  calls the Lua global `_ipc_dispatch` from `lua/awful/ipc.lua`. A nil Lua
+  return means the handler deferred the response itself.
+- Emergency re-bind of a stolen/unlinked socket on a live compositor: the
+  compositor exposes `org.awesomewm.awful.Remote.Eval` on the session bus;
+  call it via the compositor's unique `:1.x` name (use `dbus-send` or
+  `busctl --user call <unique-name> /org/awesomewm/awful/Remote
+  org.awesomewm.awful.Remote Eval s '<lua>'`). LuaJIT `ffi` is available in
+  the Lua state, so a listener can be rebuilt in Lua — see
+  `plugins/ipc_rescue.lua` in the user config for a working implementation.
+
+## Hot-reload pitfalls
+
+- During reload, all screens are torn down before `rc.lua` re-executes:
+  `#screen == 0`. Anything that touches screens eagerly at module load
+  (`naughty.notify`, `awful.popup` construction, `screen.focused()`) can
+  crash or assert. Defer via `awful.screen.connect_for_each_screen` or
+  guard on `#screen > 0`.
+- `awesome.startup` is true during hot reload too (luaa.c ~2840:
+  `globalconf.loop == NULL || hot_reload_in_progress`). To distinguish a
+  real cold boot from a reload, use `awesome.somewm_ready` — it persists
+  across reloads via globalconf.
+- A `require` failure is cached, so dependents report a misleading "loop or
+  previous error loading module" — find the first error in the log.
+- `gears.timer` callbacks run on the main loop. A blocking syscall inside a
+  timer freezes the entire compositor.
+
+## LuaJIT FFI gotcha
+
+`ffi.cdef` with a variadic prototype (`int fcntl(int fd, int cmd, ...)`)
+**silently drops** the vararg: `fcntl(fd, F_SETFL, O_NONBLOCK)` returns 0
+but applies nothing. Declare it non-variadic (`int fcntl(int fd, int cmd,
+int arg)`) — the ABI is identical and the flag actually reaches the kernel.
+This caused a real deadlock (blocking `read()` inside a `gears.timer`).
+
+## Git workflow
+
+- One fix per branch, one branch per PR. Don't let unrelated work (other
+  sessions' edits, drive-by fixes) ride along on a branch that already has
+  an open PR — it drags in unreviewed changes and confuses the reviewer.
+- Before committing on a fix branch, check `git status`/`git diff --stat`
+  for files unrelated to that fix. Stash them out (`git stash push -- <files>`)
+  rather than committing everything staged.
+
+## Useful paths
+
+- Build: `make` / `ninja -C build somewm` (leave 2 cores free)
+- `test-render` links `render.c` standalone without the compositor
+  objects, so render.c must not reference `somewm_api.h` symbols
+  (`some_get_event_loop` et al.): pass runtime services in through the
+  render API instead (see `render_cursor_anim`'s `loop` parameter).
+- Session introspection client: `~/src/somewm-next/build-asan/somewm-client`
+  (`eval`, `client info`/`client list`, `clay tree`, `test ...`)
+- Logs from manual nested launches conventionally go to `/tmp/somewm-test-launch*.log`
+- Test instance state dir: `$XDG_RUNTIME_DIR/somewm-test/<name>/`
+
+## Runtime probes and signals (node model)
+
+- `awesome._test_redeclare()` marks every output dirty and runs one
+  synchronous frame; returns the scene mutation count. A second call with
+  nothing changed must return 0.
+- `awesome._test_frame_count` reads `globalconf.frame_commit_count` —
+  commits that actually presented. The cheap probe for "is a render-side
+  clock driving repaints": it advances with zero declares.
+- `awesome.bench_stats()`/`bench_reset()` exist only in `-Dbench=true`
+  builds (meson option → `SOMEWM_BENCH`; `make build-bench` →
+  `build-bench/`). Probe `type(awesome.bench_stats)` first — a normal
+  `build/` compositor returns nil. `make bench-run-live` targets the live
+  session but needs the live binary itself to be bench-enabled.
+- Solved drawin geometry emits `property::width`/`height`/`x`/`y` on the
+  **drawin** object only — `drawin_moveresize` writes the drawable's
+  geometry fields directly for solved moves ("solved sizes only publish",
+  objects/drawin.c). Watch `w.drawin`, never `w._drawable`, for
+  solved-size changes.
+- `root.cursor(name)` defers when the pointer is over a surface (the
+  wallpaper counts). To force a themed cursor in a test: give a wibox
+  `cursor = "watch"` at construction and move the pointer over it with
+  `mouse.coords{x=,y=}` — the name applies on motion. `w.cursor=` after
+  construction may not reach the drawin property; set it on the drawin or
+  in the constructor. Cursor names are sticky across hover-leave until the
+  next hover context resolves.
+- `drawin.attachment` (objects/drawin.c) is the widget-anchor mechanism:
+  kind 1 popup / 2 tooltip / 3 launcher / 4 notification, target =
+  widget identity + occurrence + host drawable, resolved C-side to an
+  `ELEMENT_WITH_ID` float in `declare_attachment`. There is no Lua-side
+  fit/flip: the first preferred position/anchor is used unconditionally.
+
+## Startup cursor position and selmon
+
+At cold boot `monitor_arm_startup_centre()` (monitor.c) warps the cursor
+to the centre of the primary screen's monitor and opens a ~10s settle
+window (`globalconf.startup_centre_pending`). Inside the window every
+`updatemons()` re-asserts that position, so an output-manager apply that
+lands moments after login (kanshi's profile) cannot strand the pointer on
+whatever output its old coordinates happened to end up inside. The first
+real pointer motion (`time != 0` in motionnotify) or the deadline closes
+the window. In tests, `root.fake_input("motion_notify")` counts as real
+motion and disarms it.
+
+`selmon` tracks the cursor: motionnotify (real motion),
+`some_set_cursor_position` (warps), root button presses, `focusclient`,
+and `updatemons`'s tail (layout changes that re-clamp the pointer without
+any motion event) all keep it on the cursor's monitor. That monitor is
+what `createlayersurface` hands to clients that name no output (rofi).
+When wlroots relocates a displaced cursor it lands inside the output it
+was on; overlapping final boxes make "which output wins" ambiguous, so
+tests that need deterministic cursor placement should keep the point
+covered through every intermediate layout state.
