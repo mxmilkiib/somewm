@@ -3977,27 +3977,18 @@ static const struct widget_tree *published_tree(const struct widget_host *host)
 /* The hits query reads the boxes of the output's last solve, but the host
  * it is handed is rebuilt from the drawable's current state, which can run
  * a geometry change ahead of that solve - a drawin mapped or moved by the
- * same event drain that then asks for its hits. When the live and
- * committed hosts differ in anything the declaration consumed, Clay's
- * boxes describe where the drawable was, not where it is, and the query
- * can only answer wrong. */
+ * same event drain that then asks for its hits. When the drawable's
+ * output-local box or visibility moved on since the solve, Clay's boxes
+ * describe where the drawable was, not where it is, and the query can only
+ * answer wrong. The rest of the committed host - flow, told, fit, clip and
+ * src flags - is frame-side solve input the live copy never carries, so
+ * only the drawable's own geometry says anything about staleness. */
 static bool
 host_solve_stale(const struct widget_host *live, const struct widget_host *solved)
 {
 	return live->x != solved->x || live->y != solved->y
 		|| live->w != solved->w || live->h != solved->h
-		|| live->radius != solved->radius
-		|| memcmp(live->radii, solved->radii, sizeof(live->radii)) != 0
-		|| live->visible != solved->visible
-		|| live->in_parent != solved->in_parent
-		|| live->flow != solved->flow
-		|| live->path_clip != solved->path_clip
-		|| live->inner_clip != solved->inner_clip
-		|| live->frame_clip != solved->frame_clip
-		|| live->layout != solved->layout
-		|| live->told[0] != solved->told[0] || live->told[1] != solved->told[1]
-		|| live->fit[0] != solved->fit[0] || live->fit[1] != solved->fit[1]
-		|| live->src[0] != solved->src[0] || live->src[1] != solved->src[1];
+		|| live->visible != solved->visible;
 }
 
 static struct render_presentation host_presentation(const struct widget_host *host)
