@@ -427,6 +427,16 @@ local unsupported_attrs = { "RISE", "SHAPE", "SCALE", "LETTER_SPACING", "LINE_HE
 local draw_attrs = { "FOREGROUND", "FOREGROUND_ALPHA", "BACKGROUND",
     "BACKGROUND_ALPHA", "UNDERLINE", "STRIKETHROUGH" }
 
+local unsupported = {}
+for _, name in ipairs(unsupported_attrs) do unsupported[name] = true end
+local draw_kinds = {}
+for kind, name in ipairs(draw_attrs) do draw_kinds[name] = kind end
+-- the attribute kinds get_font applies; a range without any leaves the
+-- base description, so the copy, the call and the compare can be skipped
+local font_attrs = { FONT_DESC = true, FAMILY = true, STYLE = true,
+    VARIANT = true, WEIGHT = true, STRETCH = true, SIZE = true,
+    GRAVITY = true, GRAVITY_HINT = true }
+
 --- Keep the first font and collect metric-neutral attributes at byte ranges.
 local function text_run(w, layout)
     local text = get_layout_text(layout) or ""
@@ -454,40 +464,48 @@ local function text_run(w, layout)
         local start, finish = it:range()
 
         if start < #text then
-            for _, name in ipairs(unsupported_attrs) do
-                if Pango.AttrType[name] and it:get(Pango.AttrType[name]) then
-                    clay.ignore(w, "markup", "uses an attribute a text element has no field for, which is not drawn")
-                end
-            end
-
-            for kind, name in ipairs(draw_attrs) do
-                local attr = it:get(Pango.AttrType[name])
-                if attr then
-                    local value
-                    if name == "FOREGROUND" or name == "BACKGROUND" then
-                        value = attr_rgba(attr)
-                    else
-                        local v = lgi_core.record.cast(attr, Pango.AttrInt).value
-                        if name == "FOREGROUND_ALPHA" or name == "BACKGROUND_ALPHA" then
-                            v = v / 65535
-                        end
-                        value = { v, 0, 0, 0 }
+            -- one pass over the range's attrs: draw spans, the unsupported
+            -- warning, the first foreground colour, and whether get_font
+            -- has anything to resolve
+            local color, has_font, d
+            for _, attr in ipairs(it:get_attrs()) do
+                local name = attr.klass.type
+                if name then
+                    if unsupported[name] then
+                        clay.ignore(w, "markup", "uses an attribute a text element has no field for, which is not drawn")
                     end
-                    runs[#runs + 1] = start
-                    runs[#runs + 1] = math.min(finish, #text)
-                    runs[#runs + 1] = kind - 1
-                    for i = 1, 4 do runs[#runs + 1] = value[i] end
+                    local kind = draw_kinds[name]
+                    if kind then
+                        local value
+                        if name == "FOREGROUND" or name == "BACKGROUND" then
+                            value = attr_rgba(attr)
+                            if name == "FOREGROUND" and not color then color = value end
+                        else
+                            local v = lgi_core.record.cast(attr, Pango.AttrInt).value
+                            if name == "FOREGROUND_ALPHA" or name == "BACKGROUND_ALPHA" then
+                                v = v / 65535
+                            end
+                            value = { v, 0, 0, 0 }
+                        end
+                        runs[#runs + 1] = start
+                        runs[#runs + 1] = math.min(finish, #text)
+                        runs[#runs + 1] = kind - 1
+                        for i = 1, 4 do runs[#runs + 1] = value[i] end
+                    elseif font_attrs[name] then
+                        has_font = true
+                    end
                 end
             end
 
-            local d = desc:copy()
-            local fg = it:get(Pango.AttrType.FOREGROUND)
-            local color = fg and attr_rgba(fg) or nil
-
-            it:get_font(d, nil, nil)
+            -- get_font only resolves font attrs; a range with none keeps
+            -- the base description, so the copy, call and compare are skipped
+            if has_font then
+                d = desc:copy()
+                it:get_font(d, nil, nil)
+            end
             if first then
-                run_desc, run_color, first = d, color, false
-            elseif d:to_string() ~= run_desc:to_string() then
+                run_desc, run_color, first = d or desc, color, false
+            elseif (d or desc):to_string() ~= run_desc:to_string() then
                 clay.ignore(w, "markup", "has more than one run and is drawn as one")
             end
         end
