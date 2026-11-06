@@ -369,12 +369,26 @@ ewmh_stacking_refresh(void)
 void
 ewmh_update_net_client_list_stacking(void)
 {
-	int n = 0;
+	int n = 0, cap = 0;
 
 	if (!globalconf.connection || !globalconf.screen)
 		return;
 
-	xcb_window_t wins[MAX(1, globalconf.clients.len)];
+	/* The Declare Tree can briefly hold Client Nodes whose Owner was already
+	 * dropped from globalconf.clients (Unmanage removes the List Entry before
+	 * the Node dies), so count the Nodes themselves instead of trusting the
+	 * Client List length. */
+	foreach(item, globalconf.screens) {
+		screen_t *s = *item;
+		struct node *node;
+		if (!s->node)
+			continue;
+		wl_list_for_each(node, &s->node->children, link)
+			if (node->kind == NODE_CLIENT)
+				cap++;
+	}
+
+	xcb_window_t wins[MAX(1, cap)];
 	foreach(item, globalconf.screens) {
 		screen_t *s = *item;
 		if (!s->node)
