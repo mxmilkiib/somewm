@@ -48,21 +48,20 @@ subject (`git log --format=%s A..B` on both sides), never by SHA.
 binary with `-L ~/src/somewm-next/lua`, rebuilding it with ninja when
 the tree is stale. Two builds of the same tree exist side by side:
 `build-release` (optimized, the default session) and `build-asan`
-(ASan/UBSan + bench, for crash-hunting). `SOMEWM_ASAN=1` selects the
-instrumented build. The wrapper does not `exec`: a run dying inside
-120s retries once, then boots the promoted snapshot
+(ASan/UBSan + bench, for crash-hunting). The wrapper does not `exec`:
+a run dying inside 120s retries once, then boots the promoted snapshot
 `~/.local/share/somewm-good/{somewm,lua}` (binary + matching lua tree,
 frozen by `~/bin/somewm-promote [build-dir]`, default build-release).
-`SOMEWM_FORCE_GOOD=1` skips edge entirely and boots the snapshot.
-Three greeter entries ride on this: `somewm` (release), `somewm (asan)`
-and `somewm (good)` — each a `~/bin/somewm-session-*` wrapper that
-arms its flag via `systemctl --user set-environment` before the stock
-session. Check which binary a running session is on with
-`readlink /proc/$(pgrep -x somewm)/exe`. The session launches it via
-the systemd drop-in
-`~/dotfiles/systemd/.config/systemd/user/somewm.service.d/override.conf`:
-
-    ExecStart=/home/milkii/bin/somewm
+Three greeter entries ride on this: `somewm` (release/edge), `somewm
+(asan)` and `somewm (good)` — each Exec's `somewm-session-variant
+<edge|asan|good>` (`~/bin`), which starts `somewm@<variant>.service`
+(from the `somewm@.service` template in `~/.config/systemd/user/`,
+ExecStart=`~/bin/somewm %i`). The wrapper dispatches on $1, else
+`SOMEWM_BUILD`, else edge; `somewm-session-asan`/`-good` remain as
+thin compat shims. `somewm.service` + its `somewm.service.d/` drop-ins
+stay as the stock fallback path (ExecStart=~/bin/somewm → edge).
+Shared env drop-ins live in `somewm@.service.d/`. Check which binary a
+running session is on with `readlink /proc/$(pgrep -x somewm)/exe`.
 
 `~/src/somewm-next` alone holds `perf/2026.10oct.30-upstream-fold`, the
 confirmed-working branch — work lands directly on it (or merges in from
