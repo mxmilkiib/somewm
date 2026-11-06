@@ -1814,8 +1814,11 @@ static int
 configure_retry(void *data)
 {
 	Client *c = data;
-	struct wlr_xdg_toplevel_state *acked = &c->surface.xdg->toplevel->current;
+	struct wlr_xdg_toplevel_state *acked;
 
+	if (!c->surface.xdg)
+		return 0;
+	acked = &c->surface.xdg->toplevel->current;
 	if (!client_surface(c)->mapped || c->resize || !c->committed_width
 			|| c->configure_retries >= CONFIGURE_RETRIES
 			|| c->surface_box.width != acked->width
